@@ -5,7 +5,7 @@ import { decodeSst, encodeSstRef, sstGet, SST_BLOCK_TARGET } from "./oracle/sst-
 import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
-import { bytesFile, drain, readerOfBytes } from "./runs.js";
+import { bytesFile, drain, readerOfBytes, runGet } from "./runs.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
@@ -23,8 +23,8 @@ describe("sst", () => {
     const body = encodeSstRef(entries);
     expect(decodeSst(body)).toHaveLength(n);
     const reader = readerOfBytes(body);
-    expect((await untilHit(() => reader.get(utf("k00059999"))))?.seq).toBe(n);
-    expect(await untilHit(() => reader.get(utf("k00060000")))).toBeUndefined();
+    expect((await runGet(reader, utf("k00059999")))?.seq).toBe(n);
+    expect(await runGet(reader, utf("k00060000"))).toBeUndefined();
   });
 
   it("writes the data first and the footer last", () => {
@@ -42,14 +42,14 @@ describe("sst", () => {
     ]);
     expect(decodeSst(body).map((e) => e.seq)).toEqual([7, 2 ** 40]);
     const reader = readerOfBytes(body);
-    expect(await untilHit(() => reader.get(utf("b")))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
+    expect(await runGet(reader, utf("b"))).toEqual({ kind: "del", key: utf("b"), seq: 2 ** 40 });
   });
 
   it("reads a seq exactly up to the largest safe integer, in a get and in a scan", async () => {
     const seqs = [1, 2 ** 32 - 1, 2 ** 32, 2 ** 32 + 1, 2 ** 40 + 5, 2 ** 53 - 2, Number.MAX_SAFE_INTEGER];
     const key = (i: number) => utf(`k${i}`);
     const reader = readerOfBytes(encodeSstRef(seqs.map((seq, i) => ({ kind: "put" as const, key: key(i), value: utf("v"), seq }))));
-    const got = await Promise.all(seqs.map((_, i) => untilHit(() => reader.get(key(i)))));
+    const got = await Promise.all(seqs.map((_, i) => runGet(reader, key(i))));
     expect(got.map((e) => e?.seq)).toEqual(seqs);
     expect((await drain(reader.cursor())).map((e) => e.seq)).toEqual(seqs);
   });
@@ -60,7 +60,7 @@ describe("sst", () => {
     view.setUint32(body.byteLength - 8, 7, true);
     expect(() => decodeSst(body)).toThrow(/unsupported sst version 7/);
     const reader = new SstReader(bytesFile(body), new PageCache(), undefined);
-    await expect(untilHit(() => reader.get(utf("a")))).rejects.toThrow(/unsupported sst version 7/);
+    await expect(runGet(reader, utf("a"))).rejects.toThrow(/unsupported sst version 7/);
   });
 
   it("round-trips puts and deletes", () => {
@@ -105,13 +105,13 @@ describe("sst", () => {
     }));
     const body = encodeSstRef(entries, 200);
     const reader = readerOfBytes(body);
-    expect(await untilHit(() => reader.get(utf("k040")))).toEqual({
+    expect(await runGet(reader, utf("k040"))).toEqual({
       kind: "put",
       key: utf("k040"),
       value: utf("v40"),
       seq: 41,
     });
-    expect(await untilHit(() => reader.get(utf("missing")))).toBeUndefined();
+    expect(await runGet(reader, utf("missing"))).toBeUndefined();
   });
 
   it("get finds what a full decode holds, for every key and gap", async () => {
@@ -129,7 +129,7 @@ describe("sst", () => {
     for (const body of runs) {
       const all = decodeSst(body);
       const reader = readerOfBytes(body);
-      for (const k of probes) expect(show(await untilHit(() => reader.get(k)))).toBe(show(sstGet(all, k)));
+      for (const k of probes) expect(show(await runGet(reader, k))).toBe(show(sstGet(all, k)));
     }
   });
 

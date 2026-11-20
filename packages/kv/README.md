@@ -58,10 +58,20 @@ const again = await openDb({ name: "notes" });
 const seq = await db.put(key, value);
 // resolves on the WAL ack, with the record's seq
 dec(await db.get(key));               // => "world"
+
+// Many keys in one read, in the order asked. With a decode
+// function a value is not copied: decode reads the stored bytes,
+// so it must not change them or keep them.
+await db.getMany([key, enc("missing")]);
+// => [Uint8Array, undefined]
+await db.getMany([key], (bytes) => dec(bytes)); // => ["world"]
+
 await db.delete(key);                 // resolves with its seq too
 await db.get(key);                    // => undefined
 
-// get reads memory and SST files. It never touches IndexedDB.
+// get and getMany read memory and SST files. They never touch
+// IndexedDB.
+
 await db.put(new Uint8Array(9 * 1024), value);
 // throws ConstraintError. Keys are at most 8 KiB.
 await db.put(key, new Uint8Array(9 << 20));
@@ -141,6 +151,15 @@ db.range({
   limit: 2
 });
 // yields "user/1"
+```
+
+### `offset`
+
+```ts
+// Passes over entries before the first one. Each still costs a
+// step of the scan, but no key or value is copied.
+db.range({ ...users, offset: 1, limit: 1 });
+// yields "user/2"
 ```
 
 ### `valueContains`

@@ -3,7 +3,7 @@ import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
-import { filterCursor, Miss, type LayerCursor, type LayerEntry, type Maybe, type ScanBounds } from "./cursor.js";
+import { filterCursor, Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   blockBytes,
@@ -15,7 +15,6 @@ import {
   type BlockBytes,
   type KeyRange,
   type SstCodec,
-  type SstEntry,
 } from "./sst.js";
 
 /**
@@ -92,10 +91,10 @@ export class SstReader {
   }
 
   /**
-   * Misses at most twice on a cold run: layout, then the page. A put's value
-   * is a copy the caller owns, so no cache page is reachable from it.
+   * The record for `key`, where it is in its page. Misses at most twice on a
+   * cold run: layout, then the page.
    */
-  get(key: Uint8Array): Maybe<SstEntry | undefined> {
+  get(key: Uint8Array): Maybe<BlockEntry | undefined> {
     const meta = this.meta();
     if (meta instanceof Miss) return meta;
     const { index } = meta;
@@ -133,7 +132,7 @@ export class SstReader {
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {
-          if (seek && outside(h.value.key, seek)) continue;
+          if (seek && outside(h.value, seek, 0)) continue;
           return h.value;
         }
         return undefined;
@@ -163,7 +162,7 @@ export class SstReader {
       seek: Uint8Array | undefined,
       framed: Uint8Array,
       lz4: boolean,
-    ) => () => LayerEntry | undefined,
+    ) => () => BlockEntry | undefined,
   ): LayerCursor {
     const start = bounds?.start;
     const end = bounds?.endExclusive;
@@ -175,18 +174,23 @@ export class SstReader {
     // The page the cursor is in. Looking it up again per block would count
     // as reuse and promote every page a single scan passes.
     let at: { p: number; page: Page } | undefined;
-    let take: (() => LayerEntry | undefined) | undefined;
-    let cur: LayerEntry | undefined | null = null;
+    let take: (() => BlockEntry | undefined) | undefined;
+    let cur: BlockEntry | undefined | null = null;
     let ahead: ReadAhead | undefined;
     // Whether the block the cursor is in may hold a key past `stopAt`. The
     // separators tell, so only the block the scan ends in compares its keys.
     let mayPass = false;
-    const peek = (): LayerEntry | undefined | Miss => {
+    // How many bytes of `stopAt` that block's prefix shares with it, so each of its keys is compared from there on. -1 until its first key asks.
+    let shared = -1;
+    const peek = (): BlockEntry | undefined | Miss => {
       if (cur !== null) return cur;
       for (;;) {
-        const e = take?.();
+        const e: BlockEntry | undefined = take?.();
         if (e) {
-          cur = mayPass && stop(e.key, stopAt!) ? undefined : e;
+          if (mayPass) {
+            if (shared < 0) shared = e.prefixShared(stopAt!);
+            cur = stop(e, stopAt!, shared) ? undefined : e;
+          } else cur = e;
           return cur;
         }
         take = undefined;
@@ -235,6 +239,7 @@ export class SstReader {
           page.buf.subarray(offset, offset + length),
           meta.codec === "lz4",
         );
+        shared = -1;
         b += step;
         seek = undefined;
       }
@@ -395,8 +400,9 @@ function separatorLength(prevLast: Uint8Array, first: Uint8Array): number {
   return Math.min(i + 1, first.byteLength);
 }
 
-const isBelow = (key: Uint8Array, bound: Uint8Array) => compareBytes(key, bound) < 0;
-const isAtOrAbove = (key: Uint8Array, bound: Uint8Array) => compareBytes(key, bound) >= 0;
+/** `from` is how many leading bytes of the entry's key are known to equal the bound's. */
+const isBelow = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) < 0;
+const isAtOrAbove = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) >= 0;
 
 /** The last block whose separator is <= `key`, or -1 when `key` sorts before every block. */
 function findBlock(index: RunIndex, key: Uint8Array): number {

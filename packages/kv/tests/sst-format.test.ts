@@ -2,10 +2,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstGet } from "./oracle/sst-ref.js";
-import { Miss, untilHit, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
+import { Miss, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
-import { drain, readerOfBytes } from "./runs.js";
+import { drain, readerOfBytes, runGet } from "./runs.js";
 
 /** `toEqual` walks typed arrays element by element, which is too slow for thousands of entries. */
 const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}:${e.kind === "put" ? [...e.value] : ""}` : "none");
@@ -13,7 +13,7 @@ const show = (e: SstEntry | undefined) => (e ? `${[...e.key]}:${e.kind}:${e.seq}
 async function expectReaderAgreesWithDecode(body: Uint8Array): Promise<void> {
   const all = decodeSst(body);
   const reader = readerOfBytes(body);
-  const get = (k: Uint8Array) => untilHit(() => reader.get(k));
+  const get = (k: Uint8Array) => runGet(reader, k);
   expect((await Promise.all(all.map((e) => get(e.key)))).map(show)).toEqual(all.map(show));
   const misses = [...all.map((e) => cat(e.key, Uint8Array.of(0))), utf("i/")];
   expect((await Promise.all(misses.map(get))).map(show)).toEqual(misses.map((k) => show(sstGet(all, k))));

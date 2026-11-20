@@ -26,7 +26,7 @@ import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.j
 import { TabWal, decodeOps, encodeOps, resolveOps, type WalTail } from "./idb/wal.js";
 import { reconcile, type Reconciled } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "./seq.js";
-import { Memtable, type WalRecord } from "./store/memtable.js";
+import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { AsyncFs, OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
@@ -37,10 +37,10 @@ import { countOf, pointGet, readKeys, runLevels, type RunLevel } from "./store/r
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type ViewSnapshot } from "./view.js";
+import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
 import type { ChangeEvent, ChangeListener } from "./changes.js";
 
-export type { ViewSnapshot } from "./view.js";
+export type { Decode, ViewSnapshot } from "./view.js";
 export type { StorageFull } from "./host/protocol.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
 
@@ -128,6 +128,11 @@ export type Range = {
   /** At most this many entries, taken in scan order, so the largest keys with `reverse`. */
   readonly limit?: number;
   /**
+   * Pass over this many entries, in scan order, before the first one. `limit`
+   * counts from there. An entry passed over is not copied.
+   */
+  readonly offset?: number;
+  /**
    * Scan from the largest key down. Yields the keys of the forward scan in
    * descending order. To page backward, pass the last key seen as
    * `endExclusive`.
@@ -176,6 +181,14 @@ export interface Db {
   readonly name: string;
   readonly writerId: WriterId;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
+  /**
+   * `get` of every key, in the order of `keys`, as one read: every key sees
+   * the same writes, and the pages they lack load together. With `decode`, a
+   * value is not copied: `decode` gets the bytes where they are stored and
+   * returns what to keep, so it must neither change them nor keep them.
+   */
+  getMany(keys: readonly Uint8Array[]): Promise<(Uint8Array | undefined)[]>;
+  getMany<T>(keys: readonly Uint8Array[], decode: Decode<T>): Promise<(T | undefined)[]>;
   /** Resolves with the WAL seq of the record, as `batch` does. */
   put(key: Uint8Array, value: Uint8Array): Promise<number>;
   /** Resolves with the WAL seq of the record, as `batch` does. */
@@ -1003,6 +1016,19 @@ class DbImpl implements Db {
     return this.settleInstalled((levels) => pointGet(row, levels, k, at));
   }
 
+  async getMany<T>(keys: readonly Uint8Array[], decode?: Decode<T>): Promise<(T | undefined)[]> {
+    this.ensureOpen();
+    const ks = keys.map(checkKey);
+    // With the levels `settleInstalled` holds, these rows are one state of the store, whatever lands while a page loads.
+    const mems = this.memRows(ks);
+    const at = this.point();
+    return this.settleInstalled((levels) => readKeys(mems, ks, levels, at, decode));
+  }
+
+  private memRows(keys: readonly Uint8Array[]): (MemRow | undefined)[] {
+    return keys.map((k) => this.mem.get(k));
+  }
+
   put(key: Uint8Array, value: Uint8Array): Promise<number> {
     return this.batch((tx) => tx.put(key, value));
   }
@@ -1031,7 +1057,7 @@ class DbImpl implements Db {
     // One set for the warm reads and the read inside the transaction, which cannot wait for a load.
     const held = new ReadSet();
     const out = await this.write(() => {
-      const values = held.attempt(() => readKeys(this.mem, ks, this.installed.levels, this.point()));
+      const values = held.attempt(() => readKeys(this.memRows(ks), ks, this.installed.levels, this.point()));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
@@ -1041,7 +1067,7 @@ class DbImpl implements Db {
       return { ops, result };
     }, () => {
       const at = this.point();
-      return this.settleInstalled((levels) => readKeys(this.mem, ks, levels, at), held);
+      return this.settleInstalled((levels) => readKeys(this.memRows(ks), ks, levels, at), held);
     });
     return out.result;
   }

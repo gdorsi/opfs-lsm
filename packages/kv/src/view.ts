@@ -14,25 +14,37 @@ import {
   type ScanStep,
 } from "./store/read.js";
 
-interface Joined {
+interface Joined<T> {
   readonly entry: Entry;
   /** Undefined when `keyOf` returned no key or the key has no value. */
-  readonly joined: Uint8Array | undefined;
+  readonly joined: T | undefined;
 }
+
+/**
+ * What a read makes of a value in place of a copy. It gets the bytes where
+ * they are stored, so it must neither change them nor keep them past its
+ * return.
+ */
+export type Decode<T> = (value: Uint8Array) => T;
 
 export interface ViewSnapshot {
   /** The seq of the last record the snapshot includes, as write acks and `changes` count it. */
   readonly seq: number;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
+  /** See `Db.getMany`. */
+  getMany(keys: readonly Uint8Array[]): Promise<(Uint8Array | undefined)[]>;
+  getMany<T>(keys: readonly Uint8Array[], decode: Decode<T>): Promise<(T | undefined)[]>;
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
   count(range?: Range): Promise<number>;
   /**
    * Scan `range` and join each entry to the value at `keyOf(entry)`, as an
    * index entry joins its row. The scan and the reads see the snapshot, so a
-   * page load that makes one wait does not change what the next sees.
+   * page load that makes one wait does not change what the next sees. With
+   * `decode`, `joined` is what it returns for the value.
    */
-  rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined[]>;
+  rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined<Uint8Array>[]>;
+  rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode: Decode<T>): Promise<Joined<T>[]>;
 }
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
@@ -49,7 +61,7 @@ export function boundsOf(range?: Range): ScanBounds | undefined {
 /**
  * `range` over memtable `rows` already cut to `bounds` and the levels under
  * them, one entry at a time: every live put, or with `valueContains` only
- * the matching ones, and no more than `limit`. It is a sync step and not an
+ * the matching ones, past the first `offset` and no more than `limit`. It is a sync step and not an
  * async iterator, so `range`, `count` and `rangeJoin` wait only on a miss.
  */
 export function scanStep(
@@ -65,10 +77,15 @@ export function scanStep(
     patterns && patterns.length > 0
       ? matchingStep(rows, levels, patterns, at, bounds, reverse)
       : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse, bounds);
-  const limit = range?.limit;
-  if (limit === undefined) return step;
+  const limit = range?.limit ?? Number.POSITIVE_INFINITY;
+  let skip = range?.offset ?? 0;
+  if (limit === Number.POSITIVE_INFINITY && !(skip > 0)) return step;
   let n = 0;
   return () => {
+    for (; skip > 0; skip--) {
+      const e = step();
+      if (!e || e instanceof Miss) return e;
+    }
     if (!(n < limit)) return undefined;
     const e = step();
     if (e && !(e instanceof Miss)) n++;
@@ -224,12 +241,26 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     }
   }
 
-  async rangeJoin(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined): Promise<Joined[]> {
+  async getMany<T>(keys: readonly Uint8Array[], decode?: Decode<T>): Promise<(T | undefined)[]> {
+    this.ensureOpen();
+    const ks = keys.map(checkKey);
+    const mems = ks.map((k) => this.rows.get(k));
+    const read = () => readKeys(mems, ks, this.levels, this.at, decode);
+    try {
+      const first = read();
+      return first instanceof Miss ? await untilHit(read, first) : first;
+    } catch (err) {
+      this.handleOpen();
+      throw err;
+    }
+  }
+
+  async rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode?: Decode<T>): Promise<Joined<T>[]> {
     this.ensureOpen();
     const bounds = boundsOf(range);
     const release = this.hold();
     try {
-      const out: { entry: Entry; joined: Uint8Array | undefined }[] = [];
+      const out: { entry: Entry; joined: T | undefined }[] = [];
       const keys: Uint8Array[] = [];
       const owners: typeof out = [];
       const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
@@ -245,7 +276,8 @@ export class ViewSnapshotImpl implements ViewSnapshot {
         owners.push(hit);
       }
       // One read for every key, so the pages they lack load together.
-      const read = () => readKeys(this.rows, keys, this.levels, this.at);
+      const mems = keys.map((k) => this.rows.get(k));
+      const read = () => readKeys(mems, keys, this.levels, this.at, decode);
       const first = read();
       const values = first instanceof Miss ? await untilHit(read, first) : first;
       values.forEach((value, i) => (owners[i]!.joined = value));

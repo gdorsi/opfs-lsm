@@ -216,22 +216,22 @@ recorded generation and `meta.topGeneration`. Numbers can skip.
 `get` reads the memtable first. On a miss, it asks the levels of the installed generation,
 newest first, and stops at the first that holds the key. Each L0 run is a level of its own. A
 deeper level binary-searches the key ranges of its runs and asks one run. A get touches neither
-IndexedDB nor the host.
+IndexedDB nor the host. `getMany` reads a list of keys at once, and with `decode` copies no value.
 
-`range` merges one cursor per source with a min-heap, ordered by key and then by source, newest
-first. The sources are the memtable, each L0 run, and each deeper level as a whole. For each key
-the newest source wins, and tombstones are dropped. A level cursor opens one run at a time, in
-key order, and only the runs the scan reaches. `reverse` returns the same keys in descending
-order. Bloom filters play no part in a scan.
+`range` merges one cursor per source: the memtable, each L0 run, and each deeper level as a
+whole. For each key the newest source wins, and tombstones are dropped. The waiting sources sit
+in a list sorted by key and then by age, which a source enters from the front, so one that keeps
+winning costs one comparison per key, and two that tie on a key are compared once. A level
+cursor opens one run at a time, in key order, and only the runs the scan reaches. `reverse`
+returns the same keys in descending order. Bloom filters play no part in a scan.
 
 `range({ valueContains })` keeps the live puts whose current value holds every pattern. Each
 source filters on its own, one block at a time, and only the hits are copied out. A newer source
 that holds the key with a non-matching value or a tombstone drops the older hit.
 
-A scan copies each key out of its block once, and that copy is the one it yields. A value stays
-in place in the block bytes, which are never written once read, until the scan yields its entry.
-`count(range)` runs the same merge and filters, `limit` included, and returns how many entries
-the scan would yield.
+A key and a value stay in place in the block bytes, which are never written once read, until
+the scan yields their entry, so an entry it drops, counts or passes over for `offset` is never
+copied. `count(range)` runs the same merge and filters, `offset` and `limit` included.
 
 Every read judges the versions it finds in runs against one read point: the marks of the
 installed generation joined with those of the memtable, taken in the same turn as the layers it

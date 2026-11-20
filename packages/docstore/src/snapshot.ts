@@ -24,7 +24,7 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPage<EntryValues<T, Ix, I>>>;
-  /** How many entries `query` would walk, stopping at `limit` if given. */
+  /** How many entries `query` would walk, from `offset` and stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
 }
 
@@ -34,8 +34,10 @@ function limitOf(limit: unknown): number | undefined {
   throw new DocStoreError("query", "limit must be a positive integer");
 }
 
-function withLimit(range: Range, limit: number | undefined): Range {
-  return limit === undefined ? range : { ...range, limit };
+function offsetOf(offset: unknown): number {
+  if (offset === undefined) return 0;
+  if (typeof offset === "number" && Number.isInteger(offset) && offset >= 0) return offset;
+  throw new DocStoreError("query", "offset must be a non-negative integer");
 }
 
 /** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
@@ -53,7 +55,7 @@ async function collect(snap: ViewSnapshot, range: Range): Promise<Entry[]> {
 }
 
 /** What a point read needs of kv: a `Db` and a view snapshot both fit. */
-type PointSource = Pick<ViewSnapshot, "get">;
+type PointSource = Pick<ViewSnapshot, "getMany">;
 
 /**
  * The point reads of one collection. `coll` must come from the catalog that
@@ -67,14 +69,13 @@ export class PointReader<T extends JsonDoc> {
   ) {}
 
   async get(id: string): Promise<T | undefined> {
-    const bytes = await this.snap.get(concat(this.coll.rows.prefix, idBytes(parseId(id))));
-    return bytes && (decodeDoc(bytes) as unknown as T);
+    return (await this.getMany([id]))[0];
   }
 
-  async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
+  /** One kv read for every row, parsed from the stored bytes with no copy between. */
+  getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
     const keys = ids.map((id) => concat(this.coll.rows.prefix, idBytes(parseId(id))));
-    const rows = await Promise.all(keys.map((k) => this.snap.get(k)));
-    return rows.map((bytes) => bytes && (decodeDoc(bytes) as unknown as T));
+    return this.snap.getMany(keys, decodeDoc) as Promise<unknown> as Promise<(T | undefined)[]>;
   }
 }
 
@@ -100,11 +101,11 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
       const next = trimPage(page, (h) => h.key, limit);
       return { docs: page.map((h) => decodeDoc(h.value) as unknown as T), ...next };
     }
-    const hits = await this.snap.rangeJoin(range, (h) => concat(target.rowPrefix, entryId(target, h.key, h.value)));
+    const hits = await this.snap.rangeJoin(range, (h) => concat(target.rowPrefix, entryId(target, h.key, h.value)), decodeDoc);
     const next = trimPage(hits, (h) => h.entry.key, limit);
     const docs = hits.map(({ joined }) => {
       if (!joined) throw new CorruptDatabaseError(`an index entry of "${this.coll.name}" points at a missing document`);
-      return decodeDoc(joined) as unknown as T;
+      return joined as unknown as T;
     });
     return { docs, ...next };
   }
@@ -135,6 +136,8 @@ export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implem
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    return { target, limit, range: withLimit(scanPlan(target, input), limit && limit + peek) };
+    const offset = offsetOf(input.offset);
+    const range = scanPlan(target, input);
+    return { target, limit, range: { ...range, ...(limit && { limit: limit + peek }), ...(offset && { offset }) } };
   }
 }

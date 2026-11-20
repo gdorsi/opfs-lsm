@@ -1,5 +1,5 @@
 import { CorruptDatabaseError } from "../errors.js";
-import type { LayerEntry } from "./cursor.js";
+import { BlockEntry } from "./cursor.js";
 import { seqAt } from "./sst.js";
 
 /**
@@ -35,7 +35,7 @@ export function packPatterns(patterns: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-export function* unpackHits(hits: Uint8Array): Generator<LayerEntry> {
+export function* unpackHits(hits: Uint8Array): Generator<BlockEntry> {
   const view = new DataView(hits.buffer, hits.byteOffset, hits.byteLength);
   let o = 0;
   while (o < hits.length) {
@@ -45,7 +45,7 @@ export function* unpackHits(hits: Uint8Array): Generator<LayerEntry> {
     const seq = seqAt(view, o + 8);
     o += 16;
     if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
-    yield { key: hits.slice(o, o + keyLen), kind: "put", seq, block: hits, valueAt: o + keyLen, valueLength: valueLen };
+    yield new BlockEntry(hits, "put", seq, o + keyLen, valueLen, o, 0, o, keyLen);
     o += keyLen + valueLen;
   }
 }

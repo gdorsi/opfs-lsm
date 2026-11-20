@@ -110,7 +110,7 @@ await todos.get("t9"); // => undefined
 await todos.getMany(["t9", "t1"]);
 // => [undefined, { id: "t1", ... }]
 // undefined fields drop, -0 becomes 0, and NaN becomes null
-// getMany reads each document on its own, not from one snapshot
+// getMany is one read: every document sees the same writes
 ```
 
 `putMany` writes in one kv transaction, so every document lands or none does. In a collection with no index, it writes every document, even one whose bytes would not change.
@@ -372,6 +372,18 @@ await todos.queryIds({
 });
 // throws DocStoreError "cursor"
 await todos.queryIds({ index: "open", limit: 0 });
+// throws DocStoreError "query"
+```
+
+### Offsets
+
+`offset` passes over results before the first one. It walks the entries it passes and reads none of their documents, so a far page costs less than the pages before it would. To go on from a page, `after` is cheaper: it starts at the cursor.
+
+```ts
+await todos.queryIds({ index: "open", offset: 1, limit: 1 });
+// => { ids: ["a"], next }
+await todos.count({ index: "open", offset: 1 }); // => 2
+await todos.queryIds({ index: "open", offset: -1 });
 // throws DocStoreError "query"
 ```
 

@@ -1,13 +1,12 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import { untilHit } from "../src/store/cursor.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstGet, sstKeyRange } from "./oracle/sst-ref.js";
 import { PAGE_TARGET, SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
-import { bytesFile, cacheUsage, drain } from "./runs.js";
+import { bytesFile, cacheUsage, drain, runGet } from "./runs.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
@@ -64,7 +63,7 @@ describe("lazy sst reader", () => {
         const reader = openRun(body, new PageCache());
         const probes = probesOf(all);
         const got: string[] = [];
-        for (const k of probes) got.push(show(await untilHit(() => reader.get(k))));
+        for (const k of probes) got.push(show(await runGet(reader, k)));
         expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
       }
     });
@@ -79,9 +78,9 @@ describe("lazy sst reader", () => {
       seq: i + 1,
     }));
     const reader = openRun(encodeSstRef(entries), new PageCache());
-    expect((await untilHit(() => reader.get(utf("k00149999"))))?.seq).toBe(n);
-    expect((await untilHit(() => reader.get(utf("k00000000"))))?.seq).toBe(1);
-    expect(await untilHit(() => reader.get(utf("k00150000")))).toBeUndefined();
+    expect((await runGet(reader, utf("k00149999")))?.seq).toBe(n);
+    expect((await runGet(reader, utf("k00000000")))?.seq).toBe(1);
+    expect(await runGet(reader, utf("k00150000"))).toBeUndefined();
   });
 
   it("with a budget larger than the database, a second pass of gets reads nothing", async () => {
@@ -91,11 +90,11 @@ describe("lazy sst reader", () => {
     for (const [, body] of await encodings(indexWorkload(2_000))) {
       runs.push({ reader: openRun(body, cache, reads), all: decodeSst(body) });
     }
-    for (const { reader, all } of runs) for (const e of all) await untilHit(() => reader.get(e.key));
+    for (const { reader, all } of runs) for (const e of all) await runGet(reader, e.key);
     expect(reads.count).toBeGreaterThan(0);
     reads.count = 0;
     for (const { reader, all } of runs) {
-      for (const e of all) expect(show(await untilHit(() => reader.get(e.key)))).toBe(show(e));
+      for (const e of all) expect(show(await runGet(reader, e.key))).toBe(show(e));
     }
     expect(reads.count).toBe(0);
   });
@@ -109,7 +108,7 @@ describe("lazy sst reader", () => {
     for (const body of bodies) {
       const cache = new PageCache();
       const reader = openRun(body, cache);
-      await untilHit(() => reader.get(utf("probe")));
+      await runGet(reader, utf("probe"));
       metaBytes.push(cacheUsage(cache).metadata);
     }
     const budget = Math.max(...metaBytes) + 2 * PAGE_TARGET;
@@ -129,9 +128,9 @@ describe("lazy sst reader", () => {
       for (let i = 0; i < longest; i += 7) {
         for (const { reader, all } of runs) {
           const e = all[(i * 7919) % all.length]!;
-          expect(show(await untilHit(() => reader.get(e.key)))).toBe(show(e));
+          expect(show(await runGet(reader, e.key))).toBe(show(e));
           const missKey = cat(e.key, Uint8Array.of(0));
-          expect(show(await untilHit(() => reader.get(missKey)))).toBe(show(sstGet(all, missKey)));
+          expect(show(await runGet(reader, missKey))).toBe(show(sstGet(all, missKey)));
           const u = cacheUsage(cache);
           expect(u.resident).toBeLessThanOrEqual(u.budget);
           minMeta = Math.min(minMeta, u.metadata);
@@ -149,11 +148,11 @@ describe("lazy sst reader", () => {
 
     const alone = new Reads();
     const one = openRun(body, new PageCache(), alone);
-    await untilHit(() => one.get(sameBlock[0]!));
+    await runGet(one, sameBlock[0]!);
 
     const together = new Reads();
     const many = openRun(body, new PageCache(), together);
-    const got = await Promise.all(sameBlock.map((k) => untilHit(() => many.get(k))));
+    const got = await Promise.all(sameBlock.map((k) => runGet(many, k)));
 
     expect(got.map(show)).toEqual(all.slice(100, 104).map(show));
     expect(together.count).toBe(alone.count);
@@ -206,7 +205,7 @@ describe("lazy sst reader", () => {
       expect(await drain(coldRun(scanned).cursor(bounds))).toHaveLength(10);
       const got = new Reads();
       const reader = coldRun(got);
-      await untilHit(() => reader.get(utf("k000015")));
+      await runGet(reader, utf("k000015"));
       expect(scanned.count).toBe(got.count);
     });
 
