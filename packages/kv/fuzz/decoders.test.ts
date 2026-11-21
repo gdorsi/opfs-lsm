@@ -211,14 +211,21 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 **
   }),
 );
 
+const rowOpArb: fc.Arbitrary<RowOp> = fc.oneof(
+  fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }) }),
+  fc.record({ del: fc.uint8Array({ maxLength: 16 }) }),
+  fc
+    .record({ start: fc.uint8Array({ maxLength: 8 }), size: fc.option(fc.uint8Array({ minLength: 1, maxLength: 4 })), through: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }) })
+    .map(({ start, size, through }) => ({ deleteRange: start, ...(size === null ? {} : { end: new Uint8Array([...start, ...size]) }), through })),
+);
+
+/** A range delete whose end is at or below its start. No writer stores one, so its row is corrupt. */
+const emptyRangeArb: fc.Arbitrary<RowOp> = fc
+  .record({ start: fc.uint8Array({ maxLength: 8 }), cut: fc.nat({ max: 8 }), through: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }) })
+  .map(({ start, cut, through }) => ({ deleteRange: start, end: start.slice(0, cut), through }));
+
 const walRowArb: fc.Arbitrary<RowOp[]> = fc.array(
-  fc.oneof(
-    fc.record({ put: fc.uint8Array({ maxLength: 16 }), value: fc.uint8Array({ maxLength: 32 }) }),
-    fc.record({ del: fc.uint8Array({ maxLength: 16 }) }),
-    fc
-      .record({ start: fc.uint8Array({ maxLength: 8 }), size: fc.option(fc.uint8Array({ minLength: 1, maxLength: 4 })), through: fc.integer({ min: 0, max: Number.MAX_SAFE_INTEGER }) })
-      .map(({ start, size, through }) => ({ deleteRange: start, ...(size === null ? {} : { end: new Uint8Array([...start, ...size]) }), through })),
-  ),
+  fc.oneof({ arbitrary: rowOpArb, weight: 19 }, { arbitrary: emptyRangeArb, weight: 1 }),
   { minLength: 1, maxLength: 6 },
 );
 

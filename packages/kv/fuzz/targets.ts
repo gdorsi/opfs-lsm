@@ -370,6 +370,9 @@ function checkOps(raw: unknown): void {
   }
   for (const op of decodeOps(raw, 5)) {
     if (op.type === "deleteRange" && op.through > 4) throw new RuleBroken("a range delete reaches its own record");
+    if (op.type === "deleteRange" && op.endExclusive && compareBytes(op.start, op.endExclusive) >= 0) {
+      throw new RuleBroken("a range delete whose start is not below its end decodes");
+    }
   }
 }
 
