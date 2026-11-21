@@ -372,6 +372,22 @@ describe("cursors", () => {
     expect(await codeOf(c.query({ index: "one", after: next }))).toBe("cursor");
     expect(await codeOf(c.query({ index: "two", after: "%%" as never }))).toBe("cursor");
   });
+
+  it("throws cursor for an after at the key an lt bound stops before, forward and reverse", async () => {
+    const { c } = await docs();
+    await c.putMany([
+      { id: "1", u: 1 },
+      { id: "2", u: 2 },
+      { id: "3", u: 3 },
+    ]);
+    for (const index of [undefined, "uniq"] as const) {
+      const { next } = await c.queryIds({ index, limit: 2 } as DocQuery);
+      const lt = index === undefined ? "2" : 2;
+      for (const reverse of [false, true]) {
+        expect(await codeOf(c.queryIds({ index, lt, reverse, after: next } as DocQuery))).toBe("cursor");
+      }
+    }
+  });
 });
 
 describe("the read bracket", () => {

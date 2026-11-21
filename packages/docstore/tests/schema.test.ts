@@ -499,6 +499,24 @@ describe("clear", () => {
     expect(await keysUnder(kv, old)).toBe(0);
   });
 
+  it("keeps two collections apart once clears give one an id 256 above the other's", async () => {
+    const { kv, store } = await at(freshName(), defineSchema({ version: 1, collections: { a: base, b: base } }));
+    const [a, b] = [store.collection("a"), store.collection("b")];
+    const ids = async () => Object.values((await storedCatalog(kv)).collections).map((c) => c.id);
+    expect(await ids()).toEqual([1, 2]);
+    for (let i = 0; i < 255; i++) await b.clear();
+    expect(await ids()).toEqual([1, 257]);
+    await store.whenIdle();
+    await a.put({ id: "1", title: "a", createdAt: 1 });
+    await b.put({ id: "2", title: "b", createdAt: 2 });
+    for (const [c, id] of [[a, "1"], [b, "2"]] as const) {
+      expect((await c.queryIds({})).ids).toEqual([id]);
+      expect((await c.queryIds({ index: "byCreated" })).ids).toEqual([id]);
+      expect((await c.queryIds({ index: "byTitle" })).ids).toEqual([id]);
+    }
+    expect(await b.get("1")).toBeUndefined();
+  });
+
   it("keeps a put that resolves after clear resolved, alone", async () => {
     const { store } = await at(freshName(), v1);
     const todos = store.collection("todos");
