@@ -6,12 +6,15 @@ import { freshName, gate, openKv } from "./harness.js";
 import { expected, stored } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 
-type Row = { id: string; a?: Scalar | undefined; b?: Scalar | undefined; tags?: Scalar[] | undefined };
+/** `codes` are the row's own, so a unique index on them holds every row. */
+type Row = { id: string; a?: Scalar | undefined; b?: Scalar | undefined; tags?: Scalar[] | undefined; codes?: string[] | undefined };
 
 const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
 const v2 = defineSchema({
   version: 2,
-  collections: { rows: collection<Row>().index("byA", "a").index("byB", ["b", "a"]).index("byTag", "tags[]") },
+  collections: {
+    rows: collection<Row>().index("byA", "a").index("byB", ["b", "a"]).index("byTag", "tags[]").unique("byCode", "codes[]"),
+  },
 });
 
 const ROWS = 1_200;
@@ -30,6 +33,7 @@ const rowArb = (i: number): fc.Arbitrary<Row> =>
       a: fc.option(denseScalarArb, { nil: undefined }),
       b: fc.option(denseScalarArb, { nil: undefined }),
       tags: fc.option(fc.array(denseScalarArb, { maxLength: 3 }), { nil: undefined }),
+      codes: fc.option(fc.subarray([`${id(i)}:x`, `${id(i)}:y`, `${id(i)}:z`]), { nil: undefined }),
     },
     { requiredKeys: ["id"] },
   );
@@ -41,10 +45,10 @@ const opArb: fc.Arbitrary<Op> = fc.oneof(
 );
 
 describe("two handles on one database", () => {
-  it("fills the new indexes of one handle's schema with every write the other handle made before, during and after the backfill", async () => {
+  it("fills the new indexes of one handle's schema, a unique multi one included, with every write the other handle made before, during and after the backfill", async () => {
     await fc.assert(
       fc.asyncProperty(
-        fc.array(rowArb(0), { minLength: ROWS, maxLength: ROWS }),
+        fc.tuple(...Array.from({ length: ROWS }, (_, i) => rowArb(i))),
         fc.array(fc.array(opArb, { maxLength: 6 }), { minLength: 6, maxLength: 6 }),
         async (initial, batches) => {
           const name = freshName();
@@ -72,7 +76,7 @@ describe("two handles on one database", () => {
                 }
               }
             };
-            const rows = initial.map((r, i) => ({ ...r, id: id(i) }));
+            const rows: Row[] = initial;
             for (let i = 0; i < rows.length; i += 400) await a.putMany(rows.slice(i, i + 400));
             for (const r of rows) model.set(r.id, stored(r));
 
@@ -91,6 +95,7 @@ describe("two handles on one database", () => {
             const docs = [...model.values()];
             expect((await b.queryIds({ index: "byB" })).ids).toEqual(ids(expected(docs, { kind: "sorted", on: ["b", "a"] }, {})));
             expect((await b.queryIds({ index: "byTag" })).ids).toEqual(ids(expected(docs, { kind: "multi", on: ["tags"] }, {})));
+            expect((await b.queryIds({ index: "byCode" })).ids).toEqual(ids(expected(docs, { kind: "multi", on: ["codes"] }, {})));
           } finally {
             await kvA.close();
             await kvB.close();
