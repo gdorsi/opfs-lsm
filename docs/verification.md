@@ -19,7 +19,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
 | Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
-| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `merge.rs` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
+| SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `merge.rs` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`, the `bottom` of `planCompaction`) | `formal:compact-preserve`, `cargo test -p engine-core`, plus `drive bench kv/` for a real post-ingest get |
 | `destroyDb`, the `opfs-lsm-destroyed` row, the open lock, recovery rule 0, or the host's opens that never create | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `drive destroy`, then `power-loss-chrome --destroy`, then `kill-chrome --minutes 10` |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
@@ -214,10 +214,10 @@ pnpm --filter @opfs-lsm/kv formal:kv
 
 Exit 0. The log ends with `All 6 formal checks passed`. Each check prints a `PASS` line:
 
-- `PASS NoLostAcks`
+- `PASS NoLostAcks`, after two `broken variant caught` lines (orders that record the flush before its manifest is on disk)
 - `PASS WalOverSst` (on real `pointGet`)
 - `PASS ViewPin` (copy-on-write memtable pin present)
-- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, outputs claim the base manifest's marks only), after two `broken variant caught` lines
+- `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, a delete drops only in a bottom merge, outputs claim the base manifest's marks only), after three `broken variant caught` lines
 - `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after four `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eighteen `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it. It keeps the WAL database, the `opfs-lsm-destroyed` row and OPFS as three stores with no order between them.
 - `PASS RemoveClean` (`destroyDb` from every crash state leaves no WAL database and no file, and an open after it reads empty)
