@@ -166,6 +166,21 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port2.close();
   });
 
+  it("destroys over the port", async () => {
+    const fs = new MemoryFs();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: client });
+    await db.put(utf("k"), utf("v"));
+    await ingestDb(db);
+    await db.dangerousDestroy();
+    expect(await db.get(utf("k"))).toBeUndefined();
+    await db.close();
+    client.close();
+    port1.close();
+  });
+
   it("serializes concurrent ingest calls on one host", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
