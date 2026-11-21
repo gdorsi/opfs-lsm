@@ -3,6 +3,9 @@
  * Mirrors pointGetSst (newest level first) and the merge session's pick
  * (the smallest head key; on a tie the earlier, newer source).
  *
+ * Tombstones: a merge drops a winning delete only when no run below its
+ * output overlaps its inputs, so no older version of the key comes back.
+ *
  * Range deletes: a merge drops a winner the base manifest's marks cover,
  * and its output claims the base manifest's marks only. Every reader at or
  * past the install, whose marks join the base's and any later ones and
@@ -10,7 +13,8 @@
  *
  * Sync: latestSstEntry walks levels newest-first; the merge session and its
  * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
- * `< 0` in tests/oracle/merge-ts.ts).
+ * `< 0` in tests/oracle/merge-ts.ts); compact.ts passes `plan.bottom` as
+ * `dropTombstones`, and levels.ts sets it only when no deeper run overlaps.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -127,6 +131,47 @@ for (const runs of allRuns(2)) {
   }
 }
 
+// --- Tombstones. A run below the output keeps older versions the merge
+// never reads. A merge drops a winning delete only when it is a bottom
+// merge: no run below it overlaps the key span of its inputs.
+
+const visible = (e: Entry) => (e?.kind === "put" ? e.value : undefined);
+
+function tombstoneCounterexample(drop: (bottom: boolean) => boolean): string | undefined {
+  for (const runs of allRuns(2)) {
+    const span = KEYS.filter((k) => runs.some((r) => r[k] !== undefined));
+    const merged = mergeCorrect(runs);
+    for (const [below] of allRuns(1)) {
+      if (!below) continue;
+      const bottom = !KEYS.some((k) => below[k] !== undefined && k >= span[0]! && k <= span.at(-1)!);
+      const out: Run = {};
+      for (const k of KEYS) {
+        const e = merged[k];
+        if (e !== undefined && !(e.kind === "del" && drop(bottom))) out[k] = e;
+      }
+      for (const k of KEYS) {
+        const before = visible(layerGet([...runs, below], k));
+        const after = visible(layerGet([out, below], k));
+        if (before !== after) return `key=${k} runs=${JSON.stringify(runs)} below=${JSON.stringify(below)} before=${before} after=${after}`;
+      }
+      if (drop === dropAtBottom) cases++;
+    }
+  }
+  return undefined;
+}
+
+const dropAtBottom = (bottom: boolean) => bottom;
+const tombstoneBug = tombstoneCounterexample(dropAtBottom);
+if (tombstoneBug) {
+  console.error(`FAIL CompactPreserve (tombstones): ${tombstoneBug}`);
+  process.exit(1);
+}
+if (!tombstoneCounterexample(() => true)) {
+  console.error("FAIL CompactPreserve (tombstones): broken variant not caught: a merge with a run below it drops a delete");
+  process.exit(1);
+}
+console.log("  broken variant caught: a merge with a run below it drops a delete");
+
 // --- Range deletes.
 //
 // One key, three versions: two merge inputs and an older run the merge does
@@ -228,6 +273,22 @@ if (!appliesMarksInSource()) {
   process.exit(1);
 }
 
+/** A merge drops a delete only when its plan is bottom: no deeper run overlaps the inputs. */
+function dropsTombstonesAtBottomInSource(): boolean {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
+  return (
+    /dropTombstones:\s*plan\.bottom,/.test(read("../../src/host/compact.ts")) &&
+    /return\s*\(level === undefined \|\| level > outputLevel\) && !inputs\.includes\(r\);[\s\S]*?bottom:\s*!below\.some\(\(r\) => overlaps\(r\.range, range\)\)/.test(read("../../src/store/levels.ts")) &&
+    /Kind::Del if self\.drop_tombstones => \{\}/.test(read("../../../../crates/engine-core/src/merge.rs")) &&
+    /if \(e\.kind === "del" && this\.dropTombstones\)/.test(read("../../tests/oracle/merge-ts.ts"))
+  );
+}
+if (!dropsTombstonesAtBottomInSource()) {
+  console.error("FAIL CompactPreserve — compact.ts / levels.ts / merge.rs / merge-ts.ts no longer drop a delete only in a bottom merge");
+  process.exit(1);
+}
+
 if (!newestFirstInSource()) {
   console.error(
     "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
@@ -236,5 +297,5 @@ if (!newestFirstInSource()) {
 }
 
 console.log(
-  `PASS CompactPreserve — ${cases} run lists and range delete layouts, newest-first latestSstEntry, newer-wins merge sessions, covered winners dropped and only the base marks claimed`,
+  `PASS CompactPreserve — ${cases} run lists and range delete layouts, newest-first latestSstEntry, newer-wins merge sessions, deletes dropped only in a bottom merge, covered winners dropped and only the base marks claimed`,
 );
