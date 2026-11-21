@@ -5,7 +5,7 @@ import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } fr
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
 import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
-import { PointReader, SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
+import { SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
 /**
@@ -281,17 +281,12 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     private readonly encode: (doc: unknown) => EncodedDoc,
   ) {}
 
-  /** Point reads need no snapshot: a read that straddles a `clear` or a schema change is a read before it. */
-  private async live(): Promise<PointReader<T>> {
-    return new PointReader(this.store.kv, await this.store.collectionNow(this.name));
+  get(id: string): Promise<T | undefined> {
+    return this.view((snap) => snap.get(id));
   }
 
-  async get(id: string): Promise<T | undefined> {
-    return (await this.live()).get(id);
-  }
-
-  async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
-    return (await this.live()).getMany(ids);
+  getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
+    return this.view((snap) => snap.getMany(ids));
   }
 
   put(doc: In): Promise<void> {
@@ -406,9 +401,12 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
   }
 
   view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R> {
-    return this.store.kv.view(async (snap) =>
-      body(new SnapshotReader<T, Ix>(snap, await this.store.collectionAt(snap, this.name))),
-    );
+    return this.store.kv.view((snap) => {
+      const coll = this.store.collectionAt(snap, this.name);
+      return coll instanceof Promise
+        ? coll.then((c) => body(new SnapshotReader<T, Ix>(snap, c)))
+        : body(new SnapshotReader<T, Ix>(snap, coll));
+    });
   }
 
   changes(listener: (change: CollectionChange<T>) => void): () => void {

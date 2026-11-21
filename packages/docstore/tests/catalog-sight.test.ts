@@ -1,9 +1,10 @@
-import type { Db } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type Db, type ViewSnapshot } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it } from "vitest";
+import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
 import { collection, defineSchema, openDocStore } from "../src/index.js";
-import { CATALOG_KEY } from "../src/keys.js";
-import { codeOf, freshName, gate, openKv, recording } from "./harness.js";
+import { CATALOG_KEY, bytesEqual } from "../src/keys.js";
+import { codeOf, freshName, gate, openKv, recording, storedCatalog, wrap, wrapViews } from "./harness.js";
 
 type Todo = { id: string; title?: string; done?: boolean };
 
@@ -52,6 +53,85 @@ describe("a reader and the catalog", () => {
     expect(await reader.count({ index: "byTitle" })).toBe(2);
     expect(await reader.put({ id: "c", title: "z", done: true })).toBeUndefined();
     expect(await reader.count({ index: "byTitle" })).toBe(3);
+  });
+
+  it("reads what another handle cleared and wrote between this store's read of the catalog and its subscription", async () => {
+    const name = freshName();
+    const writer = (await openDocStore(await kvOn(name), v1)).collection("todos");
+    await writer.put({ id: "a", title: "x" });
+    const kv = await kvOn(name);
+    let raced = false;
+    const racing = wrap(kv, {
+      get: async (key) => {
+        const value = await kv.get(key);
+        if (raced) return value;
+        raced = true;
+        await writer.clear();
+        await writer.put({ id: "a", title: "y" });
+        await kv.sync();
+        return value;
+      },
+    });
+    const reader = (await openDocStore(racing, v1)).collection("todos");
+    expect(raced).toBe(true);
+    expect(await reader.get("a")).toEqual({ id: "a", title: "y" });
+    expect((await reader.query({ index: "byTitle" })).docs).toEqual([{ id: "a", title: "y" }]);
+  });
+
+  it.each<[string, (tx: BatchTx) => void]>([
+    ["deleted the catalog", (tx) => tx.delete(CATALOG_KEY)],
+    ["range-deleted the catalog", (tx) => tx.deleteRange(prefixBound(CATALOG_KEY))],
+  ])("reads a store as empty once another layer %s", async (_, remove) => {
+    const kv = await kvOn(freshName());
+    const store = await openDocStore(kv, v1);
+    const todos = store.collection("todos");
+    await todos.put({ id: "a", title: "x" });
+    // A second collection id, so the rows are not where a store with no catalog looks.
+    await todos.clear();
+    await store.whenIdle();
+    await todos.put({ id: "a", title: "y" });
+    expect(await todos.get("a")).toEqual({ id: "a", title: "y" });
+
+    await kv.batch(remove);
+    expect(await todos.get("a")).toBeUndefined();
+    expect(await todos.getMany(["a"])).toEqual([undefined]);
+    expect(await todos.count({ index: "byTitle" })).toBe(0);
+  });
+
+  it("throws schema from every read once another layer stored a catalog of another format", async () => {
+    const kv = await kvOn(freshName());
+    const todos = (await openDocStore(kv, v1)).collection("todos");
+    await todos.put({ id: "a", title: "x" });
+    expect(await todos.get("a")).toEqual({ id: "a", title: "x" });
+
+    await kv.put(CATALOG_KEY, encodeCatalog({ ...(await storedCatalog(kv)), format: 99 } as unknown as StoredCatalog));
+    expect(await codeOf(todos.get("a"))).toBe("schema");
+    expect(await codeOf(todos.getMany(["a"]))).toBe("schema");
+    expect(await codeOf(todos.count({ index: "byTitle" }))).toBe("schema");
+  });
+
+  it("reads the catalog once while the only writes are its own handle's", async () => {
+    const kv = await kvOn(freshName());
+    let catalogReads = 0;
+    const counted = wrapViews(kv, (snap) => ({
+      getMany: ((...args: Parameters<ViewSnapshot["getMany"]>) => {
+        if (bytesEqual(args[0][0], CATALOG_KEY)) catalogReads++;
+        return snap.getMany(...args);
+      }) as ViewSnapshot["getMany"],
+    }));
+    const store = await openDocStore(counted, v1);
+    const todos = store.collection("todos");
+    await todos.put({ id: "a", title: "x" });
+    expect(await todos.get("a")).toEqual({ id: "a", title: "x" });
+    await todos.put({ id: "b", title: "y" });
+    expect(await todos.getMany(["a", "b"])).toEqual([{ id: "a", title: "x" }, { id: "b", title: "y" }]);
+    expect(await todos.count({ index: "byTitle" })).toBe(2);
+    await todos.clear();
+    await todos.put({ id: "c", title: "z" });
+    await store.whenIdle();
+    expect(await todos.get("c")).toEqual({ id: "c", title: "z" });
+    expect((await todos.query({ index: "byTitle" })).docs).toEqual([{ id: "c", title: "z" }]);
+    expect(catalogReads).toBe(1);
   });
 });
 
