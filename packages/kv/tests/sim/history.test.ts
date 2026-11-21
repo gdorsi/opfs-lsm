@@ -66,6 +66,26 @@ describe("history checker", () => {
     expect(() => checkHistory(h)).toThrow(/sync|not the fold/);
   });
 
+  it("rejects a read after open that misses a write acked before the open was called", () => {
+    const h = new History();
+    const a = session(h);
+    write(h, a, [put("k", "1")]);
+    const b = session(h);
+    get(h, b, "k", undefined);
+    expect(() => checkHistory(h)).toThrow(/open barrier/);
+  });
+
+  it("rejects an update that wrote nothing and missed a write acked before it was called", () => {
+    const h = new History();
+    const a = session(h);
+    const b = session(h);
+    write(h, a, [put("k", "1")]);
+    const u = h.invoke({ kind: "update", session: b, keys: [utf("k")], ops: [] });
+    u.seen = [undefined];
+    h.respond(u);
+    expect(() => checkHistory(h)).toThrow(/update catches up/);
+  });
+
   it("allows a sync to miss a write acked after the sync was called", () => {
     const h = new History();
     const a = session(h);
