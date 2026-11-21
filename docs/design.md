@@ -184,13 +184,14 @@ byte layout is in [sst-format.md](sst-format.md).
 
 ### Reading a run
 
-A tab holds each run of its installed generation open and reads it on demand. The first read
-loads the footer, the bloom filter and the block index. Each later read loads the 32 KB page of
-whole blocks that it needs. Reads of one run issued in one turn share one file read, unless they
-are over 128 KiB apart or the read would pass 1 MiB. A scan past its first page reads ahead
+A tab holds each run of its installed generation open and reads it on demand. The first read loads
+the footer, the bloom filter and the block index. Each later read loads the 32 KB page of whole
+blocks that it needs. Reads of one run issued in one turn share one file read, unless they are over
+128 KiB apart or the read would pass 1 MiB. Pages that fill three quarters of a file read share its
+buffer, so the cache can hold a third more than it counts. A scan past its first page reads ahead
 toward its bound: when at most half a window is asked past the page it enters, it doubles the
-window, from 1 page up to 32, and asks for every page up to a window past that page. All of it
-lives in one page cache per tab, capped by `openDb({ cacheBytes })`, 256 MiB by default.
+window, from 1 page up to 32, and asks for every page up to a window past that page. All of it lives
+in one page cache per tab, capped by `openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads
 again, keeping what it read outside the cap. A value over the cap is never cached. A point get:
@@ -238,12 +239,11 @@ A key and a value stay in place in the block bytes, which are never written once
 the scan yields their entry. One it drops, counts or passes over for `offset` copies no value,
 and its key only if it waits through several compares. `count(range)` runs the same scan.
 
-Every read judges the versions it finds in runs against one read point: the marks of the
-installed generation joined with those of the memtable, taken in the same turn as the layers it
-reads. A version from a run is skipped when a mark covers it (see
-[Range deletes](#range-deletes)), and then an older source does not win in its place. A scan
-skips a run unread when one mark holds all its keys within the scan's bounds, with `through` at
-or past the run's `marksThrough`.
+Every read judges the versions it finds in runs against one read point: the marks of the installed
+generation joined with those of the memtable, taken in the same turn as the layers it reads. A
+version from a run is skipped when a mark covers it (see [Range deletes](#range-deletes)), and then
+an older source does not win in its place. A scan skips a run unread when one mark holds all its
+keys within the scan's bounds, with `through` at or past the run's `marksThrough`.
 
 A `view` pins `appliedThrough`, the installed generation, the memtable chunks and the read
 point. Writes that commit during the callback are invisible to it. `snap.rangeJoin` scans a
