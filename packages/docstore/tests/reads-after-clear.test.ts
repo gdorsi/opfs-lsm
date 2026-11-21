@@ -48,6 +48,25 @@ describe("get and getMany after another handle cleared the collection", () => {
     expect(await reader.c.get("x")).toEqual({ id: "x", a: 2 });
   });
 
+  it("read what a query on the same handle just read, while another layer's update catches the handle up", async () => {
+    const name = freshName();
+    const writer = await handle(name);
+    const reader = await handle(name, openKvWithoutBus);
+    await writer.c.put({ id: "x", a: 1 });
+    await reader.kv.sync();
+    expect(await reader.c.get("x")).toEqual({ id: "x", a: 1 });
+
+    await writer.c.clear();
+    await writer.c.put({ id: "x", a: 2 });
+    await writer.store.whenIdle();
+
+    const other = reader.kv.update([Uint8Array.of(1)], (_, tx) => tx.put(Uint8Array.of(1), Uint8Array.of(1)));
+    while ((await reader.c.query({})).docs[0]?.a !== 2) await new Promise((r) => setImmediate(r));
+    expect(await reader.c.get("x")).toEqual({ id: "x", a: 2 });
+    expect(await reader.c.getMany(["x"])).toEqual([{ id: "x", a: 2 }]);
+    await other;
+  });
+
   it("read them on a handle that opened its store before the clear and never read since", async () => {
     const name = freshName();
     const writer = await handle(name);
