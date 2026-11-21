@@ -2,7 +2,7 @@ import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { defineContender } from "../../core/types.ts";
 import { LIMITS, OPEN, STATUSES, type Comment, type Issue, type IssueCard, type IssueRef, type Label, type Project, type Status, type User } from "../../datasets/tracker/types.ts";
 import { kvCommon, openKv } from "../../page/kv.ts";
-import { changesOf, mergeTop } from "../../page/tracker.ts";
+import { changesOf } from "../../page/tracker.ts";
 
 const schema = defineSchema({
   version: 1,
@@ -37,7 +37,7 @@ export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,200 events when it has more",
+    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = query with a list of statuses in eq; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,200 events when it has more",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
@@ -116,31 +116,15 @@ export default defineContender({
           };
         },
         async triagePage({ projectId }) {
-          const page = await issues.view(async (snap) => {
-            const ranges = await Promise.all(OPEN.map((s) => snap.queryEntries({ index: "byTriage", eq: [projectId, s], limit: LIMITS.page })));
-            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => a.values[2] - b.values[2] || a.values[3] - b.values[3], LIMITS.page);
-            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
-          });
+          const { docs: page } = await issues.query({ index: "byTriage", eq: [projectId, OPEN], limit: LIMITS.page });
           const [ref, counts] = await Promise.all([refs(page), Promise.all(page.map((i) => comments.count({ index: "byIssue", eq: [i.id] })))]);
           return page.map((i, k) => ({ ...ref[k]!, status: i.status, priority: i.priority, comments: counts[k]! }));
         },
         async labelPage({ projectId, labelId }) {
-          const page = await issues.view(async (snap) => {
-            const ranges = await Promise.all(
-              OPEN.map((s) => snap.queryEntries({ index: "byLabel", eq: [labelId, projectId, s], reverse: true, limit: LIMITS.page })),
-            );
-            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => b.values[3] - a.values[3], LIMITS.page);
-            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
-          });
-          return cards(page);
+          return cards((await issues.query({ index: "byLabel", eq: [labelId, projectId, OPEN], reverse: true, limit: LIMITS.page })).docs);
         },
         async myIssues({ userId }) {
-          const page = await issues.view(async (snap) => {
-            const ranges = await Promise.all(OPEN.map((s) => snap.queryEntries({ index: "byAssignee", eq: [userId, s], reverse: true, limit: LIMITS.page })));
-            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => b.values[2] - a.values[2], LIMITS.page);
-            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
-          });
-          return cards(page);
+          return cards((await issues.query({ index: "byAssignee", eq: [userId, OPEN], reverse: true, limit: LIMITS.page })).docs);
         },
         recentActivity: async () => cards((await issues.query({ index: "byUpdated", reverse: true, limit: LIMITS.page })).docs),
         async assigneeLoad({ projectId }) {
