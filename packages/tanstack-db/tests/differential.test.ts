@@ -64,17 +64,23 @@ const docsArb = fc
   .uniqueArray(fc.constantFrom(...IDS), { minLength: 4, maxLength: 24 })
   .chain((ids) => fc.tuple(...ids.map((id) => fieldsArb.map((f): Doc => ({ id, ...f })))));
 
+/** `flip` puts the value on the left, as in `gt(3, d.n)`. */
 type Cond =
-  | { readonly op: "eq" | "gt" | "gte" | "lt" | "lte"; readonly field: "g" | "n"; readonly value: number }
-  | { readonly op: "gt" | "lt" | "eq"; readonly field: "s"; readonly value: string }
+  | { readonly op: "eq" | "gt" | "gte" | "lt" | "lte"; readonly field: "g" | "n"; readonly value: number; readonly flip: boolean }
+  | { readonly op: "gt" | "lt" | "eq"; readonly field: "s"; readonly value: string; readonly flip: boolean }
   | { readonly op: "in"; readonly field: "g"; readonly values: readonly number[] }
   | { readonly op: "eq"; readonly field: "k"; readonly value: boolean }
   | { readonly op: "ilike"; readonly pattern: string }
   | { readonly op: "or" | "not"; readonly value: number };
 
 const condArb: fc.Arbitrary<Cond> = fc.oneof(
-  fc.record({ op: fc.constantFrom("eq", "gt", "gte", "lt", "lte"), field: fc.constantFrom("g", "n"), value: fc.integer({ min: 0, max: 6 }) }),
-  fc.record({ op: fc.constantFrom("gt", "lt", "eq"), field: fc.constant("s"), value: fc.constantFrom(...STRINGS) }),
+  fc.record({
+    op: fc.constantFrom("eq", "gt", "gte", "lt", "lte"),
+    field: fc.constantFrom("g", "n"),
+    value: fc.integer({ min: 0, max: 6 }),
+    flip: fc.boolean(),
+  }),
+  fc.record({ op: fc.constantFrom("gt", "lt", "eq"), field: fc.constant("s"), value: fc.constantFrom(...STRINGS), flip: fc.boolean() }),
   fc.record({ op: fc.constant("in"), field: fc.constant("g"), values: fc.uniqueArray(fc.integer({ min: 0, max: 3 }), { maxLength: 3 }) }),
   fc.record({ op: fc.constant("eq"), field: fc.constant("k"), value: fc.boolean() }),
   fc.record({ op: fc.constant("ilike"), pattern: fc.constantFrom("%apple%", "%PIE%", "%e%", "%sky-b%", "% %", "%%", "blue") }),
@@ -147,7 +153,7 @@ function condition(c: Cond, d: any) {
       return not(eq(d.g, c.value));
     default: {
       const f = { eq, gt, gte, lt, lte }[c.op];
-      return f(d[c.field], c.value);
+      return c.flip ? f(c.value, d[c.field]) : f(d[c.field], c.value);
     }
   }
 }
