@@ -71,33 +71,44 @@ export function pointGet(
 }
 
 /**
- * Every key read, or one Miss for all the bytes they lack. `mems[i]` is the
- * memtable row of `keys[i]`. A value is a copy, or what `decode` makes of the
- * stored bytes: it runs once every key is found, so a retry decodes nothing
- * twice, and it must neither change the bytes nor keep them.
+ * A read of every key, to run again after each Miss: it returns every value,
+ * or one Miss for all the bytes they lack. `mems[i]` is the memtable row of
+ * `keys[i]`. A key one run found is not looked up again, so a retry costs
+ * the keys that missed, and every run must be given the same levels. A value
+ * is a copy, or what `decode` makes of the stored bytes: it runs once every
+ * key is found, so a retry decodes nothing twice, and it must neither change
+ * the bytes nor keep them.
  */
-export function readKeys<T = Uint8Array>(
+export function keysReader<T = Uint8Array>(
   mems: readonly (MemRow | undefined)[],
   keys: readonly Uint8Array[],
-  levels: readonly RunLevel[],
   at: Marks,
   decode?: (value: Uint8Array) => T,
-): Maybe<(T | undefined)[]> {
+): (levels: readonly RunLevel[]) => Maybe<(T | undefined)[]> {
   const found = new Array<MemRow | RecordWalker | undefined>(keys.length);
-  let misses: Miss[] | undefined;
-  for (let i = 0; i < keys.length; i++) {
-    const put = livePut(mems[i], levels, keys[i]!, at);
-    if (put instanceof Miss) (misses ??= []).push(put);
-    else found[i] = put;
-  }
-  if (misses) return allMissed(misses);
-  // Pushed, not assigned by index: a key with no value must be an element, not a hole.
-  const values: (T | undefined)[] = [];
-  for (let i = 0; i < keys.length; i++) {
-    const put = found[i];
-    values.push(put === undefined ? undefined : valueOfPut(put, decode));
-  }
-  return values;
+  let missed: number[] | undefined;
+  return (levels) => {
+    const misses: Miss[] = [];
+    const still: number[] = [];
+    const count = missed ? missed.length : keys.length;
+    for (let j = 0; j < count; j++) {
+      const i = missed ? missed[j]! : j;
+      const put = livePut(mems[i], levels, keys[i]!, at);
+      if (put instanceof Miss) {
+        misses.push(put);
+        still.push(i);
+      } else found[i] = put;
+    }
+    missed = still;
+    if (misses.length) return allMissed(misses);
+    // Pushed, not assigned by index: a key with no value must be an element, not a hole.
+    const values: (T | undefined)[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      const put = found[i];
+      values.push(put === undefined ? undefined : valueOfPut(put, decode));
+    }
+    return values;
+  };
 }
 
 /**

@@ -34,7 +34,7 @@ import type { OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
-import { countOf, pointGet, readKeys, runLevels, type RunLevel } from "./store/read.js";
+import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
@@ -1026,7 +1026,7 @@ class DbImpl implements Db {
     // With the levels `settleInstalled` holds, these rows are one state of the store, whatever lands while a page loads.
     const mems = this.memRows(ks);
     const at = this.point();
-    return this.settleInstalled((levels) => readKeys(mems, ks, levels, at, decode));
+    return this.settleInstalled(keysReader(mems, ks, at, decode));
   }
 
   private memRows(keys: readonly Uint8Array[]): (MemRow | undefined)[] {
@@ -1098,7 +1098,7 @@ class DbImpl implements Db {
     // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
     const plan = () => {
-      const values = held.attempt(() => readKeys(this.memRows(ks), ks, this.installed.levels, this.point()));
+      const values = held.attempt(() => keysReader(this.memRows(ks), ks, this.point())(this.installed.levels));
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
       const ops = collectBatch((tx) => {
@@ -1109,7 +1109,7 @@ class DbImpl implements Db {
     };
     const warm = () => {
       const at = this.point();
-      return this.settleInstalled((levels) => readKeys(this.memRows(ks), ks, levels, at), held);
+      return this.settleInstalled(keysReader(this.memRows(ks), ks, at), held);
     };
     if (this.pressure.full) await this.admit();
     await warm();

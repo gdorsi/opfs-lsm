@@ -17,6 +17,15 @@ const MAX_GAP = 128 * 1024;
 /** A span is copied out want by want, so its size is extra memory while it lands. */
 const MAX_SPAN = 1024 * 1024;
 /**
+ * Results share their span's buffer when they cover at least this share of
+ * it. One of them still held then keeps the whole span alive, so a holder
+ * that counts its bytes can be off by the rest of the span: at most
+ * `MAX_SPAN` per span, and under a third more than it counts when every
+ * result is held.
+ */
+const SHARE_NUMERATOR = 3;
+const SHARE_DENOMINATOR = 4;
+/**
  * Microtask turns with no new want before a batch is read. Callers that
  * woke on the same promise reach their read a turn or two apart.
  */
@@ -26,8 +35,8 @@ const QUIET_TURNS = 2;
  * A `read(offset, length)` over one immutable file that serves the reads
  * of a batch with one `readSpan` per run of nearby ranges. A batch is
  * every read issued before the microtask queue goes quiet, so a lone read
- * starts within the same task. Each result is its own buffer: dropping
- * one frees its bytes whatever happens to the others.
+ * starts within the same task. A result is its own buffer, or a view of
+ * the span when the batch wanted most of it (`SHARE_NUMERATOR`).
  */
 export function coalesceReads(readSpan: ReadSpan): (offset: number, length: number) => Promise<Uint8Array> {
   let batch: Want[] = [];
@@ -37,8 +46,14 @@ export function coalesceReads(readSpan: ReadSpan): (offset: number, length: numb
     const to = wants.reduce((end, w) => Math.max(end, w.offset + w.length), from);
     readSpan(from, to - from).then(
       (span) => {
-        if (wants.length === 1) return wants[0]!.resolve(new Uint8Array(span));
-        for (const w of wants) w.resolve(new Uint8Array(span.slice(w.offset - from, w.offset - from + w.length)));
+        let wanted = 0;
+        for (const w of wants) wanted += w.length;
+        // Wants that fill most of the span share its buffer: a copy each would cost a second pass over bytes that are nearly all kept anyway.
+        const share = wanted * SHARE_DENOMINATOR >= span.byteLength * SHARE_NUMERATOR;
+        for (const w of wants) {
+          const at = w.offset - from;
+          w.resolve(share ? new Uint8Array(span, at, w.length) : new Uint8Array(span.slice(at, at + w.length)));
+        }
       },
       (err: unknown) => {
         for (const w of wants) w.reject(err);

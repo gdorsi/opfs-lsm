@@ -390,16 +390,32 @@ function separatorLength(prevLast: Uint8Array, first: Uint8Array): number {
 const isBelow = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) < 0;
 const isAtOrAbove = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) >= 0;
 
-/** The last block whose separator is <= `key`, or -1 when `key` sorts before every block. */
+/**
+ * The last block whose separator is <= `key`, or -1 when `key` sorts before
+ * every block. Every separator between the two bounds shares with `key` the
+ * bytes both bounds share with it, so a compare starts past them, as in
+ * `lowerBoundKeys`.
+ */
 function findBlock(index: RunIndex, key: Uint8Array): number {
   const { sepBytes, sepEnd } = index;
   let lo = 0;
   let hi = sepEnd.length;
+  let below = 0;
+  let above = 0;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     const from = mid === 0 ? 0 : sepEnd[mid - 1]!;
-    if (compareAt(sepBytes, from, sepEnd[mid]! - from, key, 0) <= 0) lo = mid + 1;
-    else hi = mid;
+    const len = sepEnd[mid]! - from;
+    const n = Math.min(len, key.length);
+    let i = below < above ? below : above;
+    while (i < n && sepBytes[from + i] === key[i]) i++;
+    if (i < n ? sepBytes[from + i]! < key[i]! : len <= key.length) {
+      lo = mid + 1;
+      below = i;
+    } else {
+      hi = mid;
+      above = i;
+    }
   }
   return lo - 1;
 }

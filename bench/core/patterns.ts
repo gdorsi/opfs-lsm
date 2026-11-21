@@ -22,6 +22,7 @@ export const PATTERNS = {
   "kv-multi-get": "kv: a page of scattered keys in one read",
   "kv-zipfian-update": "kv: zipfian reads mixed with blind single-key updates",
   "kv-rmw": "kv: zipfian reads mixed with read-modify-writes of one key in one transaction",
+  "kv-large-values": "kv: every value of a store of 8 KiB values, under keys with a long shared prefix, read in bulk in a fresh tab, by neighbouring and by scattered keys",
   "kv-compaction-memory": "kv: the memory peak of compaction",
 
   "doc-ingest": "documents: an import, then sync batches that patch stored rows, with index upkeep",

@@ -76,12 +76,20 @@ describe("coalesceReads", () => {
     expect(f.spans).toEqual([[0, 100], [100, 100]]);
   });
 
-  it("gives each read its own buffer", async () => {
+  it("gives each read its own buffer when the batch wants little of the span", async () => {
     const f = file();
-    const [a, b] = await Promise.all([f.read(0, 100), f.read(0, 100)]);
-    a![0] = 255;
-    expect(b![0]).toBe(0);
+    const [a, b] = await Promise.all([f.read(0, 100), f.read(1000, 100)]);
+    expect(f.spans).toEqual([[0, 1100]]);
     expect(a!.buffer.byteLength).toBe(100);
+    expect(b!.buffer.byteLength).toBe(100);
+  });
+
+  it("shares the span between reads that want most of it", async () => {
+    const f = file();
+    const [a, b] = await Promise.all([f.read(0, 100), f.read(100, 100)]);
+    expect(a!.buffer).toBe(b!.buffer);
+    expect(a!.buffer.byteLength).toBe(200);
+    expect([a!.byteOffset, b!.byteOffset]).toEqual([0, 100]);
   });
 
   it("rejects the reads of a failed span and no others", async () => {
