@@ -525,6 +525,16 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("holds the host to the smallest maxWalBytes of the open tabs, whichever opened last", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    await open(host, fs, "small", 100);
+    const large = await open(host, fs, "large", 1e9);
+    await settle();
+    await large.put(utf("k"), new Uint8Array(150));
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(1), WAIT);
+  });
+
   it("flushes a quiet database once an eighth of maxWalBytes waits", async () => {
     const fs = new MemoryFs();
     const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
