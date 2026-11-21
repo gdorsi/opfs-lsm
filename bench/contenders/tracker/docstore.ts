@@ -30,7 +30,6 @@ const schema = defineSchema({
  */
 const WRITE_EVENTS = 1_200;
 
-const byUpdatedDesc = (a: Issue, b: Issue) => b.updatedAt - a.updatedAt;
 const distinct = <T>(xs: Iterable<T>) => [...new Set(xs)];
 const isOpen = (s: Status) => (OPEN as readonly Status[]).includes(s);
 
@@ -38,7 +37,7 @@ export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = one query per status, merged, or for ranges longer than a page, queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,200 events when it has more",
+    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = queryEntries per status merged on the index values, then getMany of the page; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,200 events when it has more",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
@@ -136,8 +135,12 @@ export default defineContender({
           return cards(page);
         },
         async myIssues({ userId }) {
-          const lists = await Promise.all(OPEN.map(async (s) => (await issues.query({ index: "byAssignee", eq: [userId, s], reverse: true, limit: LIMITS.page })).docs));
-          return cards(mergeTop(lists, byUpdatedDesc, LIMITS.page));
+          const page = await issues.view(async (snap) => {
+            const ranges = await Promise.all(OPEN.map((s) => snap.queryEntries({ index: "byAssignee", eq: [userId, s], reverse: true, limit: LIMITS.page })));
+            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => b.values[2] - a.values[2], LIMITS.page);
+            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
+          });
+          return cards(page);
         },
         recentActivity: async () => cards((await issues.query({ index: "byUpdated", reverse: true, limit: LIMITS.page })).docs),
         async assigneeLoad({ projectId }) {
