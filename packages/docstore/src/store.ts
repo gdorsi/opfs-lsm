@@ -80,10 +80,8 @@ export type WritePlan<R> = {
 
 export interface StoreCore {
   readonly kv: Db;
-  /** The collection in this handle's catalog, for a point read outside a snapshot. */
-  collectionNow(name: string): Promise<BoundCollection>;
-  /** The collection in the catalog that `snap` holds. */
-  collectionAt(snap: ViewSnapshot, name: string): Promise<BoundCollection>;
+  /** The collection in the catalog that `snap` holds. A promise only when the catalog has to be read. */
+  collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection>;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
   write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R>;
   clear(name: string): Promise<void>;
@@ -112,14 +110,15 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   /** What each declared collection's handle reports as `indexes`. */
   private readonly indexInfo: ReadonlyMap<string, ReadonlyMap<string, IndexInfo>>;
   /**
-   * `bound` may be behind the stored catalog: the next point read reads it
-   * again. Set by a kv gap, which may have skipped a catalog write, and at
-   * open, for a write between open's read and the subscription.
+   * The kv seq whose state has `bound` as its catalog, or NaN when none is
+   * known, as at open, whose catalog read has no seq. A handle reads one
+   * state at each seq, so a snapshot at this seq needs no catalog read. kv
+   * can read a record before it announces it, so a snapshot past this seq
+   * reads its own catalog.
    */
-  private stale = true;
-  private rereading: Promise<void> | undefined = undefined;
-  /** Catalog writes the feed delivered, so a reread that one overtook is dropped. */
-  private catalogWrites = 0;
+  private syncedAt = NaN;
+  /** Counts the calls of `move`, so a read can tell that none ran while it waited. */
+  private moves = 0;
 
   constructor(
     readonly kv: Db,
@@ -137,47 +136,39 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     });
   }
 
-  /** Keep `bound` at the catalog kv last announced, so point reads need not read it. */
+  /** The one place `bound` and `syncedAt` change, so they always change together. */
+  private move(bound: Bound, syncedAt: number): void {
+    this.bound = bound;
+    this.syncedAt = syncedAt;
+    this.moves++;
+  }
+
+  /** Move along the records kv announces. */
   private follow(event: ChangeEvent): void {
-    if (event.kind === "gap") this.stale = true;
-    if (event.kind !== "append") return;
+    // The catalog may have changed in records that kv never announced.
+    if (event.kind === "gap") this.move(this.bound, NaN);
+    // A read ahead of the feed bound a state that already holds a record at or below `syncedAt`.
+    if (event.kind !== "append" || event.seq <= this.syncedAt) return;
+    // A record with no catalog op has the catalog of the seq before it.
+    let next = event.seq === this.syncedAt + 1 ? this.bound : undefined;
     for (const op of event.ops) {
       if (op.type === "deleteRange") {
         const covers =
           compareBytes(op.start, CATALOG_KEY) <= 0 &&
           (op.endExclusive === undefined || compareBytes(op.endExclusive, CATALOG_KEY) > 0);
-        if (covers) this.stale = true;
+        if (covers) next = undefined;
         continue;
       }
       if (!bytesEqual(op.key, CATALOG_KEY)) continue;
-      this.catalogWrites++;
       try {
         // Copied: the bytes are a view of a memtable chunk, which `bound` would keep alive.
-        this.adopt(op.type === "put" ? op.value.slice() : undefined);
+        next = this.boundIn(op.type === "put" ? op.value.slice() : undefined);
       } catch {
-        // The reread throws it to the reader.
-        this.stale = true;
+        // A catalog this library cannot read: the read that meets it throws.
+        next = undefined;
       }
     }
-  }
-
-  async collectionNow(name: string): Promise<BoundCollection> {
-    while (this.stale || this.rereading) await (this.rereading ??= this.reread());
-    return collectionOf(this.bound, name);
-  }
-
-  private async reread(): Promise<void> {
-    this.stale = false;
-    const seen = this.catalogWrites;
-    try {
-      const bytes = await this.kv.get(CATALOG_KEY);
-      if (seen === this.catalogWrites) this.adopt(bytes);
-    } catch (err) {
-      this.stale = true;
-      throw err;
-    } finally {
-      this.rereading = undefined;
-    }
+    this.move(next ?? this.bound, next ? event.seq : NaN);
   }
 
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>, InputOf<S, C>> {
@@ -199,12 +190,20 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return Promise.all(builds);
   }
 
-  async collectionAt(snap: ViewSnapshot, name: string): Promise<BoundCollection> {
-    // Read where it is stored: every query asks, and the catalog is nearly always the one already bound.
-    const [bound] = await snap.getMany([CATALOG_KEY], (bytes) =>
+  collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection> {
+    return snap.seq === this.syncedAt ? collectionOf(this.bound, name) : this.readCatalog(snap, name);
+  }
+
+  private async readCatalog(snap: ViewSnapshot, name: string): Promise<BoundCollection> {
+    const moves = this.moves;
+    // Read where it is stored: the catalog is nearly always the one already bound.
+    const [read] = await snap.getMany([CATALOG_KEY], (bytes) =>
       sameCatalog(bytes, this.bound.bytes) ? this.bound : this.boundIn(bytes.slice()),
     );
-    return collectionOf(bound ?? this.boundIn(undefined), name);
+    const bound = read ?? this.boundIn(undefined);
+    // The store stood still since the snapshot was taken, so it holds no catalog newer than this one.
+    if (moves === this.moves) this.move(bound, snap.seq);
+    return collectionOf(bound, name);
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
@@ -235,7 +234,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
    * Apply a transition in one `update([CATALOG_KEY])`. Transitions return
    * undefined once applied, so a repeat writes nothing. `bound` holds the
    * result once this resolves: kv announces a write before it resolves it
-   * (the contract on kv's `ChangeEvent`), and `follow` adopts it.
+   * (the contract on kv's `ChangeEvent`), and `follow` binds it.
    */
   private async editCatalog(edit: (c: StoredCatalog, tx: BatchTx) => StoredCatalog | undefined): Promise<void> {
     await this.kv.update([CATALOG_KEY], ([stored], tx) => {
@@ -250,9 +249,11 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
-  /** Make `bytes` the catalog of point reads. Only a read of the newest catalog may call it: a snapshot's catalog can be older. */
+  /** Bind `bytes`, which a write read at the head of the log. kv does not say at which seq. */
   private adopt(bytes: Uint8Array | undefined): Bound {
-    return (this.bound = this.boundIn(bytes));
+    const bound = this.boundIn(bytes);
+    if (bound !== this.bound) this.move(bound, NaN);
+    return bound;
   }
 
   startJobs(): void {
