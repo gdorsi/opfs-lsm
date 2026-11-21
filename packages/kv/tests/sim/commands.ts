@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import type { Db, Entry } from "../../src/index.js";
+import { ClosedError, type Db, type Entry } from "../../src/index.js";
 import {
   openHarnessDb,
   destroyHarnessDb,
@@ -457,11 +457,44 @@ class CompactCmd implements Cmd {
   toString = () => "compact";
 }
 
+/**
+ * Every call on a handle that `close()` or `destroyDb` closed fails with
+ * `ClosedError` (README, "Errors"), whatever the handle held.
+ */
+async function expectClosed(db: Db): Promise<void> {
+  const key = KEYS[1]!;
+  const calls: Record<string, () => unknown> = {
+    get: () => db.get(key),
+    getMany: () => db.getMany([key]),
+    put: () => db.put(key, key),
+    delete: () => db.delete(key),
+    batch: () => db.batch(() => {}),
+    update: () => db.update([key], () => undefined),
+    range: () => db.range()[Symbol.asyncIterator]().next(),
+    count: () => db.count(),
+    view: () => db.view(() => undefined),
+    changes: () => db.changes(() => {}),
+    onStorageFull: () => db.onStorageFull(async () => {}),
+    sync: () => db.sync(),
+    dangerousDestroy: () => db.dangerousDestroy(),
+  };
+  for (const [name, call] of Object.entries(calls)) {
+    let failed: unknown;
+    try {
+      await call();
+    } catch (err) {
+      failed = err;
+    }
+    expect(failed, `${name} on a closed handle`).toBeInstanceOf(ClosedError);
+  }
+}
+
 /** Close the handle and open a new one. No crash: every acked write must be there. */
 class ReopenCmd implements Cmd {
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     await r.db.close();
+    await expectClosed(r.db);
     await r.open();
     m.reader.synced(m.oracle.head);
   }
@@ -478,6 +511,7 @@ class RemoveCmd implements Cmd {
   async run(m: Model, r: Sut): Promise<void> {
     r.release();
     await destroyHarnessDb({ name: r.name, fs: r.fs, ingest: createLocalIngestClient(r.host) });
+    await expectClosed(r.db);
     m.oracle.append([{ type: "deleteRange", start: new Uint8Array(0) }]);
     await r.open();
     m.reader.synced(m.oracle.head);
