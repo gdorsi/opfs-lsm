@@ -105,12 +105,12 @@ test("a locale order is still read from the index, marked so a read meeting a st
   ]);
 });
 
-test("a like on a text index's text reads that index with the pattern's words", () => {
+test("a like on a text index's text reads that index with what each word of the pattern keeps under NFC", () => {
   const where = and(eq(ref("deleted"), false), ilike(ref("title"), "%Bug fix%"));
   assert.deepEqual(plan({ where, orderBy: desc("modified"), limit: 5 }), [
     {
       kind: "ranges",
-      ranges: [{ index: "search", eq: [false], match: "bug fix", reverse: true }],
+      ranges: [{ index: "search", eq: [false], match: "bu fi", reverse: true }],
       first: { order: { path: "modified", reverse: true, nulls: "last", lexical: true }, limit: 5 },
     },
   ]);

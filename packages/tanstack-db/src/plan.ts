@@ -316,13 +316,14 @@ function isScalar(v: unknown): v is Scalar {
   return typeof v === "string" && v.isWellFormed();
 }
 
-const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
-
-/** docstore's text words. Each word of a like pattern occurs inside one word of every text the pattern matches. */
-function wordsOf(text: string): string[] {
-  return text
-    .normalize("NFC")
-    .toLowerCase()
-    .split(NON_WORD)
+/**
+ * Words that occur inside one word of every text a like pattern matches, as the text index holds it: NFC, lower
+ * case. TanStack matches the raw text, which need not be NFC. A run of ASCII letters and digits keeps its form under
+ * NFC, all but its last character, which may compose with a combining mark that follows it in the text.
+ */
+function wordsOf(pattern: string): string[] {
+  return pattern
+    .split(/[^A-Za-z0-9]+/)
+    .map((run) => run.slice(0, -1).toLowerCase())
     .filter((w) => w !== "");
 }
