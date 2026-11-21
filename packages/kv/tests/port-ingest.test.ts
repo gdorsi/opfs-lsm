@@ -181,6 +181,23 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port1.close();
   });
 
+  it("stops holding the host to a tab's maxWalBytes once that tab closes", async () => {
+    const fs = new MemoryFs();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const small = await openHarnessDb({ name: "port-db", writerId: "small", fs, ingest: client, maxWalBytes: 100 });
+    await small.close();
+    const large = await openHarnessDb({ name: "port-db", writerId: "large", fs, ingest: client, maxWalBytes: 1e9 });
+    await new Promise((r) => setTimeout(r, 100));
+    await large.put(utf("k"), new Uint8Array(150));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await large.close();
+    client.close();
+    port1.close();
+  });
+
   it("serializes concurrent ingest calls on one host", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);
