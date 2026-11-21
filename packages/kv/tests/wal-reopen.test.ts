@@ -49,4 +49,21 @@ describe("reopen", () => {
     expect(seen).toHaveLength(n);
     await reader.close();
   });
+
+  it("reopens every acked put from a WAL tail longer than one read", async () => {
+    const writer = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
+    // The tail is read in ranges of 25,000 seqs.
+    const n = 25_001;
+    const key = (i: number) => enc.encode(`k${String(i).padStart(5, "0")}`);
+    const seqs = await Promise.all(Array.from({ length: n }, (_, i) => writer.put(key(i), enc.encode(`v${i}`))));
+    expect(seqs.at(-1)).toBe(n);
+    await writer.close();
+
+    const reader = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w2", maxWalBytes: 1 << 30 });
+    expect(await reader.count()).toBe(n);
+    for (const i of [0, 24_999, 25_000]) {
+      expect(dec.decode(await reader.get(key(i)))).toBe(`v${i}`);
+    }
+    await reader.close();
+  });
 });
