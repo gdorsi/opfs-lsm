@@ -126,10 +126,14 @@ export default defineContender({
           return page.map((i, k) => ({ ...ref[k]!, status: i.status, priority: i.priority, comments: counts[k]! }));
         },
         async labelPage({ projectId, labelId }) {
-          const lists = await Promise.all(
-            OPEN.map(async (s) => (await issues.query({ index: "byLabel", eq: [labelId, projectId, s], reverse: true, limit: LIMITS.page })).docs),
-          );
-          return cards(mergeTop(lists, byUpdatedDesc, LIMITS.page));
+          const page = await issues.view(async (snap) => {
+            const ranges = await Promise.all(
+              OPEN.map((s) => snap.queryEntries({ index: "byLabel", eq: [labelId, projectId, s], reverse: true, limit: LIMITS.page })),
+            );
+            const top = mergeTop(ranges.map((r) => r.entries), (a, b) => b.values[3] - a.values[3], LIMITS.page);
+            return (await snap.getMany(top.map((e) => e.id))) as Issue[];
+          });
+          return cards(page);
         },
         async myIssues({ userId }) {
           const lists = await Promise.all(OPEN.map(async (s) => (await issues.query({ index: "byAssignee", eq: [userId, s], reverse: true, limit: LIMITS.page })).docs));
