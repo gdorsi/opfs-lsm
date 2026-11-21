@@ -671,6 +671,7 @@ class ViewCmd extends SlotCmd {
   async run(_m: Model, w: World): Promise<void> {
     await w.start(this.slot, "view", { reads: [] as ViewRead[] }, (db, op) =>
       db.view(async (snap) => {
+        op.seq = snap.seq;
         for (const read of this.reads) {
           await w.yield(`${this.slot} view pause`);
           if (read.kind === "get") {

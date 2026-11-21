@@ -223,6 +223,7 @@ export class Reader {
       }
     };
     return {
+      seq: (seq) => narrow(seq >= floor && seq <= this.oracle.head ? [seq] : [], () => `snap.seq = ${seq}`),
       get: (key, observed) =>
         narrow(this.oracle.getCandidates(key, observed, floor), () =>
           `get(${show(key)}) = ${showValue(observed)}`,
@@ -248,6 +249,8 @@ export class Reader {
 }
 
 export type ViewCheck = {
+  /** The view's `snap.seq`: its reads are the fold of exactly that prefix. */
+  seq(seq: number): void;
   get(key: Uint8Array, observed: Uint8Array | undefined): void;
   range(range: OracleRange, observed: readonly OracleEntry[]): void;
   count(range: OracleRange, n: number): void;

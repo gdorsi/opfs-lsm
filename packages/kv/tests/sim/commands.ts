@@ -382,6 +382,7 @@ class ViewCmd implements Cmd {
   async run(m: Model, r: Sut): Promise<void> {
     const check = m.reader.view();
     await r.db.view(async (snap) => {
+      check.seq(snap.seq);
       for (let i = 0; i <= this.reads.length; i++) {
         if (i === this.writeAt) {
           const ops = opsOf(m, [this.op]);
