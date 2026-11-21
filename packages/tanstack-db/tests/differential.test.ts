@@ -68,7 +68,7 @@ const docsArb = fc
 type Cond =
   | { readonly op: "eq" | "gt" | "gte" | "lt" | "lte"; readonly field: "g" | "n"; readonly value: number; readonly flip: boolean }
   | { readonly op: "gt" | "lt" | "eq"; readonly field: "s"; readonly value: string; readonly flip: boolean }
-  | { readonly op: "in"; readonly field: "g"; readonly values: readonly number[] }
+  | { readonly op: "in"; readonly field: "g" | "n"; readonly values: readonly (number | null)[] }
   | { readonly op: "eq"; readonly field: "k"; readonly value: boolean }
   | { readonly op: "ilike"; readonly pattern: string }
   | { readonly op: "or" | "not"; readonly value: number };
@@ -81,7 +81,11 @@ const condArb: fc.Arbitrary<Cond> = fc.oneof(
     flip: fc.boolean(),
   }),
   fc.record({ op: fc.constantFrom("gt", "lt", "eq"), field: fc.constant("s"), value: fc.constantFrom(...STRINGS), flip: fc.boolean() }),
-  fc.record({ op: fc.constant("in"), field: fc.constant("g"), values: fc.uniqueArray(fc.integer({ min: 0, max: 3 }), { maxLength: 3 }) }),
+  fc.record({
+    op: fc.constant("in"),
+    field: fc.constantFrom("g", "n"),
+    values: fc.uniqueArray(fc.option(fc.integer({ min: 0, max: 6 }), { nil: null, freq: 6 }), { maxLength: 3 }),
+  }),
   fc.record({ op: fc.constant("eq"), field: fc.constant("k"), value: fc.boolean() }),
   fc.record({ op: fc.constant("ilike"), pattern: fc.constantFrom("%apple%", "%PIE%", "%e%", "%sky-b%", "% %", "%%", "blue") }),
   fc.record({ op: fc.constantFrom("or", "not"), value: fc.integer({ min: 0, max: 3 }) }),
@@ -144,7 +148,7 @@ const writeArb: fc.Arbitrary<Write> = fc.record({
 function condition(c: Cond, d: any) {
   switch (c.op) {
     case "in":
-      return inArray(d.g, [...c.values]);
+      return inArray(d[c.field], [...c.values]);
     case "ilike":
       return ilike(d.t, c.pattern);
     case "or":
