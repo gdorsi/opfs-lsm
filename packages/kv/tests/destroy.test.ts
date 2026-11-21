@@ -428,6 +428,40 @@ describe("destroyDb", () => {
     if (seq !== undefined) expect(seq).toBeLessThan(row!.head);
   });
 
+  it("fails with ClosedError a write that waited behind an append in flight", async () => {
+    const name = "queued";
+    const { open, destroy } = storage(undefined, name);
+    const db = await open();
+    await db.put(enc.encode("k"), enc.encode("0"));
+    const closed = new Promise<void>((resolve) => db.changes((event) => event.kind === "closed" && resolve()));
+
+    // Another context's readwrite transaction on `wal` holds the handle's next group until it is let go.
+    const other = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open(`opfs-lsm-wal/${name}`);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    other.onversionchange = () => other.close();
+    let held = true;
+    const tx = other.transaction("wal", "readwrite");
+    const keepBusy = () => {
+      if (held) tx.objectStore("wal").get(0).onsuccess = keepBusy;
+    };
+    keepBusy();
+
+    const first = db.put(enc.encode("a"), enc.encode("1")).catch((err: unknown) => err);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The first group commits, so this one waits for it.
+    const second = db.put(enc.encode("b"), enc.encode("2")).catch((err: unknown) => err);
+    const removing = destroy();
+    await closed;
+    held = false;
+    await removing;
+
+    expect(await first).toBe(2);
+    expect(await second).toBeInstanceOf(ClosedError);
+  });
+
   it("starts a database born again under the name past every seq and manifest number the old one used", async () => {
     const name = "reborn";
     const { open, destroy } = storage(undefined, name);
