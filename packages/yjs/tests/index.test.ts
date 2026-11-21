@@ -120,7 +120,10 @@ test("a merge that starts while this doc's own updates are in flight replaces ev
   // The merge fires on the next macrotask, before the next 500 puts land.
   open.p.trimDelayMs = 0;
   for (let i = 500; i < 1000; i++) open.doc.getText("t").insert(i, "x");
-  await sleep(20);
+  // This timer is set after the merge's, so it fires after the merge started. The flush then waits for the merge,
+  // which a destroy would cut off.
+  await sleep(0);
+  await open.p.flush();
   await open.p.destroy();
 
   const again = await reopen(db, "doc", 1_000_000);
