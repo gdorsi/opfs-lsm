@@ -507,6 +507,24 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("flushes at maxWalBytes again once a flush lands after a failed one", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { fs, state } = l0Fs();
+    state.fail = true;
+    const db = await open(new EngineHost(() => fs), fs, "a", 100);
+    await db.put(utf("a"), new Uint8Array(120));
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(1), WAIT);
+
+    state.fail = false;
+    await db.put(utf("b"), new Uint8Array(120));
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(2), WAIT);
+
+    await db.put(utf("c"), new Uint8Array(120));
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(3), WAIT);
+    expect(errors).toHaveBeenCalledTimes(1);
+    await db.close();
+  });
+
   it("flushes a quiet database once an eighth of maxWalBytes waits", async () => {
     const fs = new MemoryFs();
     const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
