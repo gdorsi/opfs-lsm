@@ -17,6 +17,8 @@ const persistence = new KvPersistence(db, "note-1", doc);
 await persistence.whenSynced;
 ```
 
+Content the doc already holds when you construct the persistence is stored too, as one entry.
+
 ## Merging
 
 Each update is one kv entry, and a load replays every entry of its doc. Once a doc has 500 entries or more and has had no update for a second, they are merged into one, whether it reached 500 at load or while open. Loading never waits on a merge. The fourth argument sets the threshold, and `trimDelayMs` the wait.
