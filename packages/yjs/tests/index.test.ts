@@ -38,6 +38,23 @@ test("updates round-trip and documents stay apart", async () => {
   await db.close();
 });
 
+test("content the doc held before the persistence was attached is stored", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "a");
+  seed.doc.getMap("m").set("stored", 1);
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  doc.getMap("m").set("before", 1);
+  const p = new KvPersistence(db, "a", doc);
+  await p.whenSynced;
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.deepEqual(again.doc.getMap("m").toJSON(), { before: 1, stored: 1 });
+});
+
 test("a doc loaded at the trim size merges its updates into one once it goes quiet", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const first = await reopen(db, "doc", 10);
