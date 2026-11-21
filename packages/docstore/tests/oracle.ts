@@ -58,7 +58,13 @@ function inBound(v: Scalar, q: QueryInput): boolean {
   return true;
 }
 
-/** What `query(q)` returns without `limit` and `after`: the ids, then the documents, in result order. */
+/**
+ * What `query(q)` returns without `limit` and `after`: the ids, then the documents, in result order.
+ * A slot of `eq` is a value or a list of them, and an entry stands for its document under one of
+ * the combinations. The documents come in the order of the values after `eq`, then by id. An
+ * entry equal to another there is one document under two combinations: it comes once, with the
+ * entry of the smallest combination going forward and of the largest going back.
+ */
 export function expected(docs: readonly Doc[], ix: ModelIndex | undefined, q: QueryInput): Hit[] {
   const all = ix
     ? indexOrder(docs, ix)
@@ -66,11 +72,18 @@ export function expected(docs: readonly Doc[], ix: ModelIndex | undefined, q: Qu
   const eq = q.eq ?? [];
   const words = q.match === undefined ? [] : wordsOf(q.match);
   const out = all.filter((h) => {
-    if (eq.some((v, i) => compareScalar(h.values[i]!, v) !== 0)) return false;
+    if (eq.some((slot, i) => !(Array.isArray(slot) ? slot : [slot]).some((v) => compareScalar(h.values[i]!, v) === 0))) return false;
     if (eq.length < h.values.length && !inBound(h.values[eq.length]!, q)) return false;
     if (ix?.kind !== "text" || words.length === 0) return true;
     const have = wordsOf(at(h.doc, ix.text) as string);
     return words.every((w) => have.some((word) => word.includes(w)));
   });
-  return q.reverse ? out.reverse() : out;
+  const tail = (h: Hit) => h.values.slice(eq.length);
+  const same = (a: Hit, b: Hit | undefined) => b !== undefined && a.id === b.id && compareTuple(tail(a), tail(b)) === 0;
+  out.sort(
+    (a, b) =>
+      compareTuple(tail(a), tail(b)) || compareCodePoints(a.id, b.id) || compareTuple(a.values.slice(0, eq.length), b.values.slice(0, eq.length)),
+  );
+  const once = out.filter((h, i) => !same(h, out[i + (q.reverse ? 1 : -1)]));
+  return q.reverse ? once.reverse() : once;
 }

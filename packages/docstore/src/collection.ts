@@ -73,7 +73,9 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   /**
    * One page of documents in index order (`reverse`: descending). `next` is
    * set iff more entries follow; pass it as `after`. A multi index returns a
-   * document once per matching element.
+   * document once per matching element. A slot of `eq` can be a list of
+   * values: the order is then that of the fields after `eq`, then the id, and
+   * a document found under two of the values comes once.
    */
   query(q: Query<T, Ix>): Promise<Page<T>>;
   /** As `query`, without reading the documents. */
@@ -85,7 +87,7 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPageOf<T, Ix, I>>;
-  /** How many entries `query` would walk, from `offset` and stopping at `limit` if given. */
+  /** How many results `query` would return, from `offset` and stopping at `limit` if given. */
   count(q: Query<T, Ix>): Promise<number>;
 
   /**

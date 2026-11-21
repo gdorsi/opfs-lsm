@@ -50,7 +50,7 @@ function dedupe<T>(items: readonly T[], keyOf: (t: T) => Uint8Array): T[] {
 
 /** What kv's `range` returns for `plan`'s range over `entries`. */
 function kvScan(entries: readonly { key: Uint8Array; value: Uint8Array }[], q: QueryInput, target: ScanTarget) {
-  const range = scanPlan(target, q);
+  const { range } = scanPlan(target, q).ranges[0]!;
   const hits = [...entries]
     .sort((a, b) => compareBytes(a.key, b.key))
     .filter((e) => compareBytes(e.key, range.start!) >= 0 && compareBytes(e.key, range.endExclusive!) < 0);
@@ -132,7 +132,7 @@ describe("scanPlan", () => {
           const target = indexTarget(ix);
           const k = q.eq?.length ?? 0;
           const expected = ix.entries
-            .filter((e) => e.values.slice(0, k).every((v, i) => compareScalar(v, q.eq![i]!) === 0))
+            .filter((e) => e.values.slice(0, k).every((v, i) => compareScalar(v, q.eq![i] as Scalar) === 0))
             .filter((e) => k === ix.arity || boundOk(e.values[k]!, q))
             .sort((a, b) => compareTuple(a.values, b.values) || compareCodePoints(a.id, b.id));
           if (q.reverse) expected.reverse();
@@ -209,6 +209,40 @@ describe("scanPlan", () => {
     ["match on a sorted index", { match: "x" }],
   ])("rejects %s with code query", (_, q) => {
     expect(code(() => scanPlan(two, q))).toBe("query");
+  });
+
+  it("plans one range for a query without lists, and one per distinct combination of listed values, in the order of their prefixes", () => {
+    const prefix = indexPrefix(COLLECTION, INDEX);
+    expect(scanPlan(two, { eq: ["a"] })).toMatchObject({ ranges: [{ skip: encodeTuple(["a"], prefix).length }], repeats: false });
+    const plan = scanPlan(two, { eq: [["b", "a", "b"], [2, 1]], reverse: true });
+    const starts = [
+      ["a", 1],
+      ["a", 2],
+      ["b", 1],
+      ["b", 2],
+    ].map((c) => hex(encodeTuple(c as Scalar[], prefix)));
+    expect(plan.ranges.map((r) => hex(r.range.start!))).toEqual(starts);
+    expect(plan.ranges.every((r) => r.range.reverse && r.skip === encodeTuple(["a", 1], prefix).length)).toBe(true);
+    expect(scanPlan(two, { eq: [[]] }).ranges).toEqual([]);
+  });
+
+  it("flags repeats only for a list on the array field of a multi index", () => {
+    const multi: ScanTarget = { ...two, multi: true };
+    expect(scanPlan(multi, { eq: [["a", "b"]] }).repeats).toBe(true);
+    expect(scanPlan(multi, { eq: [["a", "a"], [1, 2]] }).repeats).toBe(false);
+    expect(scanPlan(multi, { eq: ["a", [1, 2]] }).repeats).toBe(false);
+    expect(scanPlan(two, { eq: [["a", "b"]] }).repeats).toBe(false);
+  });
+
+  it("rejects a list on the rows, on a unique index, nested, and of more than 64 combinations with code query", () => {
+    const rows: ScanTarget = { kind: "rows", prefix: rowPrefix(COLLECTION) };
+    const many = (n: number) => Array.from({ length: n }, (_, i) => i);
+    expect(code(() => scanPlan(rows, { eq: [["a"]] }))).toBe("query");
+    expect(code(() => scanPlan({ ...two, kind: "unique" }, { eq: [[1]] }))).toBe("query");
+    expect(code(() => scanPlan(two, { eq: [[[1]]] as never }))).toBe("query");
+    expect(code(() => scanPlan(two, { eq: [many(65)] }))).toBe("query");
+    expect(code(() => scanPlan(two, { eq: [many(9), many(8)] }))).toBe("query");
+    expect(code(() => scanPlan(two, { eq: [many(8), many(8)] }))).toBe("no error");
   });
 
   it("rejects match with no words on a text index with code query", () => {
