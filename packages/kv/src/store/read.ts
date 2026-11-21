@@ -71,25 +71,13 @@ export function pointGet(
 }
 
 /**
- * Every key read, or one Miss for all the bytes they lack. `mems[i]` is the
- * memtable row of `keys[i]`. A value is a copy, or what `decode` makes of the
- * stored bytes: it runs once every key is found, so a retry decodes nothing
- * twice, and it must neither change the bytes nor keep them.
- */
-export function readKeys<T = Uint8Array>(
-  mems: readonly (MemRow | undefined)[],
-  keys: readonly Uint8Array[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  decode?: (value: Uint8Array) => T,
-): Maybe<(T | undefined)[]> {
-  return keysReader(mems, keys, at, decode)(levels);
-}
-
-/**
- * `readKeys` as an attempt to retry: a key an attempt found is not looked
- * up again, so a retry costs the keys that missed, not the whole list.
- * Every attempt must be given the same levels.
+ * A read of every key, to run again after each Miss: it returns every value,
+ * or one Miss for all the bytes they lack. `mems[i]` is the memtable row of
+ * `keys[i]`. A key one run found is not looked up again, so a retry costs
+ * the keys that missed, and every run must be given the same levels. A value
+ * is a copy, or what `decode` makes of the stored bytes: it runs once every
+ * key is found, so a retry decodes nothing twice, and it must neither change
+ * the bytes nor keep them.
  */
 export function keysReader<T = Uint8Array>(
   mems: readonly (MemRow | undefined)[],

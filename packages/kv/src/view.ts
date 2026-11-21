@@ -8,7 +8,7 @@ import {
   countOf,
   liveStep,
   matchingStep,
-  readKeys,
+  keysReader,
   type RunLevel,
   type ScanStep,
 } from "./store/read.js";
@@ -252,7 +252,8 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   /** `getMany` past its checks: `keys` are checked and the caller answers for the snapshot being open. */
   private async read<T>(keys: readonly Uint8Array[], decode: Decode<T> | undefined): Promise<(T | undefined)[]> {
     const mems = keys.map((k) => this.rows.get(k));
-    const read = () => readKeys(mems, keys, this.levels, this.at, decode);
+    const attempt = keysReader(mems, keys, this.at, decode);
+    const read = () => attempt(this.levels);
     const first = read();
     return first instanceof Miss ? untilHit(read, first) : first;
   }
