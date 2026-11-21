@@ -108,6 +108,7 @@ describe("values an index cannot hold", () => {
     ["an object", { by: "a" }, { id: "1", a: { b: 1 } }],
     ["an array on a non-multi index", { by: "a" }, { id: "1", a: [1] }],
     ["a non-scalar element of a multi index", { by: "tags[]" }, { id: "1", tags: ["a", { b: 1 }] }],
+    ["an array after the first field of a multi index", { by: ["tags[]", "at"] }, { id: "1", tags: ["a"], at: [1, 2] }],
     ["a string with a lone surrogate", { by: "a" }, { id: "1", a: "x\ud800" }],
     ["a multi element with a lone surrogate", { by: "tags[]" }, { id: "1", tags: ["a", "\udc00"] }],
     ["a non-string text", { by: "at", text: "title" }, { id: "1", at: 1, title: 5 }],
