@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { prefixBound } from "../src/db.js";
 import { CorruptDatabaseError } from "../src/errors.js";
@@ -187,6 +187,28 @@ describe("encodeTuple", () => {
   it("puts the prefix before the fields and the tail after them", () => {
     expect(hex(encodeTuple([true, "a"], Uint8Array.of(0x64, 0x00), Uint8Array.of(0x78)))).toBe("64 00 03 05 61 00 78");
     expect(encodeTuple([])).toEqual(new Uint8Array(0));
+  });
+
+  it("writes the documented bytes wherever a field meets the end of the encoder's buffer", async () => {
+    const nuls = "\0".repeat(64);
+    const unit: [TupleValue, number[]][] = [
+      [null, [0x01]],
+      [1, [0x04, 0xbf, 0xf0, 0, 0, 0, 0, 0, 0]],
+      [nuls, [0x05, ...Array.from({ length: 64 }, () => [0x00, 0xff]).flat(), 0x00]],
+      [-1, [0x04, 0x40, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
+      ["é\0日", [0x05, 0xc3, 0xa9, 0x00, 0xff, 0xe6, 0x97, 0xa5, 0x00]],
+    ];
+    const unitBytes = unit.flatMap(([, bytes]) => bytes);
+    const values = Array.from({ length: 32 }, () => unit.map(([v]) => v)).flat();
+    const want = Array.from({ length: 32 }, () => unitBytes).flat();
+    // The encoder keeps one buffer across calls. A fresh module grows it
+    // within each key, and each offset moves the fields against it by a byte.
+    for (let at = 0; at < unitBytes.length; at++) {
+      vi.resetModules();
+      const fresh = await import("../src/tuple.js");
+      const prefix = new Uint8Array(at).fill(0x61);
+      expect(Array.from(fresh.encodeTuple(values, prefix))).toEqual([...prefix, ...want]);
+    }
   });
 
   it("rejects a tail that starts with FF and keeps encoding afterwards", () => {
