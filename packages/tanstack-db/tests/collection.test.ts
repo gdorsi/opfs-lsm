@@ -21,6 +21,7 @@ import {
   createTransaction,
   DbClient,
   eq,
+  ilike,
   IR,
   type LoadSubsetOptions,
 } from "@tanstack/db";
@@ -30,6 +31,7 @@ type Todo = { id: string; title: string };
 type Body = { id: string; description: string };
 type Comment = { id: string; issue_id: string; body: string };
 type Issue = { id: string; modified: number };
+type Note = { id: string; pinned: boolean; body: string };
 
 const schema = defineSchema({
   version: 1,
@@ -39,6 +41,7 @@ const schema = defineSchema({
     bodies: collection<Body>(),
     comments: collection<Comment>().index("byIssue", "issue_id"),
     issues: collection<Issue>().index("byModified", "modified"),
+    notes: collection<Note>().text("search", "pinned", "body"),
   },
 });
 
@@ -566,6 +569,22 @@ test("an on-demand collection loads by id", async () => {
   assert.deepEqual([...c.keys()], ["B"]);
   await c.utils.transact(["B"], ([row]) => [{ ...row!, description: "b2" }]);
   assert.equal(c.get("B")?.description, "b2", "a transact on a loaded row shows on resolve");
+});
+
+test("a search finds a text whose letters are stored decomposed, as TanStack's ilike does", async () => {
+  const { store } = await open(dbName());
+  const notes = [
+    { id: "nfd", pinned: false, body: "cafe\u0301" },
+    { id: "nfc", pinned: false, body: "caf\u00e9" },
+    { id: "other", pinned: false, body: "tea" },
+  ];
+  await store.collection("notes").putMany(notes);
+  const c = onDemand(store.collection("notes"));
+
+  const q = tracked(createLiveQueryCollection((q) => q.from({ n: c }).where(({ n }) => ilike(n.body, "%e%"))));
+  await q.preload();
+
+  assert.deepEqual(plain(q.toArray), plain(notes.filter((n) => n.body.toLowerCase().includes("e"))));
 });
 
 test("another handle's writes reach a loaded subset, and writes outside it stay out of memory", async () => {

@@ -50,7 +50,8 @@ const schema = defineSchema({
 
 const IDS = Array.from({ length: 30 }, (_, i) => `d${String(i).padStart(2, "0")}`);
 const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b"];
-const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE"];
+/** "cafe\u0301" is not in NFC. TanStack finds its "e", which the text index holds composed into "\u00e9". */
+const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE", "cafe\u0301"];
 
 const fieldsArb = fc.record({
   g: fc.integer({ min: 0, max: 3 }),
