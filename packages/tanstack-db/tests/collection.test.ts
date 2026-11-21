@@ -864,3 +864,36 @@ test("loading the same options twice supersedes the first fetch, which then neve
   );
   handle.cleanup();
 });
+
+test("cleaning up a collection, eager or on-demand, removes its change listener", async () => {
+  const { store } = await open(dbName());
+  let listening = 0;
+  const counted = new Proxy(store.collection("comments"), {
+    get(target, prop) {
+      if (prop === "changes") {
+        return (listener: (event: CollectionChange<Comment>) => void) => {
+          listening++;
+          const off = target.changes(listener);
+          return () => {
+            listening--;
+            off();
+          };
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  await store.collection("comments").put(comment("X", 1));
+
+  for (const syncMode of ["eager", "on-demand"] as const) {
+    const c = createCollection(docstoreCollectionOptions({ collection: counted, syncMode }));
+    const q = createLiveQueryCollection((q) => q.from({ c }).where(({ c }) => eq(c.issue_id, "X")));
+    await q.preload();
+    assert.equal(q.size, 1);
+    assert.equal(listening, 1, `${syncMode}: listening while live`);
+    await q.cleanup();
+    await c.cleanup();
+    assert.equal(listening, 0, `${syncMode}: no listener after cleanup`);
+  }
+});
