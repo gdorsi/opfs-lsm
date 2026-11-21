@@ -55,6 +55,24 @@ test("content the doc held before the persistence was attached is stored", async
   assert.deepEqual(again.doc.getMap("m").toJSON(), { before: 1, stored: 1 });
 });
 
+test("an update made while the persistence loads is stored next to the loaded ones", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "a");
+  seed.doc.getMap("m").set("stored", 1);
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "a", doc);
+  doc.getMap("m").set("during", 1);
+  await p.whenSynced;
+  assert.deepEqual(doc.getMap("m").toJSON(), { during: 1, stored: 1 });
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.deepEqual(again.doc.getMap("m").toJSON(), { during: 1, stored: 1 });
+});
+
 test("a doc loaded at the trim size merges its updates into one once it goes quiet", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const first = await reopen(db, "doc", 10);
