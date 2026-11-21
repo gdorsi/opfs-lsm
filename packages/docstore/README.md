@@ -427,6 +427,115 @@ await todos.query({ index: "open", reverse: true });
 // => { docs: [{ id: "b", ... }, ...] }
 ```
 
+### Several values of a field
+
+An index keeps the entries of one value of a field together, in a run of their own. In `open`, the todos that are not done come first in `createdAt` order, and the done ones follow. So "the oldest todos, done or not" are two runs, read and merged by `createdAt`.
+
+A slot of `eq` takes a value, or a list of values that the field can have. The query reads one run per value and merges them. Nothing else changes: a bound applies to the field after `eq`, and the results come in the order of the fields after `eq`, then by id. The order does not follow the listed field: for the results of one value after those of another, run one query per value.
+
+```ts
+// the entries of "open", ordered by done, then createdAt
+//   [false, 2] c
+//   [false, 3] a
+//   [true, 1]  b
+await todos.queryIds({ index: "open", eq: [[false, true]] });
+// => { ids: ["b", "c", "a"] }, by createdAt across both values
+await todos.queryEntries({
+	index: "open",
+	eq: [[false, true]],
+	limit: 2
+});
+// => { entries: [{ id: "b", values: [true, 1] },
+//      { id: "c", values: [false, 2] }], next }
+// each entry has its own values
+```
+
+With more fields, the list sits in the slot of the field it is about. SQL writes the same query with `IN`.
+
+```ts
+// issues: .index("byStatus", ["projectId", "status", "updatedAt"])
+await issues.query({
+	index: "byStatus",
+	eq: [projectId, ["todo", "started"]],
+	// projectId is this one, status is todo or started
+	reverse: true, // newest updatedAt first
+	limit: 50
+});
+// In SQL: WHERE projectId = ? AND status IN ('todo', 'started')
+// ORDER BY updatedAt DESC LIMIT 50
+```
+
+`limit`, `offset`, `after` and `reverse` work as in any query, and the order the values are listed in does not matter. A cursor must belong to a result of the same query, so it throws `"cursor"` when its own value is not listed.
+
+```ts
+const first = await todos.queryIds({
+	index: "open",
+	eq: [[true, false]],
+	limit: 2
+});
+// => { ids: ["b", "c"], next }
+await todos.queryIds({
+	index: "open",
+	eq: [[true, false]],
+	after: first.next
+});
+// => { ids: ["a"] }
+await todos.queryIds({
+	index: "open",
+	eq: [[true]],
+	after: first.next
+});
+// throws DocStoreError "cursor", c holds false, and only true is listed
+await todos.queryIds({
+	index: "open",
+	eq: [[false, true]],
+	reverse: true,
+	limit: 1
+});
+// => { ids: ["a"], next }
+```
+
+A bound applies to the field after `eq`, in every run.
+
+```ts
+await todos.queryIds({ index: "open", eq: [[false, true]], gt: 1 });
+// => { ids: ["c", "a"] }, the bound is on createdAt
+```
+
+On a multi index, a document that holds two of the values comes once, and `count` counts documents. `queryEntries` gives its entry of the smaller value, or of the larger one with `reverse`. An index with `include` returns each entry's `fields` here too.
+
+```ts
+await todos.queryIds({ index: "byTag", eq: [["home", "shop"]] });
+// => { ids: ["a", "c"] }, a holds both
+await todos.count({ index: "byTag", eq: [["home", "shop"]] });
+// => 2
+```
+
+**Note.** That `count` walks the entries to count each document once, where a count of one value reads none. `offset` also walks the entries it passes on any query with a list.
+
+Several slots can hold lists. Each combination of one value per slot is a run, and the runs merge as before.
+
+```ts
+await todos.queryIds({
+	index: "open",
+	eq: [[false, true], [1, 3]]
+});
+// => { ids: ["a", "b"] }, [false, 3] and [true, 1], by id
+```
+
+An empty list matches nothing, and a query takes up to 64 combinations once repeated values are dropped. A unique index and the documents in id order take no lists.
+
+```ts
+await todos.queryIds({ index: "open", eq: [[]] });
+// => { ids: [] }
+await users.queryIds({ index: "byEmail", eq: [["a", "b"]] });
+// type error, and DocStoreError "query" when run
+// a unique index has one document per value: query each value
+await todos.queryIds({ eq: [["a", "b"]] });
+// type error, and DocStoreError "query" when run
+// to read documents by id, use getMany
+```
+
 ### Counts
 
 ```ts
@@ -460,22 +569,7 @@ for (const { values: [tag] } of entries)
 // perTag => Map { "home" => 2, "shop" => 1 }
 ```
 
-To show one page of several ranges in one order, query the entries of each, merge them on their values, and read only the documents of the page.
-
-```ts
-const page = await todos.view(async (snap) => {
-	const ranges = await Promise.all([false, true].map((done) =>
-		snap.queryEntries({ index: "open", eq: [done], limit: 2 })));
-	const top = ranges
-		.flatMap((r) => r.entries)
-		.sort((x, y) => x.values[1] - y.values[1])
-		.slice(0, 2);
-	return snap.getMany(top.map((e) => e.id));
-});
-// => [{ id: "b", ... }, { id: "c", ... }], by createdAt
-```
-
-**Note.** This pays when the ranges hold more than the page. When they hold a page or less, merging the documents of `query` on each range reads the same documents with less code. Decoding values also costs time per entry, so when you need only ids or `next`, use `queryIds`.
+To show one page of several ranges in one order, put a list in `eq`: see [Several values of a field](#several-values-of-a-field).
 
 ### Order
 
@@ -717,6 +811,10 @@ const tags = Array.from({ length: 1001 }, (_, i) => `t${i}`);
 await todos.put({ ...todo, tags });
 // throws DocStoreError "document", over 1,000 distinct elements
 // in an array field
+const days = Array.from({ length: 33 }, (_, i) => i);
+await todos.queryIds({ index: "open", eq: [[false, true], days] });
+// throws DocStoreError "query", 2 x 33 combinations in eq,
+// over 64
 // a write call is one kv batch of at most 8 MiB, counting keys,
 // values, and 256 bytes per op
 // kv has no separate cap on the number of ops
