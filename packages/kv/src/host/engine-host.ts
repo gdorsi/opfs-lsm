@@ -300,6 +300,9 @@ class HostedDb {
       async (wal) => (await wal.meta()).head,
       () => Promise.reject(destroyed()),
     );
+    // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
+    const watched = this.watching;
+    const heard = watched?.pendingBytes ?? 0;
     let foldedBytes = 0;
     let pastStop = false;
     try {
@@ -340,6 +343,10 @@ class HostedDb {
           watch.triggerAt = watch.maxWalBytes;
         }
         if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
+          // Nothing up to `head` was waiting, so the count was ahead of the WAL
+          // by what it heard before. Without this, it would stay over the
+          // trigger and ingest in a loop.
+          if (foldedBytes === 0 && watched) watched.pendingBytes = Math.max(0, watched.pendingBytes - heard);
           return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
         }
       }
@@ -469,10 +476,7 @@ class HostedDb {
     watch.state = "ingesting";
     void (async () => {
       try {
-        const { foldedBytes } = await this.fold();
-        // Nothing was waiting, so the count was ahead of the WAL. Without
-        // this, it would stay over the trigger and ingest in a loop.
-        if (foldedBytes === 0) watch.pendingBytes = 0;
+        await this.fold();
         this.compact().catch(() => undefined);
       } catch (err) {
         // A database `destroyDb` removed is not a failure.

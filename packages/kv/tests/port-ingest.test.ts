@@ -9,8 +9,16 @@ import {
   createLocalIngestClient,
   createPortIngestClient,
 } from "../src/testing.js";
-import { CorruptDatabaseError, OpfsLsmError, StorageUnavailableError } from "../src/errors.js";
+import {
+  ClosedError,
+  CommitError,
+  ConstraintError,
+  CorruptDatabaseError,
+  OpfsLsmError,
+  StorageUnavailableError,
+} from "../src/errors.js";
 import { loadLatestGeneration } from "./latest-generation.js";
+import { walStore } from "./sim/check-database.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -164,6 +172,63 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     ingest.close();
     port1.close();
     port2.close();
+  });
+
+  it("destroys over the port", async () => {
+    const fs = new MemoryFs();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: client });
+    await db.put(utf("k"), utf("v"));
+    await ingestDb(db);
+    await db.dangerousDestroy();
+    expect(await db.get(utf("k"))).toBeUndefined();
+    await db.close();
+    client.close();
+    port1.close();
+  });
+
+  it("stops holding the host to a tab's maxWalBytes once that tab closes", async () => {
+    const fs = new MemoryFs();
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const small = await openHarnessDb({ name: "port-db", writerId: "small", fs, ingest: client, maxWalBytes: 100 });
+    await small.close();
+    const large = await openHarnessDb({ name: "port-db", writerId: "large", fs, ingest: client, maxWalBytes: 1e9 });
+    await new Promise((r) => setTimeout(r, 100));
+    await large.put(utf("k"), new Uint8Array(150));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await large.close();
+    client.close();
+    port1.close();
+  });
+
+  it("a host error crosses the port with its class, whatever its code", async () => {
+    const fs = new MemoryFs();
+    const db = await openHarnessDb({ name: "port-db", fs, ingest: createLocalIngestClient(new EngineHost(() => fs)) });
+    await db.put(utf("k"), utf("v"));
+    await db.close();
+    // A row that is not an ArrayBuffer: the host's flush cannot decode it.
+    await walStore("port-db", "readwrite", (wal) => wal.put("not a row", 1));
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => fs));
+    const client = createPortIngestClient(port2);
+    const cases = [
+      { what: "a WAL row the host cannot decode", call: () => client.ingest("port-db"), error: CommitError },
+      { what: "a database that is not there", call: () => client.ingest("port-none"), error: ClosedError },
+      { what: "a name no database can have", call: () => client.stats("not a name"), error: ConstraintError },
+    ];
+    const got = [];
+    for (const { what, call } of cases) {
+      const err = await call().catch((e: unknown) => e);
+      got.push({ what, name: (err as Error).name, code: (err as OpfsLsmError).code });
+    }
+    expect(got).toEqual(cases.map(({ what, error }) => ({ what, name: error.name, code: new error("").code })));
+    client.close();
+    port1.close();
   });
 
   it("serializes concurrent ingest calls on one host", async () => {
