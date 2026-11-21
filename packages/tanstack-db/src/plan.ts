@@ -18,8 +18,9 @@ export type DocstoreQuery = {
 /**
  * TanStack's order of one path: values in index order, `reverse` for desc,
  * null and missing values first or last. Without `lexical`, strings compare
- * by a collation the index does not hold; other values still compare in
- * index order.
+ * by a collation the index does not hold; with it, only strings that
+ * `ordersAlike` accepts are sure to compare in index order. Other values
+ * compare in index order.
  */
 export type Order = {
   readonly path: string;
@@ -264,11 +265,11 @@ function factsOf(where: BasicExpression<boolean> | undefined): Facts {
         break;
       case "gt":
       case "gte":
-        if (isScalar(value) && !facts.lower.has(path)) facts.lower.set(path, { value, inclusive: name === "gte" });
+        if (isScalar(value) && ordersAlike(value) && !facts.lower.has(path)) facts.lower.set(path, { value, inclusive: name === "gte" });
         break;
       case "lt":
       case "lte":
-        if (isScalar(value) && !facts.upper.has(path)) facts.upper.set(path, { value, inclusive: name === "lte" });
+        if (isScalar(value) && ordersAlike(value) && !facts.upper.has(path)) facts.upper.set(path, { value, inclusive: name === "lte" });
         break;
       case "like":
       case "ilike":
@@ -315,6 +316,13 @@ function isScalar(v: unknown): v is Scalar {
   if (typeof v === "number") return Number.isFinite(v);
   return typeof v === "string" && v.isWellFormed();
 }
+
+/**
+ * Whether a value compares with every other in TanStack as in an index. TanStack compares strings by UTF-16 code
+ * unit and the index by code point; the two differ only where one string holds a surrogate and the other a unit
+ * from U+E000 up.
+ */
+export const ordersAlike = (v: unknown): boolean => typeof v !== "string" || !/[\uD800-\uFFFF]/.test(v);
 
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
 
