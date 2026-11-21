@@ -386,7 +386,7 @@ describe("ids", () => {
 
   it("round-trips ids holding U+0000, characters outside the BMP, and 1,024 UTF-8 bytes", async () => {
     const { notes: c } = await notes();
-    const ids = ["a\u0000b", "😀", "é".repeat(512)];
+    const ids = ["a\u0000b", "😀", "é".repeat(512), `${"日".repeat(341)}x`];
     await c.putMany(ids.map((id) => ({ id })));
     for (const id of ids) expect((await c.get(id))!.id).toBe(id);
     expect((await c.queryIds({})).ids.sort()).toEqual([...ids].sort());
@@ -397,6 +397,8 @@ describe("ids", () => {
     ["an empty id", ""],
     ["a non-string id", 7],
     ["1,025 UTF-8 bytes", `${"é".repeat(512)}x`],
+    ["1,026 UTF-8 bytes of three-byte characters", "日".repeat(342)],
+    ["1,025 UTF-8 bytes of four-byte characters", `${"😀".repeat(256)}x`],
   ])("throws document for %s and writes nothing", async (_, id) => {
     const { notes: c } = await notes();
     expect(await codeOf(c.put({ id } as unknown as Note))).toBe("document");
