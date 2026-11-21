@@ -83,21 +83,44 @@ export function readKeys<T = Uint8Array>(
   at: Marks,
   decode?: (value: Uint8Array) => T,
 ): Maybe<(T | undefined)[]> {
+  return keysReader(mems, keys, at, decode)(levels);
+}
+
+/**
+ * `readKeys` as an attempt to retry: a key an attempt found is not looked
+ * up again, so a retry costs the keys that missed, not the whole list.
+ * Every attempt must be given the same levels.
+ */
+export function keysReader<T = Uint8Array>(
+  mems: readonly (MemRow | undefined)[],
+  keys: readonly Uint8Array[],
+  at: Marks,
+  decode?: (value: Uint8Array) => T,
+): (levels: readonly RunLevel[]) => Maybe<(T | undefined)[]> {
   const found = new Array<MemRow | RecordWalker | undefined>(keys.length);
-  let misses: Miss[] | undefined;
-  for (let i = 0; i < keys.length; i++) {
-    const put = livePut(mems[i], levels, keys[i]!, at);
-    if (put instanceof Miss) (misses ??= []).push(put);
-    else found[i] = put;
-  }
-  if (misses) return allMissed(misses);
-  // Pushed, not assigned by index: a key with no value must be an element, not a hole.
-  const values: (T | undefined)[] = [];
-  for (let i = 0; i < keys.length; i++) {
-    const put = found[i];
-    values.push(put === undefined ? undefined : valueOfPut(put, decode));
-  }
-  return values;
+  let missed: number[] | undefined;
+  return (levels) => {
+    const misses: Miss[] = [];
+    const still: number[] = [];
+    const count = missed ? missed.length : keys.length;
+    for (let j = 0; j < count; j++) {
+      const i = missed ? missed[j]! : j;
+      const put = livePut(mems[i], levels, keys[i]!, at);
+      if (put instanceof Miss) {
+        misses.push(put);
+        still.push(i);
+      } else found[i] = put;
+    }
+    missed = still;
+    if (misses.length) return allMissed(misses);
+    // Pushed, not assigned by index: a key with no value must be an element, not a hole.
+    const values: (T | undefined)[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      const put = found[i];
+      values.push(put === undefined ? undefined : valueOfPut(put, decode));
+    }
+    return values;
+  };
 }
 
 /**
