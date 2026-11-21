@@ -24,7 +24,7 @@ The apps under `examples/` show how to build a web app on our packages, and test
 
 ## Format changes
 
-A change that makes stored data read differently, such as a kv or docstore format or the LinearLite demo's schema, raises `DATA_VERSION` in `examples/linearlite-docstore/src/main.tsx`. The home page demo then opens a fresh database for returning visitors and frees the old one.
+A change that makes stored data read differently, such as a kv or docstore format or the LinearLite demo's schema, raises `DATA_VERSION` in `examples/linearlite-docstore/src/main.tsx` and in `examples/linearlite-tanstackdb/src/app/open.ts`. Each demo then opens a fresh database for returning visitors and frees the old one.
 
 ## Benchmarks
 

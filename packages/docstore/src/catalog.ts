@@ -13,14 +13,15 @@ import { fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId
 import type { IndexInfo, Schema } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
-const FORMAT = 1;
+const FORMAT = 2;
 const MAX_COLLECTION_ID = 0xffff;
 const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
+const MAX_INCLUDE = 16;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Ends the first field of `by` when it holds an array. */
 const ARRAY_MARK = "[]";
-const OPTIONS = ["by", "unique", "text"];
+const OPTIONS = ["by", "unique", "text", "include"];
 
 export type StoredCatalog = {
   readonly format: typeof FORMAT;
@@ -49,6 +50,8 @@ export type IndexSpec =
       readonly unique: boolean;
       /** The first path holds an array: one entry per distinct element. */
       readonly multi: boolean;
+      /** Top-level fields each entry's value holds. Absent: the value is empty. */
+      readonly include?: readonly string[];
     }
   | {
       readonly kind: "text";
@@ -91,6 +94,19 @@ function checkField(field: unknown, where: string): string {
 
 const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
 
+function checkInclude(include: unknown, where: string): readonly string[] {
+  if (!Array.isArray(include) || include.length === 0 || include.length > MAX_INCLUDE) {
+    badSchema(`${where}: include takes 1 to ${MAX_INCLUDE} fields`);
+  }
+  for (const f of include) {
+    if (typeof f !== "string" || f === "" || f.includes(".") || f.includes(ARRAY_MARK)) {
+      badSchema(`${where}: include takes top-level fields, not ${JSON.stringify(f)}`);
+    }
+  }
+  if (new Set(include).size !== include.length) badSchema(`${where}: include repeats a field`);
+  return [...include];
+}
+
 export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isObject(decl.collections)) badSchema("collections must be an object");
@@ -114,13 +130,16 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
       const multi = isArrayField(first);
       const on = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
       if (new Set(on).size !== on.length) badSchema(`${where}: by repeats a field`);
-      const { unique = false, text } = d;
+      const { unique = false, text, include } = d;
       if (typeof unique !== "boolean") badSchema(`${where}: unique is a boolean`);
       if (text === undefined) {
-        specs.set(index, { kind: "sorted", on, unique, multi });
+        // A unique entry's value is its id, so it has no room for fields.
+        if (unique && include !== undefined) badSchema(`${where}: a unique index cannot include fields`);
+        specs.set(index, { kind: "sorted", on, unique, multi, ...(include === undefined ? {} : { include: checkInclude(include, where) }) });
       } else {
         if (unique) badSchema(`${where}: a text index cannot be unique`);
         if (multi) badSchema(`${where}: a text index cannot start with an array field`);
+        if (include !== undefined) badSchema(`${where}: a text index cannot include fields`);
         specs.set(index, { kind: "text", on, text: checkField(text, where) });
       }
     }
@@ -143,19 +162,24 @@ export function describeIndexes(specs: ReadonlyMap<string, IndexSpec>): Readonly
       name,
       s.kind === "text"
         ? { kind: "text", by: s.on, unique: false, text: s.text }
-        : s.multi
-          ? { kind: "multi", by: [s.on[0] + ARRAY_MARK, ...s.on.slice(1)], unique: s.unique }
-          : { kind: "sorted", by: s.on, unique: s.unique },
+        : {
+            kind: s.multi ? "multi" : "sorted",
+            by: s.multi ? [s.on[0] + ARRAY_MARK, ...s.on.slice(1)] : s.on,
+            unique: s.unique,
+            ...(s.include && { include: s.include }),
+          },
     );
   }
   return out;
 }
 
+const sameList = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every((p, i) => p === b[i]);
+
 function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
-  if (a.on.length !== b.on.length || a.on.some((p, i) => p !== b.on[i])) return false;
+  if (!sameList(a.on, b.on)) return false;
   switch (a.kind) {
     case "sorted":
-      return b.kind === "sorted" && a.unique === b.unique && a.multi === b.multi;
+      return b.kind === "sorted" && a.unique === b.unique && a.multi === b.multi && sameList(a.include, b.include);
     case "text":
       return b.kind === "text" && a.text === b.text;
   }
@@ -177,6 +201,7 @@ export function parseCatalog(bytes: Uint8Array): StoredCatalog {
 }
 
 const isId = (v: unknown, max: number) => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= max;
+const isStrings = (v: unknown) => Array.isArray(v) && v.every((p) => typeof p === "string");
 
 function isCatalog(c: unknown): c is StoredCatalog {
   return (
@@ -205,8 +230,11 @@ function isCollection(c: unknown): boolean {
 }
 
 function isSpec(s: unknown): boolean {
-  if (!isObject(s) || !Array.isArray(s["on"]) || !s["on"].every((p) => typeof p === "string")) return false;
-  if (s["kind"] === "sorted") return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean";
+  if (!isObject(s) || !isStrings(s["on"])) return false;
+  if (s["kind"] === "sorted") {
+    const include = s["include"];
+    return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean" && (include === undefined || (isStrings(include) && !s["unique"]));
+  }
   return s["kind"] === "text" && typeof s["text"] === "string";
 }
 
@@ -216,8 +244,7 @@ function isState(s: unknown): boolean {
   return (
     s["kind"] === "failed" &&
     (s["reason"] === "unique" || s["reason"] === "value") &&
-    Array.isArray(s["ids"]) &&
-    s["ids"].every((id) => typeof id === "string")
+    isStrings(s["ids"])
   );
 }
 
@@ -359,7 +386,13 @@ export function removeDropped(c: StoredCatalog, prefix: DroppedPrefix): StoredCa
 export type Path = readonly string[];
 
 export type CompiledSpec =
-  | { readonly kind: "sorted"; readonly on: readonly Path[]; readonly unique: boolean; readonly multi: boolean }
+  | {
+      readonly kind: "sorted";
+      readonly on: readonly Path[];
+      readonly unique: boolean;
+      readonly multi: boolean;
+      readonly include: readonly string[] | undefined;
+    }
   | { readonly kind: "text"; readonly on: readonly Path[]; readonly text: Path };
 
 export type IndexPlan = {
@@ -434,9 +467,9 @@ function compile(collection: CollectionId, rows: Uint8Array, name: string, i: St
   const on = i.spec.on.map((p) => p.split("."));
   const spec: CompiledSpec =
     i.spec.kind === "sorted"
-      ? { kind: "sorted", on, unique: i.spec.unique, multi: i.spec.multi }
+      ? { kind: "sorted", on, unique: i.spec.unique, multi: i.spec.multi, include: i.spec.include }
       : { kind: "text", on, text: i.spec.text.split(".") };
-  const kind = spec.kind === "text" ? "text" : spec.unique ? "unique" : "sorted";
+  const kind = spec.kind === "text" ? "text" : spec.unique ? "unique" : spec.include ? "covering" : "sorted";
   const prefix = indexPrefix(collection, i.id as IndexId);
   return { name, id: i.id as IndexId, state: i.state, spec, target: { kind, prefix, rowPrefix: rows, arity: on.length } };
 }

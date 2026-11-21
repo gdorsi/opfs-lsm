@@ -16,7 +16,7 @@ async function docs(name = freshName()): Promise<{ kv: Db; c: Docs }> {
 }
 
 describe("indexes", () => {
-  it("lists what the schema declares: the kind, the fields, and whether it is unique", async () => {
+  it("lists what the schema declares: the kind, the fields, whether it is unique, and what it includes", async () => {
     const { c } = await docs();
     expect(new Map(c.indexes)).toEqual(
       new Map([
@@ -25,6 +25,7 @@ describe("indexes", () => {
         ["tags", { kind: "multi", by: ["tags[]", "b"], unique: false }],
         ["uniq", { kind: "sorted", by: ["u"], unique: true }],
         ["search", { kind: "text", by: ["a"], unique: false, text: "t" }],
+        ["covered", { kind: "sorted", by: ["b", "a"], unique: false, include: ["t", "tags", "u"] }],
       ]),
     );
   });

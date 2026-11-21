@@ -87,7 +87,7 @@ describe("opening a schema", () => {
 
   it("refuses a stored catalog of another format", async () => {
     const kv = await kvOn(freshName());
-    await kv.put(CATALOG_KEY, encodeCatalog({ format: 2 } as unknown as StoredCatalog));
+    await kv.put(CATALOG_KEY, encodeCatalog({ format: 1 } as unknown as StoredCatalog));
     expect(await codeOf(openDocStore(kv, v1))).toBe("schema");
   });
 
@@ -200,6 +200,23 @@ describe("opening a schema", () => {
     expect((await storedCatalog(next.kv)).dropped).toEqual([]);
   });
 
+  it("rebuilds an index whose include a newer version adds, changes or removes, over the rows written before", async () => {
+    const name = freshName();
+    const docs = rows(40);
+    await (await at(name, v1)).store.collection("todos").putMany(docs);
+    const byCreatedIn = (version: number, include?: readonly ["title" | "done", ...("title" | "done")[]]) =>
+      defineSchema({ version, collections: { todos: include ? base.index("list", "createdAt", { include }) : base.index("list", "createdAt") } });
+    const fieldsAt = async (version: number, include?: readonly ["title" | "done", ...("title" | "done")[]]) => {
+      const { store } = await at(name, byCreatedIn(version, include));
+      await store.whenIdle();
+      return (await store.collection("todos").queryEntries({ index: "list" })).entries.map((e) => ("fields" in e ? e.fields : "none"));
+    };
+    expect(await fieldsAt(2, ["title"])).toStrictEqual(docs.map((d) => ({ title: d.title })));
+    expect(await fieldsAt(3, ["done", "title"])).toStrictEqual(docs.map((d) => ({ done: d.done, title: d.title })));
+    expect(await fieldsAt(4)).toStrictEqual(docs.map(() => "none"));
+    expect(await fieldsAt(5, ["done"])).toStrictEqual(docs.map((d) => ({ done: d.done })));
+  });
+
   it("keeps the rows of a collection a newer schema leaves out, for a later schema that declares it again", async () => {
     type Note = { id: string; body: string };
     const name = freshName();
@@ -248,6 +265,62 @@ describe("opening a schema", () => {
     await old.store.collection("todos").put({ id: "1", title: "t", createdAt: 1 });
     expect((await old.store.collection("todos").queryIds({ index: "byCreated" })).ids).toEqual(["1"]);
     expect(await codeOf(old.store.collection("todos").query({ index: "byTitle" }))).toBe("schema");
+  });
+
+  it("keeps the included fields of a newer schema's index in a write from an older handle that declares none", async () => {
+    const name = freshName();
+    const list = (version: number, include?: readonly ["title"]) =>
+      defineSchema({ version, collections: { todos: include ? byCreated.index("list", "createdAt", { include }) : byCreated.index("list", "createdAt") } });
+    const old = await at(name, list(1));
+    const next = await at(name, list(2, ["title"]));
+    await next.store.whenIdle();
+    await old.store.collection("todos").put({ id: "1", title: "from the old handle", createdAt: 1 });
+    await old.store.collection("todos").put({ id: "2", createdAt: 2 });
+    await next.kv.sync();
+    expect((await next.store.collection("todos").queryEntries({ index: "list" })).entries).toStrictEqual([
+      { id: "1", values: [1], fields: { title: "from the old handle" } },
+      { id: "2", values: [2], fields: {} },
+    ]);
+  });
+
+  it("refuses a document whose included fields pass 1 MiB in one index, and fails the index over such a row written before it", async () => {
+    const name = freshName();
+    const big = { id: "big", title: "x".repeat(600 * 1024), createdAt: 1, label: ["a", "b"] };
+    const todos = collection<{ id: string; title?: string; createdAt?: number; label?: string[] }>().index("byCreated", "createdAt");
+    const old = await at(name, defineSchema({ version: 1, collections: { todos } }));
+    await old.store.collection("todos").putMany([big, { id: "small", title: "t", createdAt: 2, label: ["a"] }]);
+    const next = await at(
+      name,
+      defineSchema({
+        version: 2,
+        collections: { todos: todos.index("once", "createdAt", { include: ["title"] }).index("perLabel", ["label[]", "createdAt"], { include: ["title"] }) },
+      }),
+    );
+    const c = next.store.collection("todos");
+    expect((await c.queryEntries({ index: "once" })).entries.map((e) => e.fields.title?.length)).toStrictEqual([600 * 1024, 1]);
+    expect(await c.queryEntries({ index: "perLabel" }).catch((e: unknown) => e)).toMatchObject({ code: "index-failed", ids: ["big"] });
+    expect(await codeOf(c.put({ id: "huge", title: "x".repeat(1100 * 1024), createdAt: 3 }))).toBe("document");
+    expect(await c.get("huge")).toBeUndefined();
+    await c.put({ ...big, title: "now small" });
+    expect((await c.get("big"))?.title).toBe("now small");
+  });
+
+  it("fills an index when a document with a thousand long entries follows a backfill step that is almost full", async () => {
+    const name = freshName();
+    const todos = collection<{ id: string; title?: string; label?: string[] }>();
+    const old = await at(name, defineSchema({ version: 1, collections: { todos } }));
+    const labels = Array.from({ length: 100 }, (_, i) => `l${i}`);
+    await old.store.collection("todos").putMany(
+      Array.from({ length: 72 }, (_, i) => ({ id: `a${String(i).padStart(2, "0")}`, title: "t".repeat(500), label: labels })),
+    );
+    await old.store.collection("todos").put({
+      id: "z",
+      title: "t".repeat(1000),
+      label: Array.from({ length: 1000 }, (_, i) => String(i).padStart(1600, "x")),
+    });
+    const next = await at(name, defineSchema({ version: 2, collections: { todos: todos.index("perLabel", "label[]", { include: ["title"] }) } }));
+    await next.store.whenIdle();
+    expect(await next.store.collection("todos").count({ index: "perLabel" })).toBe(8200);
   });
 
   it("resolves two handles opening the next version at once, with its definitions stored once", async () => {

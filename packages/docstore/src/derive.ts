@@ -53,6 +53,13 @@ export function decodeDoc(bytes: Uint8Array): StoredDoc {
   return parsed as StoredDoc;
 }
 
+/** The value of a covering entry. */
+export function decodeFields(bytes: Uint8Array): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(fromUtf8.decode(bytes));
+  if (!isObject(parsed)) throw new CorruptDatabaseError("an index entry's fields are not a JSON object");
+  return parsed;
+}
+
 export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -65,11 +72,18 @@ function unindexable(v: unknown): Unindexable["why"] | undefined {
 }
 
 const MAX_ENTRIES_PER_INDEX = 1_000;
+/**
+ * The included fields of one document in one index, counted once per entry.
+ * A write and a backfill step each put a document's entries in one kv batch,
+ * so without a bound one large field could pass kv's batch limit and leave an
+ * index building for good.
+ */
+const MAX_FIELDS_BYTES = 1024 * 1024;
 
 /** Why one document cannot be in one index. A missing path is not here: it means "not in this index". */
 export type Unindexable = {
   readonly path: string;
-  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries";
+  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries" | "fields-too-large";
 };
 
 const NONE: Entry[] = [];
@@ -133,7 +147,7 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   switch (spec.kind) {
     case "sorted":
       if (spec.unique) tail = undefined;
-      else value = EMPTY;
+      else value = spec.include ? fieldsValue(doc, spec.include) : EMPTY;
       break;
     case "text": {
       const text = readPath(doc, spec.text);
@@ -142,6 +156,10 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
       value = textValue(text);
       break;
     }
+  }
+
+  if (value.length * (firsts?.length ?? 1) > MAX_FIELDS_BYTES && spec.kind === "sorted" && spec.include) {
+    return { path: spec.include.join(","), why: "fields-too-large" };
   }
 
   const prefix = plan.target.prefix;
@@ -155,6 +173,13 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
   return out;
 }
 const EMPTY = new Uint8Array(0);
+
+function fieldsValue(doc: StoredDoc, include: readonly string[]): Uint8Array {
+  // No prototype, so a field named "__proto__" is copied like any other.
+  const fields: Record<string, unknown> = Object.create(null);
+  for (const f of include) if (Object.hasOwn(doc, f)) fields[f] = doc[f];
+  return utf8.encode(JSON.stringify(fields));
+}
 
 function readPath(doc: StoredDoc, path: Path): unknown {
   let v: unknown = doc;

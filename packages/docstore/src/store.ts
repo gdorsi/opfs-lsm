@@ -92,6 +92,8 @@ export interface StoreCore {
 const BACKFILL_ROWS = 500;
 const BACKFILL_OPS = 8_000;
 const BACKFILL_BYTES = 4 * 1024 * 1024;
+/** What kv's batch limit counts for an op besides its key and value. */
+const OP_BYTES = 256;
 
 type Violation = { readonly reason: "unique" | "value"; readonly ids: readonly string[] };
 
@@ -298,12 +300,16 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
       const range = { start: from ? after(from) : rowPrefix, endExclusive: tupleBounds(rowPrefix).endExclusive, limit: BACKFILL_ROWS };
       for await (const row of this.kv.range(range)) {
         const entries = indexEntries(plan, row.key.subarray(rowPrefix.length), decodeDoc(row.value));
+        let size = 0;
+        if (Array.isArray(entries)) for (const e of entries) size += OP_BYTES + e.key.length + e.value.length;
+        // Stop before the row that passes the bound: with it, the step could pass kv's batch limit.
+        if (rows.length > 0 && bytes + size > BACKFILL_BYTES) break;
         rows.push(row);
         derived.push(entries);
         if (!Array.isArray(entries)) continue;
         ops += entries.length;
-        for (const e of entries) bytes += e.key.length + e.value.length;
-        if (ops >= BACKFILL_OPS || bytes >= BACKFILL_BYTES) break;
+        bytes += size;
+        if (ops >= BACKFILL_OPS) break;
       }
       if (rows.length === 0) {
         await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "ready" }));

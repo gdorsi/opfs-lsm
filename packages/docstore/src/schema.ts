@@ -51,6 +51,8 @@ type At<T, P extends string> = P extends `${infer H}.${infer R}`
 type Fields<T> = readonly [ScalarPath<T> | `${ArrayPath<T>}[]`, ...ScalarPath<T>[]];
 type By<T> = Fields<T> | Fields<T>[0];
 type TextBy<T> = readonly [ScalarPath<T>, ...ScalarPath<T>[]] | ScalarPath<T>;
+/** Top-level fields of `T`, at least one. */
+type Include<T> = readonly [keyof T & string, ...(keyof T & string)[]];
 
 /** The error an index name already in use gets: the name is a parameter of a type that no string has. */
 type Free<Ix, N extends string> = N extends keyof Ix ? "an index of this name is already declared" : N;
@@ -84,6 +86,15 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
     name: Free<Ix, N>,
     by: B,
   ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }, In>;
+  /**
+   * A sorted index whose entries also hold the top-level fields `include` of
+   * their document, which `queryEntries` returns without reading it.
+   */
+  index<const N extends string, const B extends By<T>, const F extends Include<T>>(
+    name: Free<Ix, N>,
+    by: B,
+    options: { readonly include: F },
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly include: F } }, In>;
   /** A sorted index in which no two documents share the values at `by`. */
   unique<const N extends string, const B extends By<T>>(
     name: Free<Ix, N>,
@@ -170,6 +181,8 @@ export type IndexInfo = {
   readonly unique: boolean;
   /** The field whose words a text index carries. */
   readonly text?: string;
+  /** The top-level fields a sorted or multi index holds in its entries. */
+  readonly include?: readonly string[];
 };
 
 declare const cursorBrand: unique symbol;
@@ -250,10 +263,24 @@ export type Query<T, Ix> =
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };
 
-/** One index entry: its document's id and the values the index orders it by, in `by` order. A row's one value is its id. */
-export type IndexEntry<V = Scalar[]> = { readonly id: string; readonly values: V };
-export type EntryPage<V = Scalar[]> = { readonly entries: IndexEntry<V>[]; readonly next?: Cursor };
-export type EntryValues<T, Ix, I> = I extends keyof Ix ? ValuesOf<T, Ix[I]> : [id: string];
+/**
+ * One index entry: its document's id and the values the index orders it by,
+ * in `by` order. A row's one value is its id. An entry of an index that
+ * declares `include` also has `fields`: the included fields its document has.
+ */
+export type IndexEntry<V = Scalar[], F = never> = { readonly id: string; readonly values: V } & ([F] extends [never]
+  ? unknown
+  : { readonly fields: F });
+export type EntryPage<V = Scalar[], F = never> = { readonly entries: IndexEntry<V, F>[]; readonly next?: Cursor };
+type EntryValues<T, Ix, I> = I extends keyof Ix ? ValuesOf<T, Ix[I]> : [id: string];
+/** The `fields` of index `I`'s entries, or never when it includes none. */
+type EntryFields<T, Ix, I> = I extends keyof Ix
+  ? Ix[I] extends { readonly include: readonly (infer K extends keyof T)[] }
+    ? Pick<T, K>
+    : never
+  : never;
+/** What `queryEntries` on index `I` (undefined: the rows) returns. */
+export type EntryPageOf<T, Ix, I> = EntryPage<EntryValues<T, Ix, I>, EntryFields<T, Ix, I>>;
 
 export type QueryInput = {
   readonly index?: string | undefined;

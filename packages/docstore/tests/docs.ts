@@ -22,7 +22,8 @@ export const schema = defineSchema({
       .index("two", ["a", "b"])
       .index("tags", ["tags[]", "b"])
       .unique("uniq", "u")
-      .text("search", "a", "t"),
+      .text("search", "a", "t")
+      .index("covered", ["b", "a"], { include: ["t", "tags", "u"] }),
   },
 });
 
@@ -32,8 +33,9 @@ export const MODEL: Record<string, ModelIndex> = {
   tags: { kind: "multi", on: ["tags", "b"] },
   uniq: { kind: "unique", on: ["u"] },
   search: { kind: "text", on: ["a"], text: "t" },
+  covered: { kind: "sorted", on: ["b", "a"], include: ["t", "tags", "u"] },
 };
-const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1 };
+const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
@@ -107,6 +109,10 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
     );
   });
 
+function pick(doc: object, fields: readonly string[]): object {
+  return Object.fromEntries(fields.filter((f) => Object.hasOwn(doc, f)).map((f) => [f, (doc as Record<string, unknown>)[f]]));
+}
+
 export async function checkQuery(
   c: Pick<Docs, "query" | "queryIds" | "queryEntries" | "count">,
   docs: readonly Doc[],
@@ -114,10 +120,14 @@ export async function checkQuery(
   q: QueryInput,
   pageSize: number,
 ): Promise<void> {
-  const want = expected(docs, index === undefined ? undefined : MODEL[index], q);
+  const ix = index === undefined ? undefined : MODEL[index];
+  const want = expected(docs, ix, q);
   const query = asQuery(q);
   expect((await c.queryIds(query)).ids).toEqual(want.map((h) => h.id));
-  expect((await c.queryEntries(query)).entries).toEqual(want.map(({ id, values }) => ({ id, values })));
+  const include = ix && "include" in ix ? ix.include : undefined;
+  expect((await c.queryEntries(query)).entries).toStrictEqual(
+    want.map(({ id, values, doc }) => (include ? { id, values, fields: pick(doc, include) } : { id, values })),
+  );
   expect((await c.query(query)).docs).toEqual(want.map((h) => h.doc));
   expect(await c.count(query)).toBe(want.length);
   expect(await c.count(asQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
