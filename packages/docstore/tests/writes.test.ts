@@ -421,6 +421,16 @@ describe("values an index cannot hold", () => {
     expect(await codeOf(c.put({ id: "1", title: "ok", tags: ["ok"], ...change }))).toBe("document");
     expect(await c.get("1")).toEqual({ id: "1", title: "ok", tags: ["ok"] });
   });
+
+  it("indexes a value whose key is exactly kv's 8 KiB limit, and throws document one byte past it", async () => {
+    const { notes: c } = await notes();
+    // A byTitle key is 4 prefix bytes, the string's tag, the title, its 00 terminator, then the id.
+    const titleFor = (keyBytes: number, id: string) => "x".repeat(keyBytes - 6 - id.length);
+    await c.put({ id: "1", title: titleFor(8 * 1024, "1") });
+    expect((await c.queryIds({ index: "byTitle" })).ids).toEqual(["1"]);
+    expect(await codeOf(c.put({ id: "2", title: titleFor(8 * 1024 + 1, "2") }))).toBe("document");
+    expect(await c.get("2")).toBeUndefined();
+  });
 });
 
 describe("unique", () => {
