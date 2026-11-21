@@ -478,6 +478,25 @@ describe("unique", () => {
     await c.putMany([{ id: "a", slug: null }, { id: "b" }, { id: "c" }]);
     expect(await codeOf(c.put({ id: "d", slug: null }))).toBe("unique");
   });
+
+  it("refuses a document that shares any element of a unique multi index, and lets one document repeat an element", async () => {
+    const tagged = defineSchema({ version: 1, collections: { t: collection<Note>().unique("byTag", "tags[]") } });
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, tagged)).collection("t");
+    await c.put({ id: "a", tags: ["x", "y", "x"] });
+    const err = await c.put({ id: "b", tags: ["z", "y"] }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "unique", ids: ["b", "a"] });
+    expect(await codeOf(c.putMany([{ id: "b", tags: ["z"] }, { id: "c", tags: ["w", "z"] }]))).toBe("unique");
+    expect(await c.getMany(["b", "c"])).toEqual([undefined, undefined]);
+    await c.put({ id: "a", tags: ["x"] });
+    await c.put({ id: "b", tags: ["z", "y"] });
+    expect((await c.queryEntries({ index: "byTag" })).entries).toEqual([
+      { id: "a", values: ["x"] },
+      { id: "b", values: ["y"] },
+      { id: "b", values: ["z"] },
+    ]);
+  });
 });
 
 describe("multi index", () => {
