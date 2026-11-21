@@ -305,6 +305,24 @@ describe("opening a schema", () => {
     expect((await c.get("big"))?.title).toBe("now small");
   });
 
+  it("fills an index when a document with a thousand long entries follows a backfill step that is almost full", async () => {
+    const name = freshName();
+    const todos = collection<{ id: string; title?: string; label?: string[] }>();
+    const old = await at(name, defineSchema({ version: 1, collections: { todos } }));
+    const labels = Array.from({ length: 100 }, (_, i) => `l${i}`);
+    await old.store.collection("todos").putMany(
+      Array.from({ length: 72 }, (_, i) => ({ id: `a${String(i).padStart(2, "0")}`, title: "t".repeat(500), label: labels })),
+    );
+    await old.store.collection("todos").put({
+      id: "z",
+      title: "t".repeat(1000),
+      label: Array.from({ length: 1000 }, (_, i) => String(i).padStart(1600, "x")),
+    });
+    const next = await at(name, defineSchema({ version: 2, collections: { todos: todos.index("perLabel", "label[]", { include: ["title"] }) } }));
+    await next.store.whenIdle();
+    expect(await next.store.collection("todos").count({ index: "perLabel" })).toBe(8200);
+  });
+
   it("resolves two handles opening the next version at once, with its definitions stored once", async () => {
     const name = freshName();
     await at(name, v1);
