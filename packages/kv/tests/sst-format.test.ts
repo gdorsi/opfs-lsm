@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
-import type { SstEntry } from "../src/store/sst.js";
+import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstGet } from "./oracle/sst-ref.js";
 import { Miss, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
@@ -62,22 +62,21 @@ describe("sst format", () => {
 
   for (const [name, entries] of cases) {
     it(`the TS and wasm encoders write the same bytes: ${name}`, async () => {
-      expect(encodeSstRef(entries)).toEqual((await encodeRun(entries, "raw")).body);
+      expect(encodeSstRef(entries)).toEqual((await encodeRun(entries)).body);
     });
 
     it(`SstReader get and cursor agree with decodeSst: ${name}`, async () => {
       const sorted = [...entries].sort((a, b) => compareBytes(a.key, b.key));
-      for (const body of [encodeSstRef(entries), (await encodeRun(entries, "lz4")).body]) {
-        expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
-        await expectReaderAgreesWithDecode(body);
-      }
+      const body = encodeSstRef(entries);
+      expect(decodeSst(body).map(show)).toEqual(sorted.map((e) => show({ ...e, seq: e.seq ?? 0 })));
+      await expectReaderAgreesWithDecode(body);
     });
   }
 
   it("reads blocks of a single record backward", async () => {
     const entries = indexWorkload(40);
     const body = encodeSstRef(entries, 1);
-    expect(new DataView(body.buffer).getUint32(body.byteLength - 40, true)).toBe(entries.length);
+    expect(new DataView(body.buffer).getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true)).toBe(entries.length);
     const sorted = decodeSst(body);
     const keys = sorted.map((e) => e.key);
     const reader = readerOfBytes(body);
@@ -135,8 +134,8 @@ describe("sst format", () => {
   it("fills blocks to the target in encoded bytes", () => {
     const body = encodeSstRef(indexWorkload(2_000));
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    const blocks = view.getUint32(body.byteLength - 40, true);
-    const dataLen = view.getUint32(body.byteLength - 36, true);
+    const blocks = view.getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true);
+    const dataLen = view.getUint32(body.byteLength - SST_FOOTER_BYTES + 8, true);
     expect(dataLen / blocks).toBeGreaterThan(4096 * 0.9);
     expect(dataLen / blocks).toBeLessThanOrEqual(4096);
   });

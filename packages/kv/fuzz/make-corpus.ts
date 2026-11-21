@@ -2,8 +2,7 @@
  * Writes the seed corpora for the decoder fuzzers from files the engine
  * itself produces: a small database run through ingest and two compactions
  * on MemoryFs and fake-indexeddb (L0 and L1 runs, manifests, WAL rows), and
- * LZ4 runs from the wasm encoder and compaction merge, as L2+ runs are
- * written.
+ * a multi-block run from the compaction merge.
  *
  *   pnpm --filter @opfs-lsm/kv fuzz:corpus
  *
@@ -28,7 +27,7 @@ import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
-import { framedBlocks } from "./targets.js";
+import { blocksOf } from "./targets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsCorpus = join(here, "corpus");
@@ -105,48 +104,40 @@ async function main(): Promise<void> {
   await ensureEngine();
   const db = await realDatabase();
 
-  const lz4Runs = [
-    (await encodeRun(todoEntries(40), "lz4")).body,
-    // An L2-sized compaction output: several LZ4 blocks.
-    ...(await mergeRuns([[(await encodeRun(todoEntries(150, 100), "raw")).body], [db.runs[0]!]], { codec: "lz4" })).runs.map((r) => r.body),
-  ];
+  const merged = (await mergeRuns([[(await encodeRun(todoEntries(150, 100))).body], [db.runs[0]!]])).runs.map((r) => r.body);
   const edgeRuns = [
     encodeSstRef([]),
     encodeSstRef([{ kind: "put", key: utf("big"), value: new Uint8Array(6000).fill(0x61), seq: 1 }]),
     encodeSstRef([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
   ];
-  const runs = [...db.runs, ...lz4Runs, ...edgeRuns].filter((r) => r.byteLength < 60_000);
-  const lz4Blocks = lz4Runs.flatMap((r) => framedBlocks(r)).slice(0, 6);
-  const rawBlocks = [...db.runs, ...edgeRuns].flatMap((r) => framedBlocks(r)).slice(0, 6);
+  const runs = [...db.runs, ...merged, ...edgeRuns].filter((r) => r.byteLength < 60_000);
+  const blocks = [...merged, ...db.runs, ...edgeRuns].flatMap((r) => blocksOf(r)).slice(0, 12);
 
   // Jazzer.js targets: byte 0 is the flags byte each target documents.
   await seeds(join(tsCorpus, "sst-read"), runs.flatMap((r) => [cat([0], r), cat([4], r)]));
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
   await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
   await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));
-  await seeds(join(tsCorpus, "lz4"), lz4Blocks);
 
   // cargo fuzz targets (crates/engine-core/fuzz/fuzz_targets/).
   await seeds(join(rustCorpus, "decode_sst"), runs.flatMap((r) => [cat([0], r), cat([1], r)]));
   await seeds(
     join(rustCorpus, "scan_block_contains"),
-    [...rawBlocks.map((b) => cat([0, 0], b)), ...lz4Blocks.map((b) => cat([1, 4], utf("milk"), b))],
+    blocks.map((b, i) => (i % 2 === 0 ? cat([0], b) : cat([4], utf("milk"), b))),
   );
   const small = runs.filter((r) => r.byteLength < 30_000);
-  await seeds(join(rustCorpus, "decode_block"), [...rawBlocks.map((b) => cat([0], b)), ...lz4Blocks.map((b) => cat([1], b))]);
+  await seeds(join(rustCorpus, "decode_block"), blocks);
   // Header: flags, target, group (bit i: run i + 1 joins run i's source), window sizes, feed seed.
   const session = (header: number[], ...runList: Uint8Array[]) =>
     cat(header, ...runList.flatMap((r) => [[r.byteLength & 0xff, r.byteLength >> 8], r]));
   await seeds(join(rustCorpus, "merge_session"), [
     session([0, 0, 0, 0x00, 0], small[1]!, small[0]!),
     session([1, 4, 0, 0x12, 1], small[1]!, small[0]!),
-    session([2 | 8, 0, 0, 0x34, 2], lz4Runs[0]!, small[0]!),
+    session([4, 0, 0, 0x34, 2], merged[0]!, small[0]!),
     session([1, 1, 0b1, 0x51, 3], encodeSstRef(todoEntries(30)), encodeSstRef(todoEntries(30, 30)), edgeRuns[2]!),
     session([0, 0, 0, 0x60, 4], edgeRuns[0]!, edgeRuns[1]!),
   ]);
-  console.log(
-    `seeds: ${runs.length} runs (${lz4Runs.length} LZ4), ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${lz4Blocks.length + rawBlocks.length} blocks`,
-  );
+  console.log(`seeds: ${runs.length} runs, ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${blocks.length} blocks`);
 }
 
 await main();

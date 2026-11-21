@@ -7,7 +7,6 @@
  */
 import {
   checkDecodeSst,
-  checkLz4,
   checkManifest,
   checkRunRead,
   checkWalRow,
@@ -75,11 +74,4 @@ export async function manifest(data: Uint8Array): Promise<void> {
 /** `decodeOps` on one WAL row. */
 export async function walRow(data: Uint8Array): Promise<void> {
   await checkWalRow(data.slice().buffer);
-}
-
-/** `lz4DecompressJs`: a framed block, u32 size then LZ4 bytes, as the run stores it. */
-export async function lz4(data: Uint8Array): Promise<void> {
-  if (data.byteLength < 4) return;
-  const size = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, true);
-  await checkLz4(data.slice(4), size);
 }

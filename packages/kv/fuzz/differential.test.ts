@@ -4,14 +4,13 @@ import { compareBytes } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { packPatterns, unpackHits } from "../src/store/block-scan.js";
 import { valueOf, type LayerEntry } from "../src/store/cursor.js";
-import { encodeRun as encodeWasmRun, lz4DecompressIn, openMergeIn, scanBlockContainsIn, type MergeSpec } from "../src/store/engine.js";
-import { lz4DecompressJs } from "../tests/oracle/lz4-js.js";
+import { encodeRun as encodeWasmRun, openMergeIn, scanBlockContainsIn, type MergeSpec } from "../src/store/engine.js";
 import { openMergeTs } from "../tests/oracle/merge-ts.js";
 import { blockBytes, blockEntries, type EncodedRun, type SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
-import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
-import { bounded, framedBlocks, RuleBroken, tally } from "./targets.js";
+import { applyMutations, entriesArb, mutationsArb } from "./mutate.js";
+import { blocksOf, bounded, RuleBroken, tally } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
 
 /**
@@ -71,26 +70,26 @@ function tsOutcome<T>(what: string, fn: () => T): Outcome<T> {
   return out;
 }
 
-type Codec = "raw" | "lz4";
-const runArb = fc.record({ entries: entriesArb, codec: fc.constantFrom<Codec>("raw", "lz4"), blockTarget: fc.constantFrom(64, 512, 4096) });
+type Encoder = "reference" | "wasm";
+const runArb = fc.record({ entries: entriesArb, encoder: fc.constantFrom<Encoder>("reference", "wasm"), blockTarget: fc.constantFrom(64, 512, 4096) });
 
-async function encodeRun(r: { entries: SstEntry[]; codec: Codec; blockTarget: number }): Promise<Uint8Array> {
-  return r.codec === "raw" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries, "lz4").then((run) => run.body);
+async function encodeRun(r: { entries: SstEntry[]; encoder: Encoder; blockTarget: number }): Promise<Uint8Array> {
+  return r.encoder === "reference" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries).then((run) => run.body);
 }
 
 const plain = (es: readonly { kind: string; key: Uint8Array; value?: Uint8Array; seq?: number }[]) =>
   es.map((e) => ({ kind: e.kind, key: [...e.key], value: e.value ? [...e.value] : undefined, seq: e.seq ?? 0 }));
 
-/** Both block scans of one framed block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
-async function scanBoth(framed: Uint8Array, lz4: boolean, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
+/** Both block scans of one block: `scanBlockContains` and the TypeScript cursor a tab falls back to. */
+async function scanBoth(block: Uint8Array, pattern: Uint8Array): Promise<"same" | "differ" | "rejected"> {
   return bounded("scan_block_contains (both)", () => {
-    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(scanBlockContainsIn(wasm, framed, lz4, packPatterns([pattern])))]);
+    const w = wasmOutcome("scanBlockContains", () => [...unpackHits(scanBlockContainsIn(wasm, block, packPatterns([pattern])))]);
     const t = tsOutcome("blockEntries", () => {
-      const b = blockBytes(framed, new DataView(framed.buffer, framed.byteOffset, framed.byteLength), 0, { offset: 0, length: framed.byteLength }, lz4 ? "lz4" : "raw");
+      const b = blockBytes(block, new DataView(block.buffer, block.byteOffset, block.byteLength), 0, { offset: 0, length: block.byteLength });
       const next = blockEntries(b);
       const out: LayerEntry[] = [];
       for (let e = next(); e; e = next()) {
-        if (out.length > 255 * framed.byteLength + 16) throw new RuleBroken("blockEntries did not end");
+        if (out.length > block.byteLength) throw new RuleBroken("blockEntries did not end");
         if (e.kind === "put" && contains(valueOf(e), pattern)) out.push(e);
       }
       return out;
@@ -137,15 +136,14 @@ describe("wasm against TypeScript", () => {
         fc.assert(
           fc.asyncProperty(runArb, mutationsArb, fc.boolean(), fc.nat(), async (r, ms, mutate, pick) => {
             const buf = await encodeRun(r);
-            const blocks = framedBlocks(buf);
+            const blocks = blocksOf(buf);
             if (blocks.length === 0) return;
             const block = blocks[pick % blocks.length]!;
-            const lz4 = r.codec === "lz4";
             if (!mutate) {
-              expect(await scanBoth(block, lz4, hot)).toBe("same");
+              expect(await scanBoth(block, hot)).toBe("same");
               return;
             }
-            const got = await scanBoth(applyMutations(block, ms, buf), lz4, hot);
+            const got = await scanBoth(applyMutations(block, ms, buf), hot);
             count(`scan of a mutated block: ${got}`);
             if (got === "differ") differ++;
           }),
@@ -155,32 +153,6 @@ describe("wasm against TypeScript", () => {
       // Where no CRC guards the bytes the two may answer differently; the
       // count is reported (KV_FUZZ_REPORT=1), not asserted.
       expect(differ).toBeGreaterThanOrEqual(0);
-    },
-    TIMEOUT,
-  );
-
-  it(
-    "unpack the same LZ4 blocks to the same bytes",
-    async () => {
-      await expect(
-        fc.assert(
-          fc.asyncProperty(entriesArb, mutationsArb, fc.boolean(), fc.nat(), async (entries, ms, mutate, pick) => {
-            const blocks = framedBlocks((await encodeWasmRun(entries, "lz4")).body);
-            if (blocks.length === 0) return;
-            const block = blocks[pick % blocks.length]!;
-            const size = new DataView(block.buffer, block.byteOffset).getUint32(0, true);
-            const src = mutate ? applyMutations(block.subarray(4), ms, block) : block.subarray(4);
-            await bounded("lz4 (both)", () => {
-              const w = wasmOutcome("lz4Decompress", () => lz4DecompressIn(wasm, src, size));
-              const t = tsOutcome("lz4DecompressJs", () => lz4DecompressJs(src, size));
-              if (!mutate) expect(w.ok && t.ok).toBe(true);
-              if (w.ok && t.ok) expect(sameBytes(w.value, t.value)).toBe(true);
-              count(`lz4: ${w.ok ? "wasm ok" : "wasm rejected"}, ${t.ok ? "ts ok" : "ts rejected"}`);
-            });
-          }),
-          params,
-        ),
-      ).resolves.toBeUndefined();
     },
     TIMEOUT,
   );
@@ -202,7 +174,7 @@ describe("wasm against TypeScript", () => {
             const t = await mergeRuns(sources, { ...options, open: openMergeTs });
             const flat = async (out: readonly EncodedRun[]) => plain(out.flatMap((r) => decodeSst(r.body)));
             expect(await flat(w.runs)).toEqual(await flat(t.runs));
-            // Raw runs cut blocks and runs in the same places (design.md), so the bytes match too.
+            // Both cut blocks and runs in the same places (design.md), so the bytes match too.
             expect(w.runs.map((r) => [...r.body])).toEqual(t.runs.map((r) => [...r.body]));
             // And both report the same size and key range at the end of each run.
             expect(w.runs.map((r) => r.end)).toEqual(t.runs.map((r) => r.end));

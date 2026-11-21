@@ -18,21 +18,20 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { drain, readerOfBytes, runGet } from "./runs.js";
+import { drain, readerOfBytes } from "./runs.js";
 
 const MiB = 1024 * 1024;
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 const dec = new TextDecoder();
 
-/** A run whose one value is 3 MiB from a few KiB packed, so decoding it grows the instance that does. */
-const bigRun = (codec: "raw" | "lz4") =>
-  encodeRun([{ kind: "put", key: utf("big"), value: new Uint8Array(3 * MiB).fill(7), seq: 1 }], codec).then((run) => run.body);
+/** A run whose one value is 3 MiB, so encoding or scanning it grows the instance that does. */
+const bigRun = () => encodeRun([{ kind: "put", key: utf("big"), value: new Uint8Array(3 * MiB).fill(7), seq: 1 }]).then((run) => run.body);
 
 describe("recycleEngine", () => {
   it("replaces an instance past the threshold with a fresh one", async () => {
     await ensureEngine();
-    await bigRun("raw");
+    await bigRun();
     const grown = engineMemory();
     expect(grown.wasmBytes).toBeGreaterThan(4 * MiB);
 
@@ -59,7 +58,6 @@ describe("recycleEngine", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 4 * MiB,
-      codec: "raw",
       chunkBytes: 64 * 1024,
       tailBytes: 64 * 1024,
       yieldBytes: MiB,
@@ -67,7 +65,7 @@ describe("recycleEngine", () => {
 
     it("waits for the session to close, since it lives in the instance", async () => {
       await ensureEngine();
-      await bigRun("raw");
+      await bigRun();
       const { recycles } = engineMemory();
       const session = await openMerge(spec);
 
@@ -90,22 +88,15 @@ describe("recycleEngine", () => {
     });
   });
 
-  it("keeps the lz4 decoder and the block scanner on the current instance", async () => {
+  it("keeps the block scanner on the current instance", async () => {
     await ensureEngine();
-    const run = await bigRun("lz4");
-
-    recycleEngine(0);
-    const freshForGet = engineMemory().wasmBytes;
-    const reader = readerOfBytes(run);
-    const hit = await runGet(reader, utf("big"));
-    expect(hit?.kind === "put" && hit.value.byteLength).toBe(3 * MiB);
-    // The 3 MiB it unpacked went into the new instance. A hook that kept the old one would leave this at its fresh size.
-    expect(engineMemory().wasmBytes).toBeGreaterThan(freshForGet + 2 * MiB);
+    const run = await bigRun();
 
     recycleEngine(0);
     const freshForScan = engineMemory().wasmBytes;
     const hits = await drain(readerOfBytes(run).scanContains([new Uint8Array([7, 7, 7])]));
     expect(hits.map((h) => dec.decode(h.key))).toEqual(["big"]);
+    // The 3 MiB block it scanned went into the new instance. A hook that kept the old one would leave this at its fresh size.
     expect(engineMemory().wasmBytes).toBeGreaterThan(freshForScan + 2 * MiB);
   });
 });

@@ -5,7 +5,7 @@ The byte layout of a run, `l<n>/*.sst`. How a tab reads one is in
 
 A run is data blocks, a bloom filter, a block index and a fixed-size footer, back to back. A
 writer produces the sections in that order without knowing the key count up front. A reader
-finds the footer as the last 44 bytes of the file.
+finds the footer as the last 40 bytes of the file.
 
 ```
 ================================== SST file ==================================
@@ -19,7 +19,7 @@ finds the footer as the last 44 bytes of the file.
 | ...                                                                        |
 | index entry N-1                                                            |
 ------------------------------------------------------------------------------
-| footer (44 bytes)                                                          |
+| footer (40 bytes)                                                          |
 ==============================================================================
 ```
 
@@ -51,14 +51,6 @@ record can be larger, and it has no offset table.
 
 Varints are unsigned LEB128, at most 5 bytes.
 
-With codec 1 (LZ4), each block is stored packed. Index offsets, the bloom offset and the CRC
-refer to the stored bytes.
-
-```layout
-| u32 unpacked length                                                        |
-| LZ4 block-format bytes of the block above                                  |
-```
-
 ## Record
 
 ```layout
@@ -83,7 +75,7 @@ One entry per data block, in block order.
 | u32 block length                                                           |
 ```
 
-## Footer (44 bytes)
+## Footer (40 bytes)
 
 ```
 <----------------------------------- 4 bytes ----------------------------------->
@@ -94,7 +86,6 @@ One entry per data block, in block order.
 | bloom hash count                                                              |
 | index offset                                                                  |
 | index length                                                                  |
-| codec                                                                         |
 | crc32                                                                         |
 | version                                                                       |
 | magic                                                                         |
@@ -102,11 +93,9 @@ One entry per data block, in block order.
 
 `bloom offset` is also the length of the data section.
 
-`codec` is 0 for raw blocks and 1 for LZ4.
-
 `crc32` is the IEEE CRC-32 of every byte before the field.
 
-`version` must be 1. Any other version is rejected.
+`version` must be 2. Any other version is rejected.
 
 `magic` must be `OLST` (0x4f4c5354).
 
@@ -117,12 +106,3 @@ index has room for, before either sets a loop count or an allocation.
 
 The filter uses 10 bits per key and 7 hashes, about a 1% false-positive rate. The hashes are
 FNV-1a and a 32-bit mix of it, combined by double hashing.
-
-## Compression
-
-Runs in L2 and deeper use LZ4. L0 and L1 runs stay raw. L0 and L1 hold the recent writes, and
-an LZ4 block costs a decompress on every read of it. The deeper levels hold nearly all of the
-bytes.
-
-A decoder rejects a block whose unpacked length claims more than LZ4 can produce from the
-stored bytes, before it allocates.

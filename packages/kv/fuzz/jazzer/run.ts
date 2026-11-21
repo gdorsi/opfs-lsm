@@ -5,7 +5,7 @@
  *   pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]
  *   pnpm --filter @opfs-lsm/kv fuzz:jazzer sst-read 600
  *
- * Targets: sst-read, sst-decode, manifest, wal-row, lz4 (see entries.ts).
+ * Targets: sst-read, sst-decode, manifest, wal-row (see entries.ts).
  * The run starts from `fuzz/corpus/<target>/` (the committed `seed-*` files
  * plus whatever earlier runs added, which git ignores) and adds new inputs
  * there. A finding is written to `fuzz/.build/crash-*`; replay it with
@@ -22,7 +22,6 @@ const ENTRIES: Record<string, string> = {
   "sst-decode": "sstDecode",
   manifest: "manifest",
   "wal-row": "walRow",
-  lz4: "lz4",
 };
 
 const [target = "", seconds = "600", replay] = process.argv.slice(2);

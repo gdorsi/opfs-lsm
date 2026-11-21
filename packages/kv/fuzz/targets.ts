@@ -12,8 +12,8 @@
  * - Where the engine checks a CRC (`decodeSst`, which the SharedWorker runs
  *   before compacting; `decodeGeneration`): changed bytes must throw
  *   `CorruptDatabaseError`, never decode.
- * - Where it does not (a tab's `SstReader`, LZ4 unpack, block scans, WAL
- *   rows): any answer is allowed, within the rules above.
+ * - Where it does not (a tab's `SstReader`, block scans, WAL rows): any
+ *   answer is allowed, within the rules above.
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
@@ -21,10 +21,9 @@ import { decodeOps } from "../src/idb/wal.js";
 import { crc32 } from "../src/store/crc32.js";
 import { Miss, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
-import { lz4DecompressJs } from "../tests/oracle/lz4-js.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import type { KeyRange, SstEntry } from "../src/store/sst.js";
+import { SST_FOOTER_BYTES, type KeyRange, type SstEntry } from "../src/store/sst.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
 import { ownedEntry } from "../tests/runs.js";
 
@@ -42,14 +41,12 @@ const TIME_LIMIT_MS = Number(env.KV_FUZZ_TIME_LIMIT_MS ?? 2000);
 /** Bytes one target call may allocate in ArrayBuffers or wasm memory. */
 const ALLOC_LIMIT = 64 << 20;
 
-const FOOTER_BYTES = 44;
-
 const u32 = (b: Uint8Array, o: number): number | undefined =>
   o >= 0 && o + 4 <= b.byteLength ? new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(o, true) : undefined;
 
 /** Rewrite an SST footer's CRC so a decoder reaches the structure behind it. */
 export function fixSstCrc(buf: Uint8Array): void {
-  if (buf.byteLength < FOOTER_BYTES) return;
+  if (buf.byteLength < SST_FOOTER_BYTES) return;
   const at = buf.byteLength - 12;
   new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setUint32(at, crc32(buf.subarray(0, at)), true);
 }
@@ -61,9 +58,9 @@ export function fixSstCrc(buf: Uint8Array): void {
 export type Repair = "none" | "crc" | "trailer";
 
 export function repairSst(buf: Uint8Array, how: Repair): void {
-  if (how === "trailer" && buf.byteLength >= FOOTER_BYTES) {
+  if (how === "trailer" && buf.byteLength >= SST_FOOTER_BYTES) {
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    view.setUint32(buf.byteLength - 8, 1, true);
+    view.setUint32(buf.byteLength - 8, 2, true);
     view.setUint32(buf.byteLength - 4, 0x4f4c5354, true);
   }
   if (how !== "none") fixSstCrc(buf);
@@ -76,21 +73,21 @@ export function fixManifestCrc(buf: Uint8Array): void {
   new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setUint32(at, crc32(buf.subarray(0, at)), true);
 }
 
-type Footer = { entryCount: number; blockCount: number; dataLen: number; hashCount: number; indexStart: number; codec: number };
+type Footer = { entryCount: number; blockCount: number; dataLen: number; hashCount: number; indexStart: number };
 
 export function footerOf(buf: Uint8Array): Footer | undefined {
-  if (buf.byteLength < FOOTER_BYTES) return undefined;
-  const at = buf.byteLength - FOOTER_BYTES;
+  if (buf.byteLength < SST_FOOTER_BYTES) return undefined;
+  const at = buf.byteLength - SST_FOOTER_BYTES;
   const f = (i: number) => u32(buf, at + 4 * i)!;
-  return { entryCount: f(0), blockCount: f(1), dataLen: f(2), hashCount: f(4), indexStart: f(5), codec: f(7) };
+  return { entryCount: f(0), blockCount: f(1), dataLen: f(2), hashCount: f(4), indexStart: f(5) };
 }
 
 /**
- * The framed bytes of each block the index names, read without trusting it.
- * A block counts when it lies inside the file, as `blockBytes` checks it,
- * even past `dataLen`: `decodeSst` does not compare the two.
+ * The bytes of each block the index names, read without trusting it. A
+ * block counts when it lies inside the file, as `blockBytes` checks it, even
+ * past `dataLen`: `decodeSst` does not compare the two.
  */
-export function framedBlocks(buf: Uint8Array): Uint8Array[] {
+export function blocksOf(buf: Uint8Array): Uint8Array[] {
   const f = footerOf(buf);
   if (!f) return [];
   const out: Uint8Array[] = [];
@@ -211,7 +208,7 @@ export type ReadResult = {
 export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<ReadResult> {
   return bounded("a tab read of a run", async () => {
     const reader = new SstReader(bytesFile(buf), new PageCache(), probe.range);
-    const max = 255 * buf.byteLength + 16;
+    const max = buf.byteLength;
     const one = async <T>(what: string, run: () => Promise<T>): Promise<T | "error"> => {
       try {
         return await run();
@@ -416,21 +413,4 @@ export function encodeWalRow(ops: readonly RowOp[], validAt?: number): Uint8Arra
     if ("put" in op) bytes(op.value);
   }
   return out;
-}
-
-/**
- * The TypeScript LZ4 block decoder. No CRC guards it in a tab. It must
- * return exactly `size` bytes or throw `CorruptDatabaseError`.
- */
-export async function checkLz4(src: Uint8Array, size: number): Promise<Uint8Array | undefined> {
-  return bounded("lz4DecompressJs", () => {
-    try {
-      const out = lz4DecompressJs(src, size);
-      if (out.byteLength !== size) throw new RuleBroken(`lz4DecompressJs returned ${out.byteLength} bytes, not ${size}`);
-      return out;
-    } catch (err) {
-      expectCorrupt("lz4DecompressJs", err);
-      return undefined;
-    }
-  });
 }

@@ -16,7 +16,7 @@ function wipe(): Promise<void> {
 
 const key = (i: number) => new TextEncoder().encode(`k${String(i).padStart(6, "0")}`);
 
-/** Incompressible, so the run's pages hold what the values weigh. */
+/** A value of its own per key, so a read shows which key it came from. */
 function value(i: number): Uint8Array {
   const out = new Uint8Array(VALUE_BYTES);
   let x = (i + 1) * 2654435761;

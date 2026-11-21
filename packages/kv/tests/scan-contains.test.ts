@@ -46,9 +46,9 @@ beforeAll(async () => {
   await ensureEngine();
 });
 
-describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) => {
+describe("SstReader.scanContains", () => {
   it("matches what the cursor filter gives, over several blocks and bounds", async () => {
-    const reader = readerOfBytes((await encodeRun(entries, codec)).body);
+    const reader = readerOfBytes((await encodeRun(entries)).body);
     for (const patterns of [pats(" w3"), pats(" w3", " c0"), pats(" nope"), pats(" w")]) {
       for (const bounds of [undefined, { start: enc.encode("k/00100") }, { endExclusive: enc.encode("k/00450") }, { start: enc.encode("k/00123"), endExclusive: enc.encode("k/00321") }]) {
         expect(await keys(reader.scanContains(patterns, bounds))).toEqual(await expected(reader, patterns, bounds));
@@ -58,7 +58,7 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
   });
 
   it("gives the forward hits backward", async () => {
-    const reader = readerOfBytes((await encodeRun(entries, codec)).body);
+    const reader = readerOfBytes((await encodeRun(entries)).body);
     for (const patterns of [pats(" w3"), pats(" w3", " c0"), pats(" nope"), pats(" w")]) {
       for (const bounds of allBounds) {
         const forward = await keys(reader.scanContains(patterns, bounds));
@@ -68,7 +68,7 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
   });
 
   it("gives the forward hits backward without the wasm scanner", async () => {
-    const reader = readerOfBytes((await encodeRun(entries, codec)).body);
+    const reader = readerOfBytes((await encodeRun(entries)).body);
     const prev = useBlockScanner(undefined);
     try {
       for (const bounds of allBounds) {
@@ -82,7 +82,7 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
   });
 
   it("falls back to the cursor when no wasm scanner is installed", async () => {
-    const reader = readerOfBytes((await encodeRun(entries, codec)).body);
+    const reader = readerOfBytes((await encodeRun(entries)).body);
     const prev = useBlockScanner(undefined);
     try {
       expect(await keys(reader.scanContains(pats(" w3", " c0")))).toEqual(await expected(reader, pats(" w3", " c0")));
@@ -92,7 +92,7 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
   });
 
   it("reports a corrupt block as CorruptDatabaseError", async () => {
-    const sst = (await encodeRun(entries, codec)).body;
+    const sst = (await encodeRun(entries)).body;
     const head = new DataView(sst.buffer, sst.byteOffset);
     head.setUint32(0, head.getUint32(0, true) + 1, true);
     await expect(drain(readerOfBytes(sst).scanContains(pats(" w3")))).rejects.toThrow(CorruptDatabaseError);
@@ -100,8 +100,8 @@ describe.each(["raw", "lz4"] as const)("SstReader.scanContains (%s)", (codec) =>
 
   it("walks every run of a level in key order", async () => {
     const half = entries.length >> 1;
-    const lo = readerOfBytes((await encodeRun(entries.slice(0, half), codec)).body);
-    const hi = readerOfBytes((await encodeRun(entries.slice(half), codec)).body);
+    const lo = readerOfBytes((await encodeRun(entries.slice(0, half))).body);
+    const hi = readerOfBytes((await encodeRun(entries.slice(half))).body);
     const level = new RunLevel([lo, hi]);
     const bounds = { start: enc.encode("k/00200"), endExclusive: enc.encode("k/00400") };
     expect(await keys(level.scanContains(pats(" w3"), bounds))).toEqual(

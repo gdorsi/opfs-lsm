@@ -3,15 +3,14 @@ import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
 import { throughAt, type Marks } from "../../src/store/marks.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
-import { readFooter, SST_FOOTER_BYTES, type RunEnd, type SstCodec, type SstEntry, type SstFooter } from "../../src/store/sst.js";
+import { readFooter, SST_FOOTER_BYTES, type RunEnd, type SstEntry, type SstFooter } from "../../src/store/sst.js";
 import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize } from "./sst-ref.js";
 
 /**
  * The merge session in TypeScript (crates/engine-abi.md, "Merge session"),
  * as an oracle for the wasm one. It asks for the same reads and merges by
  * the same rules, but holds more: it decodes each read's blocks at once and
- * gathers an output run's entries before it encodes them. Its runs are raw
- * whatever `spec.codec` says.
+ * gathers an output run's entries before it encodes them.
  */
 export function openMergeTs(spec: MergeSpec): MergeCore {
   return new Session(spec);
@@ -205,10 +204,9 @@ class Source {
 
 /** What a reader learned of its current run from the run's footer and index. */
 type Layout = {
-  readonly codec: SstCodec;
   readonly dataLen: number;
   readonly entryCount: number;
-  /** The framed length of each data block, in file order. */
+  /** The length of each data block, in file order. */
   readonly blocks: readonly number[];
   /** What the run's CRC covers after the data: the bloom, the index and the footer's fields. */
   readonly meta: Uint8Array;
@@ -339,10 +337,9 @@ class Reader {
 
   /** Index the run from `meta`, its bytes from the end of its data on. */
   private startBlocks(footer: SstFooter, meta: Uint8Array): Blocks {
-    // The CRC sits after the footer's eight fields and covers every byte before it.
-    const crcAt = footer.indexEnd + 32 - footer.dataLen;
+    // The CRC sits after the footer's seven fields and covers every byte before it.
+    const crcAt = footer.indexEnd + 28 - footer.dataLen;
     const layout: Layout = {
-      codec: footer.codec,
       dataLen: footer.dataLen,
       entryCount: footer.entryCount,
       blocks: blockLengths(meta, footer),
@@ -379,7 +376,7 @@ class Reader {
     let o = 0;
     for (; read.arrived < read.requested; read.arrived++) {
       const length = read.layout.blocks[read.arrived]!;
-      for (const e of decodeBlock(bytes.subarray(o, o + length), read.layout.codec)) entries.push(e);
+      for (const e of decodeBlock(bytes.subarray(o, o + length))) entries.push(e);
       o += length;
     }
     read.seen += entries.length;

@@ -7,7 +7,7 @@
 //! SST of their entries in order, and the marks as (start, end, through)
 //! ranges, `None` for no end.
 
-use crate::sst::{decode_sst, entry_size, Codec, EncodedRun, Entry, SstError, SstWriter};
+use crate::sst::{decode_sst, entry_size, EncodedRun, Entry, SstError, SstWriter};
 use alloc::vec::Vec;
 use core::mem;
 
@@ -68,7 +68,6 @@ pub(crate) fn merge_sst_bytes(
     drop_tombstones: bool,
     marks: &[Mark],
     target_bytes: usize,
-    codec: Codec,
 ) -> Result<Vec<EncodedRun>, SstError> {
     let mut inputs = sst_bytes
         .iter()
@@ -82,7 +81,7 @@ pub(crate) fn merge_sst_bytes(
     }
 
     let mut runs = Vec::new();
-    let mut writer = SstWriter::new(codec);
+    let mut writer = SstWriter::new();
     let mut bytes = Vec::new();
     let mut size = 0;
     while let Some(&Head { run, .. }) = heap.top() {

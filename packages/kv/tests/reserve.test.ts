@@ -24,7 +24,7 @@ const BATCH = 256;
 const enc = new TextEncoder();
 const keyOf = (i: number) => enc.encode(`k${String(i).padStart(8, "0")}`);
 
-/** Bytes that do not compress, the same on every run. */
+/** A value of its own per seed, the same on every run. */
 function noise(seed: number): Uint8Array {
   const words = new Uint32Array(VALUE / 4);
   let x = seed | 1;

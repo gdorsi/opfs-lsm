@@ -18,12 +18,12 @@
 #![allow(dead_code)]
 
 use engine_core::{
-    decode_block, decode_sst, encode_sst, scan_block_contains, Codec, EncodedRun, Entry, MergeConfig, MergeError,
-    MergeSession, Stop,
+    decode_block, decode_sst, encode_sst, scan_block_contains, EncodedRun, Entry, MergeConfig, MergeError, MergeSession,
+    Stop,
 };
 use std::collections::BTreeMap;
 
-pub const FOOTER_BYTES: usize = 44;
+pub const FOOTER_BYTES: usize = 40;
 
 /// CRC-32 (IEEE), bit by bit. The engine's own is private; this one is slow
 /// and obviously right.
@@ -62,7 +62,6 @@ pub struct Footer {
     pub data_len: u32,
     pub index_start: u32,
     pub index_end: usize,
-    pub codec: u32,
 }
 
 pub fn footer(buf: &[u8]) -> Option<Footer> {
@@ -71,12 +70,12 @@ pub fn footer(buf: &[u8]) -> Option<Footer> {
     }
     let at = buf.len() - FOOTER_BYTES;
     let f = |i: usize| u32_at(buf, at + 4 * i).unwrap();
-    Some(Footer { entry_count: f(0), block_count: f(1), data_len: f(2), index_start: f(5), index_end: at, codec: f(7) })
+    Some(Footer { entry_count: f(0), block_count: f(1), data_len: f(2), index_start: f(5), index_end: at })
 }
 
-/// The framed bytes of every data block the index names, as a tab would
-/// slice them. Bounded: stops at the first entry that does not fit.
-pub fn framed_blocks(buf: &[u8]) -> Vec<&[u8]> {
+/// The bytes of every data block the index names, as a tab would slice
+/// them. Bounded: stops at the first entry that does not fit.
+pub fn blocks_of(buf: &[u8]) -> Vec<&[u8]> {
     let Some(f) = footer(buf) else { return vec![] };
     let mut out = Vec::new();
     let mut o = f.index_start as usize;
@@ -102,10 +101,9 @@ pub fn check_decode(buf: &[u8]) {
     let Ok(entries) = decode_sst(buf) else { return };
     let f = footer(buf).expect("a decoded run has a footer");
     assert_eq!(entries.len(), f.entry_count as usize, "decode returned the footer's entry count");
-    let codec = if f.codec == 1 { Codec::Lz4 } else { Codec::Raw };
     let mut hits = Vec::new();
-    for framed in framed_blocks(buf) {
-        let packed = scan_block_contains(framed, codec, &[]).expect("a block of a run that decodes must scan");
+    for block in blocks_of(buf) {
+        let packed = scan_block_contains(block, &[]).expect("a block of a run that decodes must scan");
         hits.extend(unpack_hits(&packed));
     }
     let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
@@ -139,17 +137,17 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     needle.is_empty() || hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// `scan_block_contains` on arbitrary framed bytes. Every hit holds every
-/// pattern. When the scan succeeds, the same block wrapped in a one-block
-/// run decodes, and its puts filtered by the patterns are the hits.
-pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]]) {
-    let Ok(packed) = scan_block_contains(framed, codec, patterns) else { return };
+/// `scan_block_contains` on arbitrary bytes. Every hit holds every pattern.
+/// When the scan succeeds, the same block wrapped in a one-block run
+/// decodes, and its puts filtered by the patterns are the hits.
+pub fn check_scan(block: &[u8], patterns: &[&[u8]]) {
+    let Ok(packed) = scan_block_contains(block, patterns) else { return };
     let hits = unpack_hits(&packed);
     for (_, value) in &hits {
         assert!(patterns.iter().all(|p| contains(value, p)), "a hit holds every pattern");
     }
-    let Some(count) = record_count(framed, codec) else { return };
-    let run = wrap_block(framed, codec, count);
+    let Some(count) = u32_at(block, 0) else { return };
+    let run = wrap_block(block, count);
     let entries = decode_sst(&run).expect("a block that scans decodes as a one-block run");
     let want: Vec<(Vec<u8>, Vec<u8>)> = entries
         .into_iter()
@@ -161,21 +159,10 @@ pub fn check_scan(framed: &[u8], codec: Codec, patterns: &[&[u8]]) {
     assert_eq!(hits, want, "scan and decode agree on one block");
 }
 
-fn record_count(framed: &[u8], codec: Codec) -> Option<u32> {
-    match codec {
-        Codec::Raw => u32_at(framed, 0),
-        Codec::Lz4 => {
-            let size = u32_at(framed, 0)? as usize;
-            let block = lz4_flex::block::decompress(framed.get(4..)?, size).ok()?;
-            u32_at(&block, 0)
-        }
-    }
-}
-
-/// A run holding exactly one data block, `framed`, with no bloom bits and a
+/// A run holding exactly one data block, `block`, with no bloom bits and a
 /// valid footer and CRC.
-pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
-    let mut out = framed.to_vec();
+pub fn wrap_block(block: &[u8], count: u32) -> Vec<u8> {
+    let mut out = block.to_vec();
     let data_len = out.len() as u32;
     let index_start = out.len() as u32;
     out.extend_from_slice(&0u32.to_le_bytes());
@@ -183,12 +170,12 @@ pub fn wrap_block(framed: &[u8], codec: Codec, count: u32) -> Vec<u8> {
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&data_len.to_le_bytes());
     let index_len = out.len() as u32 - index_start;
-    for v in [count, 1, data_len, 0, 1, index_start, index_len, codec as u32] {
+    for v in [count, 1, data_len, 0, 1, index_start, index_len] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     let sum = crc32(&out);
     out.extend_from_slice(&sum.to_le_bytes());
-    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&2u32.to_le_bytes());
     out.extend_from_slice(&0x4f4c_5354u32.to_le_bytes());
     out
 }
@@ -309,8 +296,7 @@ pub fn check_session(sources: &[Vec<Vec<u8>>], config: MergeConfig, seed: u64) {
 
 /// Split fuzz bytes into a session: five header bytes, then each run as a
 /// u16 length and that many bytes, at most 8 runs. Byte 0: bit 0 drops
-/// tombstones, bit 1 writes LZ4, bit 2 fixes each run's CRC, bit 3 yields
-/// after every block. Byte 1 picks the target size (0 for none). Byte 2: bit
+/// tombstones, bit 1 fixes each run's CRC, bit 2 yields after every block. Byte 1 picks the target size (0 for none). Byte 2: bit
 /// `i` puts run `i + 1` in the same source as run `i`. Byte 3 picks the
 /// chunk (low nibble) and tail (high nibble) sizes. Byte 4 seeds the feed
 /// order.
@@ -324,7 +310,7 @@ pub fn session_case(data: &[u8]) -> Option<(Vec<Vec<Vec<u8>>>, MergeConfig, u64)
         rest = &rest[2..];
         let take = n.min(rest.len());
         let mut run = rest[..take].to_vec();
-        if flags & 4 != 0 {
+        if flags & 2 != 0 {
             fix_crc(&mut run);
         }
         rest = &rest[take..];
@@ -337,10 +323,9 @@ pub fn session_case(data: &[u8]) -> Option<(Vec<Vec<Vec<u8>>>, MergeConfig, u64)
     let config = MergeConfig {
         drop_tombstones: flags & 1 != 0,
         target_bytes: if target == 0 { usize::MAX } else { 64 * target as usize },
-        codec: if flags & 2 != 0 { Codec::Lz4 } else { Codec::Raw },
         chunk_bytes: [1, 37, 64, 512, 4096, 65536][(sizes & 0x0f) as usize % 6],
-        tail_bytes: [44, 45, 64, 100, 512, 4096, 131_072][(sizes >> 4) as usize % 7],
-        yield_bytes: if flags & 8 != 0 { 1 } else { usize::MAX },
+        tail_bytes: [40, 41, 64, 100, 512, 4096, 131_072][(sizes >> 4) as usize % 7],
+        yield_bytes: if flags & 4 != 0 { 1 } else { usize::MAX },
     };
     Some((sources, config, u64::from(seed)))
 }
@@ -366,16 +351,15 @@ pub fn encode_session_case(sources: &[Vec<Vec<u8>>], flags: u8, target: u8, size
     out
 }
 
-/// `decode_block`, the session's block path, on arbitrary framed bytes. It
-/// must agree with `decode_sst` on the same block wrapped in a one-block run
-/// and with an unfiltered `scan_block_contains`: all three decode it, or all
-/// three refuse it.
-pub fn check_block(framed: &[u8], codec: Codec) {
-    match decode_block(framed, codec) {
+/// `decode_block` on arbitrary bytes. It must agree with `decode_sst` on the
+/// same block wrapped in a one-block run and with an unfiltered
+/// `scan_block_contains`: all three decode it, or all three refuse it.
+pub fn check_block(block: &[u8]) {
+    match decode_block(block) {
         Ok(entries) => {
-            let run = wrap_block(framed, codec, entries.len() as u32);
+            let run = wrap_block(block, entries.len() as u32);
             assert_eq!(decode_sst(&run).expect("a block that decodes alone decodes in a run"), entries);
-            let packed = scan_block_contains(framed, codec, &[]).expect("a block that decodes scans");
+            let packed = scan_block_contains(block, &[]).expect("a block that decodes scans");
             let puts: Vec<(Vec<u8>, Vec<u8>)> = entries
                 .into_iter()
                 .filter_map(|e| match e {
@@ -387,28 +371,18 @@ pub fn check_block(framed: &[u8], codec: Codec) {
         }
         Err(_) => {
             // Records are read before the count is checked, so any count does.
-            assert!(decode_sst(&wrap_block(framed, codec, 0)).is_err(), "a block refused alone is refused in a run");
-            assert!(scan_block_contains(framed, codec, &[]).is_err(), "a block refused alone is refused by a scan");
+            assert!(decode_sst(&wrap_block(block, 0)).is_err(), "a block refused alone is refused in a run");
+            assert!(scan_block_contains(block, &[]).is_err(), "a block refused alone is refused by a scan");
         }
     }
 }
 
-/// Split fuzz bytes into a block: byte 0 bit 0 picks LZ4, the rest is the
-/// framed block.
-pub fn block_case(data: &[u8]) -> Option<(Codec, &[u8])> {
-    let (&flags, framed) = data.split_first()?;
-    Some((if flags & 1 != 0 { Codec::Lz4 } else { Codec::Raw }, framed))
-}
-
-/// Split fuzz bytes into a scan call: byte 0 bit 0 picks LZ4, byte 1 is the
-/// length of one pattern (0 for none, at most 8), then the pattern, then
-/// the framed block.
-pub fn scan_case(data: &[u8]) -> Option<(Codec, Vec<u8>, &[u8])> {
-    let (&flags, rest) = data.split_first()?;
-    let (&n, rest) = rest.split_first()?;
+/// Split fuzz bytes into a scan call: byte 0 is the length of one pattern
+/// (0 for none, at most 8), then the pattern, then the block.
+pub fn scan_case(data: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    let (&n, rest) = data.split_first()?;
     let n = (n as usize % 9).min(rest.len());
-    let codec = if flags & 1 != 0 { Codec::Lz4 } else { Codec::Raw };
-    Some((codec, rest[..n].to_vec(), &rest[n..]))
+    Some((rest[..n].to_vec(), &rest[n..]))
 }
 
 /// Entries for seeding: `n` keys under a shared prefix, some tombstones,
@@ -427,6 +401,6 @@ pub fn sample_entries(n: u64, seed: u64) -> Vec<Entry> {
         .collect()
 }
 
-pub fn sample_run(n: u64, seed: u64, codec: Codec) -> Vec<u8> {
-    encode_sst(&sample_entries(n, seed), codec)
+pub fn sample_run(n: u64, seed: u64) -> Vec<u8> {
+    encode_sst(&sample_entries(n, seed))
 }

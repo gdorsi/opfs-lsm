@@ -6,13 +6,13 @@
 //! std's stable sort, and the bloom filter is spelled out here, so neither
 //! shares code with the writer.
 
-use super::{Codec, Entry};
+use super::Entry;
 use crate::crc32::crc32;
 use alloc::{vec, vec::Vec};
 
 const MAGIC: u32 = 0x4f4c_5354; // OLST
-const VERSION: u32 = 1;
-const FOOTER_BYTES: usize = 44;
+const VERSION: u32 = 2;
+const FOOTER_BYTES: usize = 40;
 const TAG_PUT: u8 = 1;
 const TAG_DEL: u8 = 2;
 const BLOCK_TARGET: usize = 4 * 1024;
@@ -151,7 +151,7 @@ fn bloom_add(filter: &mut Bloom, key: &[u8]) {
     }
 }
 
-pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
+pub(super) fn encode_sst(entries: &[Entry]) -> Vec<u8> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
     sorted.sort_by(|a, b| a.key().cmp(b.key()));
 
@@ -167,14 +167,6 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
     let mut data_len = 0usize;
     for block in &blocks {
         let blob = encode_block(block);
-        let blob = match codec {
-            Codec::Raw => blob,
-            Codec::Lz4 => {
-                let mut packed = (blob.len() as u32).to_le_bytes().to_vec();
-                packed.extend(lz4_flex::block::compress(&blob));
-                packed
-            }
-        };
         let first = block.first().map(|e| e.key().to_vec()).unwrap_or_default();
         let last = block.last().map(|e| e.key().to_vec()).unwrap_or_default();
         index.push((first, last, data_len as u32, blob.len() as u32));
@@ -217,7 +209,6 @@ pub(super) fn encode_sst(entries: &[Entry], codec: Codec) -> Vec<u8> {
         bloom.hash_count as usize,
         index_offset,
         index_size,
-        codec as usize,
     ] {
         write_u32(&mut out, &mut o, field as u32);
     }

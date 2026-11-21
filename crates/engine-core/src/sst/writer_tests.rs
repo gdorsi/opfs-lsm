@@ -97,12 +97,12 @@ fn assert_end(end: &RunEnd, bytes: &[u8], entries: &[Entry], context: &str) {
     assert_eq!(end.last_key, s.last().map_or(&[][..], |e| e.key()), "{context}: last key");
 }
 
-fn assert_same_bytes(entries: &[Entry], codec: Codec, context: &str) {
-    let want = reference::encode_sst(entries, codec);
-    let run = encode_run(entries, codec);
-    assert!(run.bytes == want, "{context}: {codec:?} bytes differ ({} vs {} bytes)", run.bytes.len(), want.len());
+fn assert_same_bytes(entries: &[Entry], context: &str) {
+    let want = reference::encode_sst(entries);
+    let run = encode_run(entries);
+    assert!(run.bytes == want, "{context}: bytes differ ({} vs {} bytes)", run.bytes.len(), want.len());
     assert_end(&run.end, &run.bytes, entries, context);
-    assert_eq!(decode_sst(&run.bytes).unwrap(), sorted(entries), "{context}: {codec:?} decodes to the sorted entries");
+    assert_eq!(decode_sst(&run.bytes).unwrap(), sorted(entries), "{context}: decodes to the sorted entries");
 }
 
 #[test]
@@ -110,9 +110,7 @@ fn random_runs_encode_to_the_reference_bytes() {
     for seed in 1..=120u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let entries = entries(&mut rng);
-        for codec in [Codec::Raw, Codec::Lz4] {
-            assert_same_bytes(&entries, codec, &format!("seed {seed}, {} entries", entries.len()));
-        }
+        assert_same_bytes(&entries, &format!("seed {seed}, {} entries", entries.len()));
     }
 }
 
@@ -133,9 +131,7 @@ fn named_shapes_encode_to_the_reference_bytes() {
         ("0xff keys", vec![put(&[0xff; 300], &[7; 200], 1), put(&[0xff; 301], b"", u64::MAX)]),
     ];
     for (name, entries) in cases {
-        for codec in [Codec::Raw, Codec::Lz4] {
-            assert_same_bytes(&entries, codec, name);
-        }
+        assert_same_bytes(&entries, name);
     }
 }
 
@@ -150,8 +146,8 @@ fn a_block_may_fill_the_target_exactly() {
         let mut entries: Vec<Entry> = (0..30).map(|i| put(format!("k{i:02}").as_bytes(), &[b'x'; 120], i)).collect();
         entries.push(put(b"k30", &vec![b'y'; pad], 30));
         entries.push(put(b"k31", b"z", 31));
-        assert_same_bytes(&entries, Codec::Raw, &format!("pad {pad}"));
-        let run = encode_run(&entries, Codec::Raw);
+        assert_same_bytes(&entries, &format!("pad {pad}"));
+        let run = encode_run(&entries);
         let footer = run.bytes.len() - FOOTER_BYTES;
         let blocks = read_u32(&run.bytes, footer + 4);
         let data_len = read_u32(&run.bytes, footer + 8) as usize;
@@ -201,9 +197,7 @@ fn the_fuzz_corpus_encodes_to_the_reference_bytes() {
     for run in &runs {
         let Ok(entries) = decode_sst(run) else { continue };
         decoded += 1;
-        for codec in [Codec::Raw, Codec::Lz4] {
-            assert_same_bytes(&entries, codec, "corpus run");
-        }
+        assert_same_bytes(&entries, "corpus run");
     }
     assert!(decoded >= 10, "only {decoded} of {} corpus runs decode", runs.len());
 }
@@ -215,20 +209,18 @@ fn a_caller_can_drain_the_output_between_pushes() {
     for seed in 1..=40u64 {
         let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
         let input = sorted(&entries(&mut rng));
-        for codec in [Codec::Raw, Codec::Lz4] {
-            let mut writer = SstWriter::new(codec);
-            let (mut out, mut collected) = (Vec::new(), Vec::new());
-            for e in &input {
-                writer.push(e.into(), &mut out).unwrap();
-                if rng.chance(3) {
-                    collected.append(&mut out);
-                }
+        let mut writer = SstWriter::new();
+        let (mut out, mut collected) = (Vec::new(), Vec::new());
+        for e in &input {
+            writer.push(e.into(), &mut out).unwrap();
+            if rng.chance(3) {
+                collected.append(&mut out);
             }
-            let end = writer.finish(&mut out);
-            collected.append(&mut out);
-            assert!(collected == reference::encode_sst(&input, codec), "seed {seed} {codec:?}");
-            assert_end(&end, &collected, &input, &format!("seed {seed}"));
         }
+        let end = writer.finish(&mut out);
+        collected.append(&mut out);
+        assert!(collected == reference::encode_sst(&input), "seed {seed}");
+        assert_end(&end, &collected, &input, &format!("seed {seed}"));
     }
 }
 
@@ -238,44 +230,40 @@ fn a_writer_is_ready_for_the_next_run_after_finish() {
     let first = sorted(&entries(&mut rng));
     let second = sorted(&entries(&mut rng));
     let third = sorted(&entries(&mut rng));
-    for codec in [Codec::Raw, Codec::Lz4] {
-        let mut writer = SstWriter::new(codec);
-        assert!(writer.is_empty());
-        for run in [&first, &second, &third] {
-            let mut out = Vec::new();
-            for e in run.iter() {
-                writer.push(e.into(), &mut out).unwrap();
-            }
-            assert_eq!(writer.is_empty(), run.is_empty());
-            let end = writer.finish(&mut out);
-            assert!(writer.is_empty());
-            assert!(out == reference::encode_sst(run, codec), "{codec:?}");
-            assert_end(&end, &out, run, "reused writer");
+    let mut writer = SstWriter::new();
+    assert!(writer.is_empty());
+    for run in [&first, &second, &third] {
+        let mut out = Vec::new();
+        for e in run.iter() {
+            writer.push(e.into(), &mut out).unwrap();
         }
+        assert_eq!(writer.is_empty(), run.is_empty());
+        let end = writer.finish(&mut out);
+        assert!(writer.is_empty());
+        assert!(out == reference::encode_sst(run));
+        assert_end(&end, &out, run, "reused writer");
     }
 }
 
 #[test]
 fn a_key_below_the_last_is_refused_and_changes_nothing() {
     let put = |k: &[u8], seq: u64| Entry::Put { key: k.to_vec(), value: b"v".to_vec(), seq };
-    for codec in [Codec::Raw, Codec::Lz4] {
-        let mut writer = SstWriter::new(codec);
-        let mut out = Vec::new();
-        writer.push((&put(b"b", 1)).into(), &mut out).unwrap();
-        writer.push((&put(b"b", 2)).into(), &mut out).unwrap();
-        assert_eq!(writer.push((&put(b"a", 3)).into(), &mut out), Err(OutOfOrder));
-        assert_eq!(writer.push(EntryRef::Del { key: b"", seq: 4 }, &mut out), Err(OutOfOrder));
-        writer.push((&put(b"c", 5)).into(), &mut out).unwrap();
-        let end = writer.finish(&mut out);
-        let kept = [put(b"b", 1), put(b"b", 2), put(b"c", 5)];
-        assert!(out == reference::encode_sst(&kept, codec), "{codec:?}");
-        assert_end(&end, &out, &kept, "after refusals");
-    }
+    let mut writer = SstWriter::new();
+    let mut out = Vec::new();
+    writer.push((&put(b"b", 1)).into(), &mut out).unwrap();
+    writer.push((&put(b"b", 2)).into(), &mut out).unwrap();
+    assert_eq!(writer.push((&put(b"a", 3)).into(), &mut out), Err(OutOfOrder));
+    assert_eq!(writer.push(EntryRef::Del { key: b"", seq: 4 }, &mut out), Err(OutOfOrder));
+    writer.push((&put(b"c", 5)).into(), &mut out).unwrap();
+    let end = writer.finish(&mut out);
+    let kept = [put(b"b", 1), put(b"b", 2), put(b"c", 5)];
+    assert!(out == reference::encode_sst(&kept));
+    assert_end(&end, &out, &kept, "after refusals");
 }
 
 #[test]
 fn an_unsorted_pair_across_a_block_boundary_is_refused() {
-    let mut writer = SstWriter::new(Codec::Raw);
+    let mut writer = SstWriter::new();
     let mut out = Vec::new();
     let big = vec![1u8; 3_000];
     writer.push(EntryRef::Put { key: b"m", value: &big, seq: 1 }, &mut out).unwrap();
@@ -289,7 +277,7 @@ fn an_unsorted_pair_across_a_block_boundary_is_refused() {
 #[test]
 fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
     let mut rng = Rng(11);
-    let mut writer = SstWriter::new(Codec::Raw);
+    let mut writer = SstWriter::new();
     let mut out = Vec::new();
     let mut most = 0;
     for i in 0..4_000 {
@@ -305,7 +293,7 @@ fn the_open_block_is_held_in_no_more_bytes_than_it_is_written_in() {
 /// Hand-checked bytes of a tiny run, so the reference is not the only witness.
 #[test]
 fn a_two_entry_run_has_the_documented_bytes() {
-    let mut writer = SstWriter::new(Codec::Raw);
+    let mut writer = SstWriter::new();
     let mut out = Vec::new();
     writer.push(EntryRef::Put { key: b"ab", value: b"1", seq: 5 }, &mut out).unwrap();
     writer.push(EntryRef::Del { key: b"ac", seq: 6 }, &mut out).unwrap();
@@ -329,11 +317,11 @@ fn a_two_entry_run_has_the_documented_bytes() {
     let footer = &out[out.len() - FOOTER_BYTES..];
     let field = |i: usize| u32::from_le_bytes(footer[4 * i..4 * i + 4].try_into().unwrap()) as usize;
     assert_eq!(
-        [field(0), field(1), field(2), field(3), field(4), field(5), field(6), field(7)],
-        [2, 1, block.len(), bloom_len, 7, index_at, index.len(), 0]
+        [field(0), field(1), field(2), field(3), field(4), field(5), field(6)],
+        [2, 1, block.len(), bloom_len, 7, index_at, index.len()]
     );
-    assert_eq!(field(8) as u32, crc32(&out[..out.len() - 12]));
-    assert_eq!((field(9), field(10) as u32), (1, MAGIC));
+    assert_eq!(field(7) as u32, crc32(&out[..out.len() - 12]));
+    assert_eq!((field(8), field(9) as u32), (2, MAGIC));
     assert_eq!(end, RunEnd { entries: 2, size: out.len(), first_key: b"ab".to_vec(), last_key: b"ac".to_vec() });
 }
 
@@ -354,11 +342,9 @@ fn a_fold_keeps_the_last_entry_of_each_key() {
         }
         let last: Vec<Entry> = last.into_values().collect();
         let refs: Vec<EntryRef<'_>> = written.iter().map(EntryRef::from).collect();
-        for codec in [Codec::Raw, Codec::Lz4] {
-            let mut bytes = Vec::new();
-            let end = fold_run_into(&refs, codec, &mut bytes);
-            assert!(bytes == encode_sst(&last, codec), "seed {seed}: {codec:?} bytes differ");
-            assert_end(&end, &bytes, &last, &format!("seed {seed}"));
-        }
+        let mut bytes = Vec::new();
+        let end = fold_run_into(&refs, &mut bytes);
+        assert!(bytes == encode_sst(&last), "seed {seed}: bytes differ");
+        assert_end(&end, &bytes, &last, &format!("seed {seed}"));
     }
 }

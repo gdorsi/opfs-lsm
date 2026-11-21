@@ -7,8 +7,6 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { ensureEngine, flatEngine, type FlatEngine } from "../src/store/engine.js";
 import { useBlockScanner } from "../src/store/block-scan.js";
-import { useLz4Decoder } from "../src/store/lz4.js";
-import { lz4DecompressJs } from "../tests/oracle/lz4-js.js";
 import { watchWasmMemory } from "./targets.js";
 
 export type { FlatEngine };
@@ -22,17 +20,12 @@ export async function loadWasm(): Promise<FlatEngine> {
   return flatEngine(instance);
 }
 
-/**
- * Run `fn` with the JS decoders in place of the wasm ones: the
- * LZ4 decoder and the block scanner.
- */
+/** Run `fn` with a tab's TypeScript scan in place of the wasm block scanner. */
 export async function withoutWasm<T>(fn: () => Promise<T>): Promise<T> {
-  const lz4 = useLz4Decoder(lz4DecompressJs);
   const scan = useBlockScanner(undefined);
   try {
     return await fn();
   } finally {
-    useLz4Decoder(lz4);
     useBlockScanner(scan);
   }
 }

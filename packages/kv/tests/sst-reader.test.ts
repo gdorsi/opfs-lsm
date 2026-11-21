@@ -1,6 +1,5 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstGet, sstKeyRange } from "./oracle/sst-ref.js";
@@ -30,13 +29,6 @@ function probesOf(all: readonly SstEntry[]): Uint8Array[] {
   return [new Uint8Array(0), utf("a"), utf("i/"), utf("z"), Uint8Array.of(0xff, 0xff), ...all.flatMap((e) => [e.key, cat(e.key, Uint8Array.of(0))])];
 }
 
-async function encodings(entries: readonly SstEntry[]): Promise<[string, Uint8Array][]> {
-  return [
-    ["raw", encodeSstRef(entries)],
-    ["lz4", (await encodeRun(entries, "lz4")).body],
-  ];
-}
-
 function gapWorkload(): SstEntry[] {
   return Array.from({ length: 900 }, (_, i) =>
     i % 7 === 3
@@ -46,10 +38,6 @@ function gapWorkload(): SstEntry[] {
 }
 
 describe("lazy sst reader", () => {
-  beforeAll(async () => {
-    await ensureEngine();
-  });
-
   const cases: [string, SstEntry[]][] = [
     ["multi-index workload", indexWorkload(2_000)],
     ["keys every other number, with gaps", gapWorkload()],
@@ -58,14 +46,13 @@ describe("lazy sst reader", () => {
 
   for (const [name, entries] of cases) {
     it(`get agrees with decodeSst: ${name}`, async () => {
-      for (const [, body] of await encodings(entries)) {
-        const all = decodeSst(body);
-        const reader = openRun(body, new PageCache());
-        const probes = probesOf(all);
-        const got: string[] = [];
-        for (const k of probes) got.push(show(await runGet(reader, k)));
-        expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
-      }
+      const body = encodeSstRef(entries);
+      const all = decodeSst(body);
+      const reader = openRun(body, new PageCache());
+      const probes = probesOf(all);
+      const got: string[] = [];
+      for (const k of probes) got.push(show(await runGet(reader, k)));
+      expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
     });
   }
 
@@ -85,24 +72,20 @@ describe("lazy sst reader", () => {
 
   it("with a budget larger than the database, a second pass of gets reads nothing", async () => {
     const reads = new Reads();
-    const cache = new PageCache();
-    const runs: { reader: SstReader; all: SstEntry[] }[] = [];
-    for (const [, body] of await encodings(indexWorkload(2_000))) {
-      runs.push({ reader: openRun(body, cache, reads), all: decodeSst(body) });
-    }
-    for (const { reader, all } of runs) for (const e of all) await runGet(reader, e.key);
+    const body = encodeSstRef(indexWorkload(2_000));
+    const reader = openRun(body, new PageCache(), reads);
+    const all = decodeSst(body);
+    for (const e of all) await runGet(reader, e.key);
     expect(reads.count).toBeGreaterThan(0);
     reads.count = 0;
-    for (const { reader, all } of runs) {
-      for (const e of all) expect(show(await runGet(reader, e.key))).toBe(show(e));
-    }
+    for (const e of all) expect(show(await runGet(reader, e.key))).toBe(show(e));
     expect(reads.count).toBe(0);
   });
 
   it("with a budget smaller than one run, evicts pages and metadata and still answers every get", async () => {
     const workload = indexWorkload(6_000);
     const half = workload.length >> 1;
-    const bodies = [...(await encodings(workload.slice(0, half))), ...(await encodings(workload.slice(half)))].map(([, b]) => b);
+    const bodies = [encodeSstRef(workload.slice(0, half)), encodeSstRef(workload.slice(half))];
 
     const metaBytes: number[] = [];
     for (const body of bodies) {
@@ -142,7 +125,7 @@ describe("lazy sst reader", () => {
   });
 
   it("concurrent misses on one page share one read", async () => {
-    const [, body] = (await encodings(indexWorkload(2_000)))[0]!;
+    const body = encodeSstRef(indexWorkload(2_000));
     const all = decodeSst(body).sort((a, b) => compareBytes(a.key, b.key));
     const sameBlock = all.slice(100, 104).map((e) => e.key);
 

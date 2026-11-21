@@ -10,7 +10,6 @@ import {
   type BlockBytes,
   type EncodedRun,
   type KeyRange,
-  type SstCodec,
   type SstEntry,
   type SstFooter,
 } from "../../src/store/sst.js";
@@ -23,8 +22,7 @@ import {
  */
 
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 1;
-const CODEC_RAW = 0;
+const VERSION = 2;
 const TAG_PUT = 1;
 const TAG_DEL = 2;
 const OFFSET_STRIDE = 4;
@@ -122,7 +120,7 @@ function splitBlocks(sorted: readonly SstEntry[], target: number): SstEntry[][] 
 }
 
 /**
- * One data block before compression:
+ * One data block:
  *   u32 count | varint prefixLen | prefix | count records | u16 offsets
  * The prefix is the longest one shared by every key in the block, which
  * for sorted keys is the first and last key's. `offsets[j]` is where
@@ -170,14 +168,14 @@ function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, pr
 }
 
 /**
- * Encode SST version 1 with raw blocks. LZ4 blocks come only from the wasm encoder.
+ * Encode SST version 2.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
  *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
- *   footer, 44 bytes:
+ *   footer, 40 bytes:
  *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
- *     u32 bloomHashCount | u32 indexOffset | u32 indexLen | u32 codec
- *     u32 crc32 of every byte before it | u32 version=1 | u32 magic
+ *     u32 bloomHashCount | u32 indexOffset | u32 indexLen
+ *     u32 crc32 of every byte before it | u32 version=2 | u32 magic
  */
 export function encodeRunRef(
   entries: readonly SstEntry[],
@@ -244,7 +242,6 @@ export function encodeRunRef(
     bloom.hashCount,
     indexOffset,
     indexSize,
-    CODEC_RAW,
   ]) {
     view.setUint32(o, field, true);
     o += 4;
@@ -279,14 +276,13 @@ type BlockLayout = {
   dataStart: number;
   indexStart: number;
   indexEnd: number;
-  codec: SstCodec;
 };
 
 function parseFooter(buf: Uint8Array): BlockLayout {
   const f = readFooter(buf, buf.byteLength);
   return {
     view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
-    crcOff: f.indexEnd + 32,
+    crcOff: f.indexEnd + 28,
     entryCount: f.entryCount,
     blockCount: f.blockCount,
     dataLen: f.dataLen,
@@ -294,7 +290,6 @@ function parseFooter(buf: Uint8Array): BlockLayout {
     dataStart: 0,
     indexStart: f.indexStart,
     indexEnd: f.indexEnd,
-    codec: f.codec,
   };
 }
 
@@ -330,7 +325,7 @@ function readBlockIndex(
 }
 
 /**
- * The framed length of each data block, in file order, from `meta`: a run's
+ * The length of each data block, in file order, from `meta`: a run's
  * bytes from `footer.dataLen` to its end. Encoders write blocks back to back
  * from offset 0 and a merge reads them that way, so the index must agree.
  */
@@ -361,10 +356,10 @@ function walkBlock(b: BlockBytes): SstEntry[] {
   return out;
 }
 
-/** One data block, framed as the block index frames it, decoded as `decodeSst` decodes it. */
-export function decodeBlock(framed: Uint8Array, codec: SstCodec): SstEntry[] {
-  const view = new DataView(framed.buffer, framed.byteOffset, framed.byteLength);
-  return walkBlock(blockBytes(framed, view, 0, { offset: 0, length: framed.byteLength }, codec));
+/** One data block, decoded as `decodeSst` decodes it. */
+export function decodeBlock(block: Uint8Array): SstEntry[] {
+  const view = new DataView(block.buffer, block.byteOffset, block.byteLength);
+  return walkBlock(blockBytes(block, view, 0, { offset: 0, length: block.byteLength }));
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -381,7 +376,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart, ix, meta.codec)));
+    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart, ix)));
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst entry count mismatch");
