@@ -82,6 +82,7 @@ describe("multi index", () => {
   it("accepts 1,000 distinct elements and rejects 1,001", () => {
     const many = (n: number) => Array.from({ length: n }, (_, i) => `t${i}`);
     expect(entries(c, { id: "1", tags: many(1000), at: 0 })).toHaveLength(1000);
+    expect(entries(c, { id: "1", tags: [...many(1000), "t0"], at: 0 })).toHaveLength(1000);
     expect(codeOf(() => entries(c, { id: "1", tags: many(1001), at: 0 }))).toBe("document");
   });
 });
