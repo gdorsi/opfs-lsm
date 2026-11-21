@@ -36,12 +36,11 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `examples/notes-manager-automerge` | `pnpm --filter @opfs-lsm/example-notes-manager-automerge test`, `check` and `build`. For a change to the editor, the tree, the bodies or the UI, run the browser proof (`examples/notes-manager-automerge/DESIGN.md`, "Browser proof") with `agent-browser`. |
 | `examples/whiteboard-yjs` | `pnpm --filter @opfs-lsm/example-whiteboard-yjs test`, `check` and `build`. For a change to `src/app`, drive the app in a browser (`dev`, port 4183): draw every shape kind, undo and redo, reload and compare `whiteboard.digest()`, Escape and blur mid-drag leave no undo step, two tabs converge, and `?fault=1` shows the error and recovers. For the render path, drag a shape on the 5,000 and 20,000 sample boards and read the frame intervals. |
 | A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `sst.rs`, and the merge session that reads runs, `merge.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
+| The ingest trigger (`pendingBytes`, the idle flush, the limit the tabs ask for) | `tests/ingest-policy.test.ts`, `tests/backpressure.test.ts` and `tests/port-ingest.test.ts`. No formal model covers it. |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
 
 A performance claim in any row is accepted on this rule. State the mechanism of the win. Name a workload where the change should make no difference or lose, and run it too. Run the before and after on the default seed, then the same before and after on two other seeds the change was not developed on, with `--seed N`. On each seed the min–max ranges of before and after do not overlap, which `compare` reports as a difference. Compare only files on the same seed.
-
-`pendingBytes` has no check. See [Gaps](#gaps).
 
 ## Run the Chrome proofs
 
@@ -229,7 +228,7 @@ The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-
 
 The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `ed24875c531ab130259975988ca8d0dd1f93253c`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
-`pendingBytes` is outside the model. A pass says nothing about the ingest trigger.
+`pendingBytes` is outside the model. A pass says nothing about the ingest trigger, which the unit tests check (see [Pick the check](#pick-the-check)).
 
 ## Run the unit tests
 
@@ -359,6 +358,5 @@ While you are changing product code and using verify-kv, follow that skill's "In
 
 These exist on main and have no feature file and no formal check. Leave them out of the feature map until a maintain pass adds a recipe.
 
-- `pendingBytes`, the ingest trigger in `packages/kv/src/host/engine-host.ts` and the WAL meta key of the same name in `packages/kv/src/idb/wal.ts`.
 - A refused WAL append in a real browser. Chrome's `Storage.overrideQuotaForOrigin` refuses OPFS writes and lets IndexedDB commits through, so `drive quota` proves the reserve on a refused flush only. The retry of a refused append (`make-room`, the new connection) runs in `tests/wal-full.test.ts`, over a fake-indexeddb transaction that aborts the way Chromium and Firefox were measured to.
 - The reserve in Firefox and Safari. No drive runs there.
