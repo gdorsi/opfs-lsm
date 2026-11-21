@@ -166,7 +166,8 @@ export function step(
           };
           break;
         case "publishGeneration":
-          // loadLatestGeneration now sees the new L0 (or pending fold).
+          // The manifest that lists the new L0 is on disk. A tab loads it once
+          // advanceIngested records it; reads here see it from this step on.
           next = {
             ...s,
             sst:

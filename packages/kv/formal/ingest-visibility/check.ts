@@ -71,6 +71,18 @@ function main(): void {
   console.log(`property: NoLostAcks — after append, resolveGet sees that value`);
   console.log(`          until a later append supersedes it`);
 
+  const broken: [string, IngestStep[]][] = [
+    ["advanceIngested before publishGeneration", ["publishL0", "advanceIngested", "publishGeneration"]],
+    ["advanceIngested first", ["advanceIngested", "publishL0", "publishGeneration"]],
+  ];
+  for (const [name, wrong] of broken) {
+    if (!explore(wrong).violation) {
+      console.error(`FAIL model too weak: the broken order "${name}" passes`);
+      process.exit(1);
+    }
+    console.log(`  broken variant caught: ${name}`);
+  }
+
   const { states, violation } = explore(order);
   if (violation) {
     console.error(`\nFAIL NoLostAcks after ${states} distinct states`);
