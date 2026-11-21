@@ -38,6 +38,41 @@ test("updates round-trip and documents stay apart", async () => {
   await db.close();
 });
 
+test("content the doc held before the persistence was attached is stored", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "a");
+  seed.doc.getMap("m").set("stored", 1);
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  doc.getMap("m").set("before", 1);
+  const p = new KvPersistence(db, "a", doc);
+  await p.whenSynced;
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.deepEqual(again.doc.getMap("m").toJSON(), { before: 1, stored: 1 });
+});
+
+test("an update made while the persistence loads is stored next to the loaded ones", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "a");
+  seed.doc.getMap("m").set("stored", 1);
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "a", doc);
+  doc.getMap("m").set("during", 1);
+  await p.whenSynced;
+  assert.deepEqual(doc.getMap("m").toJSON(), { during: 1, stored: 1 });
+  await p.destroy();
+
+  const again = await reopen(db, "a");
+  assert.deepEqual(again.doc.getMap("m").toJSON(), { during: 1, stored: 1 });
+});
+
 test("a doc loaded at the trim size merges its updates into one once it goes quiet", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const first = await reopen(db, "doc", 10);
@@ -85,7 +120,10 @@ test("a merge that starts while this doc's own updates are in flight replaces ev
   // The merge fires on the next macrotask, before the next 500 puts land.
   open.p.trimDelayMs = 0;
   for (let i = 500; i < 1000; i++) open.doc.getText("t").insert(i, "x");
-  await sleep(20);
+  // This timer is set after the merge's, so it fires after the merge started. The flush then waits for the merge,
+  // which a destroy would cut off.
+  await sleep(0);
+  await open.p.flush();
   await open.p.destroy();
 
   const again = await reopen(db, "doc", 1_000_000);

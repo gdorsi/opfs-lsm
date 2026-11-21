@@ -42,6 +42,8 @@ export class KvPersistence {
     this.prefix = docPrefix(name);
     doc.on("update", this.storeUpdate);
     doc.on("destroy", this.destroy);
+    // Content the doc held before this persistence was attached fires no update event.
+    if (doc.store.clients.size > 0) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
     this.whenSynced = this.load();
   }
 
