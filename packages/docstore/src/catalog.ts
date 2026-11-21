@@ -471,5 +471,5 @@ function compile(collection: CollectionId, rows: Uint8Array, name: string, i: St
       : { kind: "text", on, text: i.spec.text.split(".") };
   const kind = spec.kind === "text" ? "text" : spec.unique ? "unique" : spec.include ? "covering" : "sorted";
   const prefix = indexPrefix(collection, i.id as IndexId);
-  return { name, id: i.id as IndexId, state: i.state, spec, target: { kind, prefix, rowPrefix: rows, arity: on.length } };
+  return { name, id: i.id as IndexId, state: i.state, spec, target: { kind, prefix, rowPrefix: rows, arity: on.length, multi: spec.kind === "sorted" && spec.multi } };
 }

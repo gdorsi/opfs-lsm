@@ -99,6 +99,20 @@ export function after(key: Uint8Array): Uint8Array {
 }
 const ZERO = Uint8Array.of(0);
 
+/**
+ * The bound right after `key` and, when `key` is longer than a key can be,
+ * after every key it starts with. No stored key passes `MAX_KEY_BYTES` and
+ * kv takes no longer bound, so at the limit it is the next key that can exist.
+ */
+function past(key: Uint8Array): Uint8Array {
+  if (key.length < MAX_KEY_BYTES) return after(key);
+  const next = key.slice(0, MAX_KEY_BYTES);
+  let end = MAX_KEY_BYTES;
+  while (next[end - 1] === 0xff) end--;
+  next[end - 1]!++;
+  return next.subarray(0, end);
+}
+
 export function bytesEqual(a: Uint8Array | undefined, b: Uint8Array | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
@@ -117,13 +131,14 @@ export function keyString(key: Uint8Array): string {
   return String.fromCharCode.apply(null, key as unknown as number[]);
 }
 
-export function compareBytes(a: Uint8Array, b: Uint8Array): number {
-  const n = Math.min(a.length, b.length);
+/** The order of `a` from `from` and `b` from `to`, as bytes. */
+export function compareBytes(a: Uint8Array, b: Uint8Array, from = 0, to = 0): number {
+  const n = Math.min(a.length - from, b.length - to);
   for (let i = 0; i < n; i++) {
-    const d = a[i]! - b[i]!;
+    const d = a[from + i]! - b[to + i]!;
     if (d !== 0) return d;
   }
-  return a.length - b.length;
+  return a.length - from - (b.length - to);
 }
 
 function badQuery(message: string): never {
@@ -166,13 +181,32 @@ export type ScanTarget =
       readonly prefix: Uint8Array;
       readonly rowPrefix: Uint8Array;
       readonly arity: number;
+      /** The first component is an array field: one document holds several entries. */
+      readonly multi?: boolean;
     };
 
+/** The most combinations of listed values one query reads. */
+const MAX_RANGES = 64;
+
+export type ScanPlan = {
+  /** One range per combination of the values `eq` lists, in the order of their prefixes. `skip` is the length of the range's `eq` prefix. */
+  readonly ranges: readonly { readonly range: Range; readonly skip: number }[];
+  /** One document can hold two combinations: a merge may meet it twice. */
+  readonly repeats: boolean;
+};
+
+/** A slot's distinct values, as the bytes they encode to, in key order. */
+function slotValues(slot: unknown): Uint8Array[] {
+  const bytes = (Array.isArray(slot) ? slot : [slot]).map((v) => encodeTuple([checkQueryValue(v)])).sort(compareBytes);
+  return bytes.filter((b, i) => i === 0 || !bytesEqual(b, bytes[i - 1]));
+}
+
 /**
- * The one bound builder. `eq` fixes the first k components and one bound
- * applies to component k + 1. `limit` is not set here.
+ * The one planner. `eq` fixes the first k components, each slot to a value or
+ * to a list of them, and one bound applies to component k + 1. Each
+ * combination of the listed values is one range. `limit` is not set here.
  */
-export function scanPlan(target: ScanTarget, q: QueryInput): Range {
+export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
   const { gt, gte, lt, lte, startsWith } = q;
   if (gt !== undefined && gte !== undefined) badQuery("gt and gte together");
   if (lt !== undefined && lte !== undefined) badQuery("lt and lte together");
@@ -181,33 +215,58 @@ export function scanPlan(target: ScanTarget, q: QueryInput): Range {
     badQuery("startsWith takes a well-formed string and no other bound");
   }
   const eq = q.eq ?? [];
-  const arity = target.kind === "rows" ? 1 : target.arity;
+  const rows = target.kind === "rows";
+  const arity = rows ? 1 : target.arity;
   if (!Array.isArray(eq) || eq.length > arity) badQuery(`eq takes at most ${arity} values`);
   if (eq.length === arity && (bounded || startsWith !== undefined)) {
     badQuery("eq fixes every component, so no bound can follow");
   }
   if (q.match !== undefined && target.kind !== "text") badQuery("match needs a text index");
 
-  let [lower, upper] = target.kind === "rows" ? rowBounds(target.prefix, q, eq) : indexBounds(target.prefix, q, eq);
-  const reverse = q.reverse === true;
+  const lists = eq.some(Array.isArray);
+  // There, two entries equal after `eq` are two documents.
+  if (lists && (rows || target.kind === "unique")) badQuery("a unique index and the rows take no list in eq");
+  let heads: Uint8Array[];
+  let repeats = false;
+  if (!lists) heads = [rows ? target.prefix : encodeTuple(eq.map(checkQueryValue), target.prefix)];
+  else {
+    const slots = eq.map(slotValues);
+    if (slots.reduce((n, s) => n * s.length, 1) > MAX_RANGES) badQuery(`eq takes at most ${MAX_RANGES} combinations`);
+    heads = slots.reduce((hs, s) => hs.flatMap((h) => s.map((b) => concat(h, b))), [target.prefix]);
+    repeats = target.kind !== "rows" && target.multi === true && slots[0]!.length > 1;
+  }
+  const bounds = heads.map((head) => (rows ? rowBounds(head, q, eq) : indexBounds(head, q)));
+  // An empty list reads nothing, and its bound is still checked.
+  if (heads.length === 0) indexBounds(target.prefix, q);
+
+  // The cursor is one result: every range resumes after the bytes it holds past its own `eq` prefix.
+  let tail: Uint8Array | undefined;
   if (q.after !== undefined) {
     const k = decodeCursor(q.after);
-    if (compareBytes(k, lower) < 0 || compareBytes(k, upper) >= 0) {
-      throw new DocStoreError("cursor", "the cursor is outside this query's range");
-    }
-    if (reverse) upper = k;
-    else lower = after(k);
+    const at = bounds.findIndex(([lower, upper]) => compareBytes(k, lower) >= 0 && compareBytes(k, upper) < 0);
+    if (at < 0) throw new DocStoreError("cursor", "the cursor is outside this query's range");
+    tail = k.subarray(heads[at]!.length);
   }
-  return {
-    start: lower,
-    endExclusive: upper,
-    ...(reverse ? { reverse } : {}),
-    ...(q.match !== undefined ? { valueContains: matchPatterns(q.match) } : {}),
-  };
+  const reverse = q.reverse === true;
+  const valueContains = q.match !== undefined ? matchPatterns(q.match) : undefined;
+  const ranges: { range: Range; skip: number }[] = [];
+  heads.forEach((head, i) => {
+    let [start, endExclusive] = bounds[i]!;
+    if (tail) {
+      const at = concat(head, tail);
+      // `at` can pass a key's length under a longer listed value than the cursor's own.
+      if (!reverse) start = past(at);
+      else endExclusive = at.length > MAX_KEY_BYTES ? past(at) : at;
+    }
+    // A range the cursor leaves empty is dropped, unless it is the query's only one.
+    if (heads.length > 1 && compareBytes(start, endExclusive) >= 0) return;
+    ranges.push({ range: { start, endExclusive, ...(reverse ? { reverse } : {}), ...(valueContains ? { valueContains } : {}) }, skip: head.length });
+  });
+  return { ranges, repeats };
 }
 
-function indexBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
-  const p = encodeTuple(eq.map(checkQueryValue), prefix);
+/** `p` is the prefix and the tuple of the components `eq` fixes. */
+function indexBounds(p: Uint8Array, q: QueryInput): [Uint8Array, Uint8Array] {
   const at = (v: unknown) => tupleBounds(encodeTuple([checkQueryValue(v)], p));
   if (q.startsWith !== undefined) {
     const { start, endExclusive } = stringPrefixBounds(p, q.startsWith);

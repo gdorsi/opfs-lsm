@@ -1,8 +1,8 @@
 import { CorruptDatabaseError, prefixBound, type Db } from "@opfs-lsm/kv";
 import fc from "fast-check";
 import { afterEach, describe, expect, it } from "vitest";
-import { collection, defineSchema, openDocStore } from "../src/index.js";
-import { concat, rowPrefix, type CollectionId } from "../src/keys.js";
+import { collection, defineSchema, openDocStore, type Cursor } from "../src/index.js";
+import { concat, encodeCursor, rowPrefix, type CollectionId } from "../src/keys.js";
 import type { Json, QueryInput, Scalar } from "../src/schema.js";
 import { asQuery, checkQuery, datasetArb, queryArb, schema, type Doc, type DocQuery, type Docs } from "./docs.js";
 import { codeOf, freshName, openKv, storedPrefix } from "./harness.js";
@@ -60,6 +60,37 @@ describe("query matches a brute-force filter and sort", () => {
           },
         ),
         { numRuns: 60 },
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("a list in eq on a multi index", () => {
+  it("returns a document once when it holds several listed tags, forward and reverse, paged by any size", async () => {
+    const tags = ["p", "q", "r"];
+    const docArb = fc.uniqueArray(
+      fc.record({ id: fc.constantFrom("a", "b", "c", "d", "e", "f"), b: fc.constantFrom(0, 1, 2), tags: fc.subarray(tags) }),
+      { selector: (d) => d.id },
+    );
+    const queryArb = fc.record({
+      index: fc.constant("tags"),
+      eq: fc.subarray(tags, { minLength: 1 }).map((list) => [list]),
+      reverse: fc.boolean(),
+      bound: fc.constantFrom({}, { gte: 1 }, { lt: 2 }, { gt: 0, lte: 1 }),
+    });
+    await expect(
+      fc.assert(
+        fc.asyncProperty(docArb, queryArb, fc.integer({ min: 1, max: 4 }), async (dataset, { bound, ...q }, pageSize) => {
+          const kv = await openKv(freshName());
+          try {
+            const c = (await openDocStore(kv, schema)).collection("docs");
+            await c.putMany(dataset);
+            await checkQuery(c, dataset.map(stored), "tags", { ...q, ...bound }, pageSize);
+          } finally {
+            await kv.close();
+          }
+        }),
+        { numRuns: 100 },
       ),
     ).resolves.toBeUndefined();
   });
@@ -189,6 +220,34 @@ describe("an index with include", () => {
     expect(first.entries.map((e) => e.id)).toStrictEqual(["b"]);
     expect(first.next).toBeDefined();
     await expect(c.queryEntries({ index: "list" })).rejects.toThrow(CorruptDatabaseError);
+  });
+
+  it("returns the included fields and the own values of each entry for a list in eq, decoding none past the limit", async () => {
+    const { issues: c } = await store();
+    expect((await c.queryEntries({ index: "list", eq: [["q", "p"]], limit: 3 })).entries).toStrictEqual([
+      { id: "d", values: ["q", 0], fields: { title: "Other", number: 4 } },
+      { id: "b", values: ["p", 1], fields: { title: "Typo", number: 2 } },
+      { id: "c", values: ["p", 2], fields: { number: 3 } },
+    ]);
+    expect((await c.queryEntries({ index: "list", eq: [["q", "p"]], reverse: true, limit: 1 })).entries).toStrictEqual([
+      { id: "a", values: ["p", 3], fields: { title: "Crash", number: 1, meta: { x: [1, null] } } },
+    ]);
+  });
+
+  it("decodes the fields of a merged page only for the entries it returns", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, covering)).collection("issues");
+    await c.putMany(issues);
+    const keys: Uint8Array[] = [];
+    for await (const e of kv.range(prefixBound(await storedPrefix(kv, "issues", "list")))) keys.push(e.key);
+    // The entries in key order: p/1 b, p/2 c, p/3 a, q/0 d. In the order of the query, d is first and c third.
+    await kv.put(keys[1]!, new TextEncoder().encode("[1]"));
+    const q = { index: "list", eq: [["q", "p"]] } as const;
+    const first = await c.queryEntries({ ...q, limit: 2 });
+    expect(first.entries.map((e) => e.id)).toStrictEqual(["d", "b"]);
+    expect(first.next).toBeDefined();
+    await expect(c.queryEntries({ ...q, limit: 3 })).rejects.toThrow(CorruptDatabaseError);
   });
 
   it("answers query, queryIds and count as the same index without include does", async () => {
@@ -327,6 +386,235 @@ describe("text search", () => {
     ]);
     const page = await notes.query({ index: "search", eq: ["ann"], match: "rep", reverse: true });
     expect(page.docs.map((d) => d.id)).toEqual(["1", "3"]);
+  });
+});
+
+describe("a list in eq", () => {
+  const rows: Doc[] = [
+    { id: "1", a: "x", b: 3, tags: ["p", "q"] },
+    { id: "2", a: "y", b: 1, tags: ["q"] },
+    { id: "3", a: "x", b: 2, tags: ["p"] },
+    { id: "4", a: "z", b: 2, tags: ["r", "q", "p"] },
+    { id: "5", a: "y", b: 2 },
+  ];
+
+  it("merges the listed values in the order of the later components, then the id, whatever order they are listed in", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    expect((await c.queryIds({ index: "two", eq: [["y", "x"]] })).ids).toEqual(["2", "3", "5", "1"]);
+    expect((await c.queryIds({ index: "two", eq: [["x", "y", "x"]], reverse: true })).ids).toEqual(["1", "5", "3", "2"]);
+    expect((await c.queryIds({ index: "two", eq: [["x", "y", "w"]], gt: 1, lt: 3 })).ids).toEqual(["3", "5"]);
+    expect((await c.queryEntries({ index: "two", eq: [["y", "x"]], limit: 3 })).entries).toEqual([
+      { id: "2", values: ["y", 1] },
+      { id: "3", values: ["x", 2] },
+      { id: "5", values: ["y", 2] },
+    ]);
+    expect((await c.query({ index: "two", eq: [["x", "y"]], gte: 2 })).docs.map((d) => d.id)).toEqual(["3", "5", "1"]);
+    expect(await c.queryIds({ index: "two", eq: [["x"]] })).toEqual(await c.queryIds({ index: "two", eq: ["x"] }));
+  });
+
+  it("takes the cross product of several lists, one order by the fields after eq, then the id", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const q = { index: "two", eq: [["z", "x"], [3, 2, 0]] } as const;
+    expect((await c.queryEntries(q)).entries).toEqual([
+      { id: "1", values: ["x", 3] },
+      { id: "3", values: ["x", 2] },
+      { id: "4", values: ["z", 2] },
+    ]);
+    expect((await c.queryIds({ ...q, reverse: true })).ids).toEqual(["4", "3", "1"]);
+    expect(await c.count(q)).toBe(3);
+    expect((await c.queryIds({ index: "two", eq: ["y", [1, 2]] })).ids).toEqual(["2", "5"]);
+    expect((await c.queryIds({ index: "tags", eq: [["p", "r"], [2]] })).ids).toEqual(["3", "4"]);
+  });
+
+  it("returns a multi index document once when it holds several listed values, with the entry of the first value in the scan", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const q = { index: "tags", eq: [["p", "q", "r"]] } as const;
+    expect((await c.queryIds(q)).ids).toEqual(["2", "3", "4", "1"]);
+    expect(await c.count(q)).toBe(4);
+    expect((await c.queryEntries({ ...q, gte: 2 })).entries).toEqual([
+      { id: "3", values: ["p", 2] },
+      { id: "4", values: ["p", 2] },
+      { id: "1", values: ["p", 3] },
+    ]);
+    expect((await c.queryEntries({ ...q, gte: 2, reverse: true })).entries).toEqual([
+      { id: "1", values: ["q", 3] },
+      { id: "4", values: ["r", 2] },
+      { id: "3", values: ["p", 2] },
+    ]);
+    expect(await c.count({ ...q, offset: 1, limit: 2 })).toBe(2);
+    expect((await c.queryIds({ ...q, offset: 2 })).ids).toEqual(["4", "1"]);
+  });
+
+  it.each([false, true])("visits every result once paging with limit 1, reverse %s", async (reverse) => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    for (const q of [
+      { index: "two", eq: [["x", "y", "z"]] },
+      { index: "tags", eq: [["p", "q", "r"]] },
+      { index: "two", eq: [["x", "z"], [2, 3]] },
+    ] as const) {
+      const all = (await c.queryIds({ ...q, reverse })).ids;
+      const seen: string[] = [];
+      for (let after: Cursor | undefined; ; ) {
+        const page = await c.queryIds({ ...q, reverse, limit: 1, ...(after ? { after } : {}) });
+        seen.push(...page.ids);
+        if (!page.next) break;
+        after = page.next;
+      }
+      expect(seen).toEqual(all);
+      expect(new Set(seen).size).toBe(all.length);
+    }
+  });
+
+  it("resumes from a cursor of the query's own results, and throws cursor for one of a value it does not list", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const first = await c.queryIds({ index: "two", eq: [["x", "y"]], limit: 2 });
+    expect(first.ids).toEqual(["2", "3"]);
+    expect((await c.queryIds({ index: "two", eq: [["x", "y"]], after: first.next })).ids).toEqual(["5", "1"]);
+    expect((await c.queryIds({ index: "two", eq: [["x", "z"]], after: first.next })).ids).toEqual(["4", "1"]);
+    const back = await c.queryIds({ index: "two", eq: [["x", "y"]], reverse: true, limit: 1 });
+    expect((await c.queryIds({ index: "two", eq: [["x", "y", "z"]], reverse: true, after: back.next })).ids).toEqual(["5", "4", "3", "2"]);
+    for (const list of [["y", "z"], ["z"], []]) {
+      expect(await codeOf(c.queryIds({ index: "two", eq: [list], after: first.next }))).toBe("cursor");
+      expect(await codeOf(c.count({ index: "two", eq: [list], after: first.next }))).toBe("cursor");
+    }
+    expect(await codeOf(c.queryIds({ index: "two", eq: ["y"], after: first.next }))).toBe("cursor");
+  });
+
+  it("restricts a text search to the listed values", async () => {
+    const { c } = await docs();
+    await c.putMany([
+      { id: "1", a: 1, t: "buy milk" },
+      { id: "2", a: 2, t: "buy bacon" },
+      { id: "3", a: 3, t: "milk" },
+    ]);
+    expect((await c.queryIds({ index: "search", eq: [[3, 1, 9]], match: "milk" })).ids).toEqual(["1", "3"]);
+    expect(await c.count({ index: "search", eq: [[1, 2]], match: "buy", limit: 1 })).toBe(1);
+  });
+
+  it("returns nothing for an empty list, and reads the same through a view", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    expect(await c.query({ index: "two", eq: [[]] })).toEqual({ docs: [] });
+    expect(await c.queryEntries({ index: "two", eq: [[]], limit: 1 })).toEqual({ entries: [] });
+    expect(await c.queryIds({ index: "two", eq: ["x", []] })).toEqual({ ids: [] });
+    expect(await c.count({ index: "two", eq: [[]] })).toBe(0);
+    // No result of such a query exists, so no cursor belongs to it.
+    const { next } = await c.queryIds({ index: "two", eq: [["x"]], limit: 1 });
+    await expect(c.queryIds({ index: "two", eq: [[]], after: next! })).rejects.toMatchObject({ code: "cursor" });
+    expect(await c.view(async (snap) => (await snap.queryIds({ index: "two", eq: [["x", "z"]] })).ids)).toEqual(["3", "4", "1"]);
+  });
+
+  it("counts a page of the merge without repeats as the sum of its ranges", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const eq = [["x", "y", "z"]] as const;
+    expect(await c.count({ index: "two", eq })).toBe(5);
+    expect(await c.count({ index: "two", eq, offset: 4 })).toBe(1);
+    expect(await c.count({ index: "two", eq, offset: 9 })).toBe(0);
+    expect(await c.count({ index: "two", eq, offset: 1, limit: 2 })).toBe(2);
+    expect(await c.count({ index: "two", eq, offset: 4, limit: 3 })).toBe(1);
+  });
+
+  it("throws query for a list on the rows or a unique index, a nested list, too many combinations, and every error of a query without lists", async () => {
+    const { c } = await docs();
+    const many = (n: number) => Array.from({ length: n }, (_, i) => i);
+    const queries: [string, QueryInput][] = [
+      ["a list on the rows", { eq: [["a"]] }],
+      ["a list on a unique index", { index: "uniq", eq: [[1]] }],
+      ["a non-array eq", { index: "one", eq: "a" as never }],
+      ["a nested list", { index: "one", eq: [[["a"]]] as never }],
+      ["65 values", { index: "one", eq: [many(65)] }],
+      ["72 combinations", { index: "two", eq: [many(9), many(8)] }],
+      ["a value that is not an index value", { index: "one", eq: [[Number.NaN]] }],
+      ["more slots than components", { index: "one", eq: [["a"], ["b"]] }],
+      ["a bound after a full eq", { index: "two", eq: [["a"], [1]], gt: 1 }],
+      ["gt with gte", { index: "two", eq: [["a"]], gt: 1, gte: 1 }],
+      ["match on a sorted index", { index: "one", eq: [[1]], match: "x" }],
+      ["an empty list with a bound that is not an index value", { index: "two", eq: [[]], gt: Number.NaN }],
+    ];
+    for (const [, q] of queries) {
+      expect(await codeOf(c.query(asQuery(q)))).toBe("query");
+      expect(await codeOf(c.queryIds(asQuery(q)))).toBe("query");
+      expect(await codeOf(c.queryEntries(asQuery(q)))).toBe("query");
+      expect(await codeOf(c.count(asQuery(q)))).toBe("query");
+    }
+    expect(await c.count({ index: "one", eq: [[...many(64), ...many(64)]] })).toBe(0);
+    expect(await c.count({ index: "two", eq: [many(8), many(8)] })).toBe(0);
+    expect(await c.count({ index: "two", eq: [many(100), []] })).toBe(0);
+  });
+
+  it("throws cursor for a cursor outside the prefix, of another index, or cut inside a component", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const { next } = await c.query({ index: "two", eq: ["x"], limit: 1 });
+    const other = await c.query({ index: "one", limit: 1 });
+    const bad = [
+      { index: "two", eq: [[1], ["y"]], after: next },
+      { index: "two", eq: [["y"]], after: next },
+      { index: "two", eq: [["x"]], after: other.next },
+      { index: "two", eq: [["x"]], after: "%%" as Cursor },
+      { index: "tags", eq: [["p"]], after: encodeCursor(Uint8Array.of(0x64, 0, 1, 0x03)) },
+    ];
+    for (const q of bad) {
+      expect(await codeOf(c.queryIds(asQuery(q)))).toBe("cursor");
+      expect(await codeOf(c.count(asQuery(q)))).toBe("cursor");
+    }
+    expect(await codeOf(c.query({ index: "two", eq: [["x"]], after: "ZAAB" as Cursor }))).toBe("cursor");
+  });
+
+  it("throws cursor for a cursor outside the bound, as a query without lists does", async () => {
+    const { c } = await docs();
+    await c.putMany(rows);
+    const first = await c.queryIds({ index: "two", eq: [["x", "y"]], limit: 1 });
+    expect(first.ids).toEqual(["2"]);
+    expect((await c.queryIds({ index: "two", eq: [["x", "y"]], gte: 1, after: first.next })).ids).toEqual(["3", "5", "1"]);
+    for (const bound of [{ lt: 1 }, { gt: 2 }, { gt: 1 }]) {
+      const q = { index: "two", eq: [["x", "y"]], ...bound, after: first.next };
+      expect(await codeOf(c.queryIds(asQuery(q)))).toBe("cursor");
+      expect(await codeOf(c.count(asQuery(q)))).toBe("cursor");
+    }
+  });
+
+  it("resumes under a listed value longer than the cursor's own, and past an entry whose key is as long as a key can be", async () => {
+    const { c } = await docs();
+    const long = "y".repeat(4000);
+    await c.putMany([
+      { id: "1", a: "x", b: "b".repeat(5000) },
+      { id: "2", a: long, b: "zzz" },
+      { id: "3", a: "x", b: "zzzz" },
+    ]);
+    for (const reverse of [false, true]) {
+      const q = { index: "two", eq: [["x", long]], reverse } as const;
+      const all = (await c.queryIds(q)).ids;
+      expect(all).toEqual(reverse ? ["3", "2", "1"] : ["1", "2", "3"]);
+      const first = await c.queryIds({ ...q, limit: 1 });
+      expect((await c.queryIds({ ...q, after: first.next! })).ids).toEqual(all.slice(1));
+      expect(await c.count({ ...q, after: first.next! })).toBe(2);
+    }
+
+    const { c: d } = await docs();
+    // The index prefix, the string's tag and terminator, and the id take 7 bytes of the key.
+    await d.putMany([
+      { id: "1", a: "s".repeat(8185) },
+      { id: "2", a: "t" },
+    ]);
+    const first = await d.queryIds({ index: "one", limit: 1 });
+    expect(first.ids).toEqual(["1"]);
+    expect((await d.queryIds({ index: "one", after: first.next! })).ids).toEqual(["2"]);
+    const last = await d.queryIds({ index: "one", reverse: true, limit: 1 });
+    expect((await d.queryIds({ index: "one", reverse: true, after: last.next! })).ids).toEqual(["1"]);
+  });
+
+  it("gives kv's error for a value too long for a key", async () => {
+    const { c } = await docs();
+    const long = "s".repeat(300_000);
+    await expect(c.queryIds({ index: "one", eq: [[long]] })).rejects.toThrow("key longer");
+    await expect(c.count({ index: "one", eq: [[long, long]] })).rejects.toThrow("key longer");
   });
 });
 

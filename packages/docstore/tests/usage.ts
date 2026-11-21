@@ -131,6 +131,43 @@ export const noteQueries: NoteQuery[] = [
   { index: "byTag", eq: ["work", "x"] },
   // @ts-expect-error a bound on the second component needs eq on the first
   { index: "byOwnerUpdated", gte: since },
+  { index: "byOwnerUpdated", eq: [["ann", "bob"]], gte: since, reverse: true, limit: 20 },
+  { index: "byOwnerUpdated", eq: ["ann", [since, since + 1]] },
+  { index: "byOwnerUpdated", eq: [["ann", "bob"], [since]] },
+  { index: "byTag", eq: [["work", "home"]], gte: since, limit: 50 },
+  { index: "search", eq: [["ann"]], match: "rep" },
+  // @ts-expect-error the owners listed are strings
+  { index: "byOwnerUpdated", eq: [[1]] },
+  // @ts-expect-error after a list of owners the bound is a number: updatedAt
+  { index: "byOwnerUpdated", eq: [["ann"]], gte: "x" },
+  // @ts-expect-error the second slot takes numbers, whether a value or a list
+  { index: "byOwnerUpdated", eq: ["ann", ["bob"]] },
+  // @ts-expect-error eq has fixed every component, lists included, so no bound follows
+  { index: "byOwnerUpdated", eq: ["ann", [since]], gte: since },
+  // @ts-expect-error eq has fixed every component, so startsWith has none
+  { index: "byOwnerUpdated", eq: ["ann", since], startsWith: "a" },
+  // @ts-expect-error nor when a slot is a list
+  { index: "byOwnerUpdated", eq: ["ann", [since]], startsWith: "a" },
+  // @ts-expect-error a list holds values, not lists
+  { index: "byOwnerUpdated", eq: [[["ann"]]] },
+  // @ts-expect-error a unique index holds one document per value: use getMany
+  { index: "bySlug", eq: [["hello-world"]] },
+  // @ts-expect-error the rows have no lists either
+  { eq: [["a"]] },
+];
+
+type Issue = { id: string; projectId: string; status: "todo" | "started" | "done"; updatedAt: number };
+const issueSchema = defineSchema({
+  version: 1,
+  collections: { issues: collection<Issue>().index("byStatus", ["projectId", "status", "updatedAt"]) },
+});
+export const issueQueries: Query<Issue, (typeof issueSchema)["collections"]["issues"]["indexes"]>[] = [
+  { index: "byStatus", eq: ["p", ["todo", "started"]], reverse: true, limit: 50 },
+  { index: "byStatus", eq: [["p", "q"], ["todo"]], gt: since },
+  // @ts-expect-error "open" is not a status of Issue
+  { index: "byStatus", eq: ["p", ["open"]] },
+  // @ts-expect-error after a list of statuses the bound is a number: updatedAt
+  { index: "byStatus", eq: ["p", ["todo"]], gte: "x" },
 ];
 
 export async function entryValues(store: DocStore<typeof notesSchema>): Promise<unknown[]> {

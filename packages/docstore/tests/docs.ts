@@ -49,6 +49,9 @@ const matchArb = fc
   .map((ws) => ws.join(" "));
 const idArb = stringArb.filter((s) => s !== "");
 
+/** Values that documents often hold, for lists in `eq`. */
+const poolArb = fc.constantFrom<Scalar>(null, false, true, 0, 1, -1, 0.5);
+
 export const datasetArb = fc
   .tuple(
     fc.uniqueArray(
@@ -88,10 +91,15 @@ export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }
   .chain((index) => {
     const arity = index === undefined ? 1 : ARITY[index]!;
     const value = index === undefined ? idArb : denseScalarArb;
+    // A slot of `eq` can be a list, as long as the index is not unique. Lists may repeat a value or be empty.
+    const slot: fc.Arbitrary<Scalar | Scalar[]> =
+      index === undefined || index === "uniq"
+        ? value
+        : fc.oneof({ weight: 2, arbitrary: value }, { weight: 1, arbitrary: fc.array(fc.oneof(poolArb, value), { maxLength: 4 }) });
     return fc.integer({ min: 0, max: arity }).chain((k) =>
       fc
         .record({
-          eq: fc.array(value, { minLength: k, maxLength: k }),
+          eq: fc.array(slot, { minLength: k, maxLength: k }),
           bound: k === arity ? fc.constant({}) : boundArb(value),
           reverse: fc.boolean(),
           match: index === "search" ? fc.option(matchArb, { nil: undefined }) : fc.constant(undefined),

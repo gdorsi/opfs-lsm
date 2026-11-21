@@ -211,19 +211,22 @@ type Bound<H> = {
   readonly gte?: H | undefined;
   readonly lt?: H | undefined;
   readonly lte?: H | undefined;
-  readonly startsWith?: ([H] extends [string] ? string : never) | undefined;
+  readonly startsWith?: ([H] extends [never] ? never : [H] extends [string] ? string : never) | undefined;
 };
 
 type EqOf<E extends readonly unknown[]> = E extends readonly []
   ? { readonly eq?: readonly [] | undefined }
   : { readonly eq: Readonly<E> };
 
+/** One slot of `eq`: a value, or, on an index that is not unique, a list of the values the field can have. */
+type Slot<H, Lists> = Lists extends true ? H | readonly H[] : H;
+
 /** One member per k: `eq` fixes the first k components and the bound has the type of component k + 1. */
-type Where<V extends readonly unknown[], E extends readonly unknown[] = []> = V extends readonly [
+type Where<V extends readonly unknown[], Lists, E extends readonly unknown[] = []> = V extends readonly [
   infer H,
   ...infer R,
 ]
-  ? (EqOf<E> & Bound<H>) | Where<R, [...E, H]>
+  ? (EqOf<E> & Bound<H>) | Where<R, Lists, [...E, Slot<H, Lists>]>
   : EqOf<E> & Bound<never>;
 
 type PageOptions = {
@@ -237,7 +240,7 @@ type PageOptions = {
   readonly reverse?: boolean | undefined;
 };
 
-type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Where<V> &
+type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Where<V, D extends { readonly unique: true } ? false : true> &
   PageOptions &
   (D extends { readonly text: string }
     ? {
@@ -247,7 +250,7 @@ type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Wh
     : { readonly match?: undefined });
 
 /** No index: the rows in id order. The id is the one component. */
-type RowsQuery = { readonly index?: undefined; readonly match?: undefined } & Where<readonly [string]> & PageOptions;
+type RowsQuery = { readonly index?: undefined; readonly match?: undefined } & Where<readonly [string], false> & PageOptions;
 
 /** Everything `query`, `queryIds` and `count` accept for a collection with indexes `Ix`. */
 export type Query<T, Ix> =
@@ -284,7 +287,7 @@ export type EntryPageOf<T, Ix, I> = EntryPage<EntryValues<T, Ix, I>, EntryFields
 
 export type QueryInput = {
   readonly index?: string | undefined;
-  readonly eq?: readonly Scalar[] | undefined;
+  readonly eq?: readonly (Scalar | readonly Scalar[])[] | undefined;
   readonly gt?: Scalar | undefined;
   readonly gte?: Scalar | undefined;
   readonly lt?: Scalar | undefined;
