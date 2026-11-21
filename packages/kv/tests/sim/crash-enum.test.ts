@@ -21,6 +21,7 @@ import {
   runSteps,
   Traced,
   type Cut,
+  type Destroyed,
   type Step,
 } from "./crash.js";
 import { Oracle } from "./oracle.js";
@@ -118,6 +119,14 @@ const REMOVE: Step[] = [
   { remove: true },
 ];
 
+/** A removal of a folder whose WAL database the browser threw away, then writes and a flush on the database opened again. */
+const REMOVE_WAL_LOST: Step[] = [
+  ...COMPACTION,
+  put("f", "f1"), ingest,
+  { remove: true, walLost: true },
+  put("a", "a9"), ingest,
+];
+
 /**
  * Range deletes over flushed rows, unflushed rows and their own flush, one
  * that a later write into its range outlives, and the compaction of runs
@@ -137,29 +146,36 @@ const WORKLOADS: [string, Step[]][] = [
   ["cascade", CASCADE],
   ["destroy", DESTROY],
   ["remove", REMOVE],
+  ["remove after the WAL is lost", REMOVE_WAL_LOST],
   ["range delete", RANGE_DELETE],
 ];
 
 let runs = 0;
 
 /** Run `steps` with every durable op traced. */
-async function trace(steps: readonly Step[], flushRunBytes?: number): Promise<{ ops: DurableOp[]; log: Oracle }> {
+async function trace(steps: readonly Step[], flushRunBytes?: number): Promise<{ ops: DurableOp[]; log: Oracle; destroys: Destroyed[] }> {
   const t = new Traced(`trace-${++runs}`, flushRunBytes);
   const log = new Oracle();
   try {
     await runSteps(t, steps, log);
     await t.expectTraceComplete();
-    return { ops: [...t.faults.ops], log };
+    return { ops: [...t.faults.ops], log, destroys: t.destroys };
   } finally {
     await t.dispose();
   }
 }
 
 /** Check every cut, collect the failures, and fail with the first few. */
-async function checkAll(ops: readonly DurableOp[], log: Oracle, cuts: readonly Cut[], model: "process" | "power"): Promise<number> {
+async function checkAll(
+  ops: readonly DurableOp[],
+  log: Oracle,
+  cuts: readonly Cut[],
+  model: "process" | "power",
+  destroys: readonly Destroyed[] = [],
+): Promise<number> {
   const failures: string[] = [];
   for (const cut of cuts) {
-    await checkCrashState(ops, log, cut, model).catch((err: Error) => failures.push(err.message));
+    await checkCrashState(ops, log, cut, model, destroys).catch((err: Error) => failures.push(err.message));
   }
   counts[model] += cuts.length;
   if (failures.length > 0) {
@@ -241,10 +257,10 @@ async function randomHistory(cmds: Iterable<fc.AsyncCommand<Model, Sut, false>>,
 }
 
 describe("power loss: every (IndexedDB prefix, OPFS prefix) pair", () => {
-  it.each(WORKLOADS)("%s: reopens to a log prefix", async (_name, steps) => {
-    const { ops, log } = await trace(steps);
+  it.each(WORKLOADS)("%s: reopens to a log prefix, past every destroy whose remove it kept", async (_name, steps) => {
+    const { ops, log, destroys } = await trace(steps);
     const cuts = powerCuts(ops, 5_000, mulberry32(1));
-    await expect(checkAll(ops, log, cuts, "power")).resolves.toBe(cuts.length);
+    await expect(checkAll(ops, log, cuts, "power", destroys)).resolves.toBe(cuts.length);
   }, 120_000);
 });
 

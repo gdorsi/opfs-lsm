@@ -47,6 +47,8 @@ import { compactHost } from "../compact-host.js";
  */
 export class Traced {
   readonly faults = new Faults();
+  /** Each destroy and removal `runSteps` ran: its seq in the log, and the ops it traced, `from < i <= to`. */
+  readonly destroys: Destroyed[] = [];
   readonly mem = new MemoryFs();
   readonly fs = new FaultFs(this.mem, this.faults);
   host: EngineHost;
@@ -129,8 +131,8 @@ export type Step =
   | { readonly deleteRange: string; readonly end?: string }
   | { readonly ingest: true }
   | { readonly destroy: true }
-  /** `destroyDb`, then open again. */
-  | { readonly remove: true }
+  /** `destroyDb`, then open again. With `walLost`, the browser first threw the WAL database away. */
+  | { readonly remove: true; readonly walLost?: true }
   | { readonly reopen: true };
 
 const utf = (s: string) => new TextEncoder().encode(s);
@@ -165,12 +167,20 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
         await ingest(db);
       } else if ("destroy" in step) {
         // Destroy takes one seq: a delete of every key written before it.
+        const from = t.faults.ops.length;
         await db.dangerousDestroy();
         log.append(log.keys().map((key) => ({ type: "del" as const, key })));
+        t.destroys.push({ seq: log.head, from, to: t.faults.ops.length });
       } else if ("remove" in step) {
+        if (step.walLost) {
+          await db.close();
+          await deleteWal(t.name);
+        }
         // So does a removal: the next open starts one past its head.
+        const from = t.faults.ops.length;
         await destroyHarnessDb({ name: t.name, fs: t.fs, ingest: createLocalIngestClient(t.host) });
         log.append(log.keys().map((key) => ({ type: "del" as const, key })));
+        t.destroys.push({ seq: log.head, from, to: t.faults.ops.length });
         db = await t.open();
       } else {
         await db.close();
@@ -183,6 +193,24 @@ export async function runSteps(t: Traced, steps: readonly Step[], log: Oracle): 
 }
 
 export type Cut = { readonly idb: number; readonly opfs: number };
+export type Destroyed = { readonly seq: number; readonly from: number; readonly to: number };
+
+/**
+ * The seq of the last destroy or removal whose remove OPFS kept in `cut`.
+ * Each commits at durability "strict" before it removes a file (design.md,
+ * "Destroy"), so a power loss that keeps a remove keeps the destroy, and no
+ * state before it is read.
+ */
+function destroyedThrough(ops: readonly DurableOp[], destroys: readonly Destroyed[], cut: Cut): number {
+  const kept = ops.filter((op) => op.store === "opfs").slice(0, cut.opfs);
+  let seq = 0;
+  for (const op of kept) {
+    if (op.kind !== "remove" && op.kind !== "rmdir") continue;
+    for (const d of destroys) if (op.i > d.from && op.i <= d.to) seq = Math.max(seq, d.seq);
+  }
+  return seq;
+}
+
 export type CrashModel = "process" | "power";
 
 /** The cut after the first `k` ops in global order. */
@@ -285,11 +313,19 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
   return meta;
 }
 
-/** The head after the first `count` IndexedDB commits: the highest seq appended, or `ingestedThrough` when that is higher. */
+/**
+ * The head after the first `count` IndexedDB commits: the highest seq
+ * appended, `ingestedThrough`, or the `head` of a destroyed row, which the
+ * next open starts at (recovery rule 0), whichever is highest.
+ */
 function headAt(ops: readonly DurableOp[], count: number): number {
   let head = metaAt(ops, count).get("ingestedThrough") ?? 0;
   for (const op of idbCommits(ops, count)) {
-    for (const m of op.muts) if (m.store === "wal" && m.kind === "put") head = Math.max(head, m.key as number);
+    for (const m of op.muts) {
+      if (m.kind !== "put") continue;
+      if (op.db === "destroyed") head = Math.max(head, (m.value as { head: number }).head);
+      else if (m.store === "wal") head = Math.max(head, m.key as number);
+    }
   }
   return head;
 }
@@ -306,11 +342,12 @@ export async function checkCrashState(
   oracle: Oracle,
   cut: Cut,
   model: CrashModel,
+  destroys: readonly Destroyed[] = [],
 ): Promise<void> {
   const name = `crash-${++states}`;
   try {
     await removeLeavesNothing(`${name}-gone`, ops, cut);
-    await recover(name, ops, oracle, cut, model);
+    await recover(name, ops, oracle, cut, model, destroyedThrough(ops, destroys, cut));
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     const error = new Error(`${model} crash state is not a log prefix or does not open: ${msg}\n${describeCut(ops, cut)}`);
@@ -330,7 +367,7 @@ async function removeLeavesNothing(name: string, ops: readonly DurableOp[], cut:
   if ((await indexedDB.databases()).some((d) => d.name === `opfs-lsm-wal/${name}`)) throw new Error("destroyDb left the WAL database");
 }
 
-async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, cut: Cut, model: CrashModel): Promise<void> {
+async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, cut: Cut, model: CrashModel, destroyed: number): Promise<void> {
   await materializeWal(name, ops, cut.idb);
   const fs = await materializeFs(ops, cut.opfs);
   const head = headAt(ops, cut.idb);
@@ -347,7 +384,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
   }
   let prefixes: number[];
   try {
-    prefixes = await readPrefixes(db, oracle, model === "process" ? head : 0, model === "process" ? head : oracle.head);
+    prefixes = await readPrefixes(db, oracle, model === "process" ? head : destroyed, model === "process" ? head : oracle.head);
   } finally {
     await db.close();
   }
