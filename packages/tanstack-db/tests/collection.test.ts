@@ -21,6 +21,7 @@ import {
   createTransaction,
   DbClient,
   eq,
+  gte,
   IR,
   type LoadSubsetOptions,
 } from "@tanstack/db";
@@ -566,6 +567,27 @@ test("an on-demand collection loads by id", async () => {
   assert.deepEqual([...c.keys()], ["B"]);
   await c.utils.transact(["B"], ([row]) => [{ ...row!, description: "b2" }]);
   assert.equal(c.get("B")?.description, "b2", "a transact on a loaded row shows on resolve");
+});
+
+test("a bound and a lexical window compare strings by UTF-16 code unit, as TanStack does, past U+FFFF too", async () => {
+  const { store } = await open(dbName());
+  // TanStack compares strings with <, so "\u{1f600}" (units D83D DE00) sorts before "\uff61", though its code point is higher.
+  await store.collection("comments").putMany([comment("\uff61", 1), comment("\u{1f600}", 1)]);
+  const from = tracked(
+    createLiveQueryCollection((q) => q.from({ c: onDemand(store.collection("comments")) }).where(({ c }) => gte(c.issue_id, "\u{1f600}"))),
+  );
+  const first = tracked(
+    createLiveQueryCollection((q) =>
+      q
+        .from({ c: onDemand(store.collection("comments")) })
+        .orderBy(({ c }) => c.issue_id, { stringSort: "lexical" })
+        .limit(1),
+    ),
+  );
+  await Promise.all([from.preload(), first.preload()]);
+
+  assert.deepEqual(from.toArray.map((r) => r.issue_id).sort(), ["\u{1f600}", "\uff61"]);
+  assert.deepEqual(first.toArray.map((r) => r.issue_id), ["\u{1f600}"]);
 });
 
 test("another handle's writes reach a loaded subset, and writes outside it stay out of memory", async () => {

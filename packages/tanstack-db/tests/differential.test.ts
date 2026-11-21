@@ -49,7 +49,7 @@ const schema = defineSchema({
 });
 
 const IDS = Array.from({ length: 30 }, (_, i) => `d${String(i).padStart(2, "0")}`);
-const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b"];
+const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b", "\uff61", "\u{1f600}"];
 const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE"];
 
 const fieldsArb = fc.record({
