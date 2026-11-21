@@ -12,6 +12,7 @@ import {
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
 import { TabWal, encodeOps, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { compactLock, ingestLock } from "../src/locks.js";
 import { advance } from "./advance.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { checkDatabase, deleteWal, walStore } from "./sim/check-database.js";
@@ -60,6 +61,17 @@ function flushed(fs: AsyncFs): Promise<void> {
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5));
+}
+
+/** Takes Web Lock `name` and resolves with its release, standing in for another SharedWorker. */
+function holdLock(name: string): Promise<() => void> {
+  return new Promise((granted) => {
+    void navigator.locks.request(name, () => new Promise<void>((release) => granted(release)));
+  });
+}
+
+async function someoneWaitsFor(name: string): Promise<boolean> {
+  return ((await navigator.locks.query()).pending ?? []).some((lock) => lock.name === name);
 }
 
 /** MemoryFs whose L0 writes can be held or made to fail. */
@@ -438,6 +450,40 @@ describe("ingest policy", () => {
     wal.close();
     expect(state.started).toBe(2);
     expect(state.maxInFlight).toBe(1);
+    await db.close();
+  });
+
+  it("counts the rows written while an ingest finds nothing left to fold", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs, { idleFlushMs: 60_000 });
+    const db = await open(host, fs, "a", 100);
+    await db.put(utf("a"), new Uint8Array(60));
+    await settle();
+    // Another SharedWorker compacts throughout, and holds the ingest lock.
+    const releaseCompaction = await holdLock(compactLock(NAME));
+    let releaseIngest = await holdLock(ingestLock(NAME));
+    onTestFinished(() => {
+      releaseIngest();
+      releaseCompaction();
+    });
+    // A tab's flush notes head 1, then waits for the lock.
+    const flush = host.ingest(NAME);
+    await vi.waitFor(async () => expect(await someoneWaitsFor(ingestLock(NAME))).toBe(true), WAIT);
+    // Past maxWalBytes: the host's own ingest waits for that flush.
+    await db.put(utf("b"), new Uint8Array(60));
+    await settle();
+    const relock = holdLock(ingestLock(NAME));
+    releaseIngest();
+    releaseIngest = await relock;
+    expect((await flush).generation, "the tab's flush folded seqs 1 and 2").toBe(1);
+    // The host's ingest noted head 2 and waits for the lock, with nothing left to fold.
+    await vi.waitFor(async () => expect(await someoneWaitsFor(ingestLock(NAME))).toBe(true), WAIT);
+    await db.put(utf("c"), new Uint8Array(60));
+    await db.put(utf("d"), new Uint8Array(60));
+    await settle();
+    releaseIngest();
+    releaseCompaction();
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(4), WAIT);
     await db.close();
   });
 
