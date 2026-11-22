@@ -35,7 +35,7 @@ type MemField = (typeof MEM_FIELDS)[number];
 const APPROX_AMP_FIELDS: readonly AmpField[] = ["spaceAmp", "diskBytes", "userBytes", "liveBytes"];
 
 /**
- * rate          phase ops per second over the span: first timed call start to last timed call end, gaps and the store open included
+ * rate          phase ops per second over the span: first timed call start to last timed call end, gaps included, the store open left out
  * wall          phase wall ms
  * mean:<op>     the run's mean latency of one op, ms
  * main:<field>  the tab's main thread during the phase

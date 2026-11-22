@@ -47,7 +47,7 @@ A new row or table is an entry in `docs-tables.ts` and, for a table, a pair of m
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
 | `yjs` | `KvPersistence` from `@opfs-lsm/yjs` (`packages/yjs`) | y-indexeddb |
 | `fate` | `kvStorage` from `@opfs-lsm/fate` (`packages/fate`) under fate's persistence | `createIndexedDBStorage` from `@nkzw/fate-indexeddb` under the same persistence |
-| `tracker` | `docstore`: docstore on kv, a collection per entity and the indexes its goals need | `dexie`: Dexie 4 with compound indexes; `sqlite`: wa-sqlite on OPFS in a dedicated worker, normalized tables, plain SQL |
+| `tracker` | `docstore`: docstore on kv, a collection per entity and the indexes its goals need | `dexie`: Dexie 4 with compound indexes and no multi-entry index (its `labelPage` filters the project's issues, so its writes keep no label index); `sqlite`: wa-sqlite on OPFS in a dedicated worker, normalized tables, plain SQL |
 | `tanstack-live` | `kv`: `docstoreCollectionOptions`, eager; `kv-ondemand`: on demand over docstore indexes that end in each screen's sort field | `indexeddb`: `indexedDBCollectionOptions`, eager; `sqlite`: TanStack's SQLite persistence, on demand, set up as in `tanstack-ondemand` |
 
 Every contender uses its library's fast path, and the report prints that path and the durability next to the numbers. kv's WAL commits with IndexedDB's default durability (relaxed in Chrome since version 121), so the IndexedDB baselines use the default too. Every contender runs its library with its default settings. SQLite keeps `synchronous=FULL` and its default page cache, so its commits wait for the disk where IndexedDB's relaxed default does not.
