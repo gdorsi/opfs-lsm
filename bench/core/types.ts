@@ -137,7 +137,7 @@ export type PhaseContext<F extends Family> = {
   /**
    * Time one awaited call into the histogram for `op`. It counts as `count`
    * ops (a batch of 1000 puts is one call, 1000 ops) and adds `userBytes`.
-   * The store open is timed as op "open" and never counts as an op.
+   * The store open is timed as op "open", never counts as an op and stays out of the span.
    */
   time<T>(op: string, userBytes: number, fn: () => Promise<T>, count?: number): Promise<T>;
   /** Count bytes handed to storage outside ctx.time (a CRDT's saves): the W-Amp denominator. */
@@ -200,8 +200,8 @@ export type PhaseResult = {
   readonly timed: boolean;
   readonly wallMs: number;
   /**
-   * From the start of the phase's first `ctx.time` call to the end of its last, the open included when it is timed in the
-   * phase. What the phase's ops/s divides by. The gaps between calls count, so harness work between calls lowers the rate
+   * From the start of the phase's first `ctx.time` call to the end of its last, the store open left out. What the phase's
+   * ops/s divides by. The gaps between calls count, so harness work between calls lowers the rate
    * and a store's background work in those gaps is not free. The rest of `wallMs` is before the first call and after the last.
    */
   readonly spanMs: number;

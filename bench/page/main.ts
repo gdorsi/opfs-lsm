@@ -102,13 +102,15 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   const span = new SpanClock();
 
   const time = async <T>(op: string, bytes: number, fn: () => Promise<T>, count = 1): Promise<T> => {
-    const t0 = span.enter();
+    // The open has its own op, so a rate never pays it.
+    const clock = op === "open" ? undefined : span;
+    const t0 = clock?.enter() ?? performance.now();
     let value: T;
     let t1: number;
     try {
       value = await fn();
     } finally {
-      t1 = span.exit();
+      t1 = clock?.exit() ?? performance.now();
     }
     const us = (t1 - t0) * 1000;
     let h = latency.get(op);
@@ -146,10 +148,16 @@ async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
     progress,
   };
 
-  const t0 = performance.now();
+  let t0 = performance.now();
   let mainThread: MainThread | undefined;
-  if (phase.mainThread) mainThread = (await measureMainThread(() => phase.run(ctx))).mainThread;
-  else await phase.run(ctx);
+  if (phase.mainThread) {
+    mainThread = (
+      await measureMainThread(() => {
+        t0 = performance.now();
+        return phase.run(ctx);
+      })
+    ).mainThread;
+  } else await phase.run(ctx);
   const wallMs = performance.now() - t0;
 
   let footprint: Footprint | undefined;

@@ -159,7 +159,7 @@ suite("timed phases", () => {
     assert.deepEqual(at("wall")!.values, [100, 120]);
   });
 
-  test("rate divides ops by the span of the timed calls, which includes the open, and not by the wall time", () => {
+  test("rate divides ops by the span of the timed calls, not by the wall time", () => {
     assert.deepEqual(at("rate")!.values, [(1000 / 80) * 1000, (1000 / 100) * 1000]);
   });
 
