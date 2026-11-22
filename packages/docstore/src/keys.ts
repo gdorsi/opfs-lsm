@@ -67,13 +67,29 @@ export function indexPrefix(collection: CollectionId, index: IndexId): Uint8Arra
 const SCRATCH_UNITS = 1024;
 const scratch = new Uint8Array(SCRATCH_UNITS * 3);
 
+/** Past this many UTF-16 units `encodeInto` beats the loop in `utf8Bytes`. */
+const ASCII_LOOP_MAX = 64;
+
 /**
- * The same bytes as `utf8.encode`. `encode` allocates its result in the
- * browser, which costs several times more than encoding a short string, so a
- * string that fits is encoded into `scratch` and copied out.
+ * The same bytes as `utf8.encode`. A short ASCII string, nearly every id and
+ * query word, is copied unit by unit, which beats the call into TextEncoder.
+ * `encode` allocates its result in the browser, which costs several times
+ * more than encoding a short string, so any other string that fits is
+ * encoded into `scratch` and copied out.
  */
 function utf8Bytes(s: string): Uint8Array {
-  if (s.length > SCRATCH_UNITS) return utf8.encode(s);
+  const n = s.length;
+  if (n <= ASCII_LOOP_MAX) {
+    const out = new Uint8Array(n);
+    let i = 0;
+    for (; i < n; i++) {
+      const c = s.charCodeAt(i);
+      if (c >= 0x80) break;
+      out[i] = c;
+    }
+    if (i === n) return out;
+  }
+  if (n > SCRATCH_UNITS) return utf8.encode(s);
   return scratch.slice(0, utf8.encodeInto(s, scratch).written);
 }
 
@@ -177,7 +193,7 @@ export function textValue(text: string): Uint8Array {
 function matchPatterns(match: string): Uint8Array[] {
   const words = wordsOf(match);
   if (words.length === 0) badQuery("match has no words");
-  return words.map((w) => utf8.encode(w));
+  return words.map(utf8Bytes);
 }
 
 export type ScanTarget =
@@ -288,7 +304,7 @@ function indexBounds(p: Uint8Array, q: QueryInput): [Uint8Array, Uint8Array] {
 /** The id is raw UTF-8 with no terminator, so the keys equal to `x` end at `x ++ 00`. */
 function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
   const at = (v: unknown) =>
-    typeof v === "string" && v.isWellFormed() ? concat(prefix, utf8.encode(v)) : badQuery("an id bound must be a well-formed string");
+    typeof v === "string" && v.isWellFormed() ? concat(prefix, utf8Bytes(v)) : badQuery("an id bound must be a well-formed string");
   if (eq.length === 1) {
     const k = at(eq[0]);
     return [k, after(k)];
