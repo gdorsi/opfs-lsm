@@ -346,7 +346,7 @@ Per database, the host keeps `pendingBytes`, the key and value bytes of the ops 
 folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any tab asked for until the last one closes, and each tab
 asks for at most 7/8 of its `memtableBytes`. Once an eighth of the limit waits, the host also flushes
-2 s after the last `rows` message, or 5 s after the first since a flush began, so an open replays a short tail.
+2 s after the last `rows` message, or 5 s after the first since a flush began or the last 5 s passed, so an open replays a short tail.
 
 `openDb` registers the tab with the host. The host then measures the uningested records, so a
 database left over the limit catches up on open. The count only decides when to flush. Every
