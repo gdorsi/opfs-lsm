@@ -17,7 +17,7 @@ import { Toolbar } from "./toolbar.tsx";
  * it read differently: a kv or docstore format, or this app's schema. A visitor then starts on a fresh database, and
  * the app frees the old one.
  */
-const DATA_VERSION = 5;
+const DATA_VERSION = 6;
 
 const params = new URLSearchParams(location.search);
 const NAME = params.get("db") ?? `linearlite-docstore-v${DATA_VERSION}`;

@@ -16,7 +16,7 @@ import type { QueryInput, Scalar } from "../src/schema.js";
 import { ARITY, MODEL, UNIQUE_TAGS, checkQuery, queryArbOn, schema, textArb, withUniqueTags, type Doc } from "./docs.js";
 import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
-import { expected, stored } from "./oracle.js";
+import { expected, stored, type ModelIndex } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 import { ingest } from "@opfs-lsm/kv/testing";
 
@@ -59,6 +59,7 @@ const fields = {
   b: fc.option(denseScalarArb, { nil: undefined }),
   tags: fc.option(fc.array(denseScalarArb, { maxLength: 4 }), { nil: undefined }),
   u: uArb,
+  p: uArb,
   t: fc.option(textArb, { nil: undefined }),
   ut: fc.option(fc.array(tagArb, { maxLength: 3 }), { nil: undefined }),
 };
@@ -91,20 +92,15 @@ const opArb = fc.oneof(
 );
 const cmdArb: fc.Arbitrary<Cmd> = fc.tuple(opArb, fc.boolean()).map(([op, previous]) => ({ ...op, previous }));
 
-/** Whether two documents share `u`, or, when `utags` counts, an element of `ut`. */
+const uniques: ModelIndex[] = Object.values(MODEL).filter((ix) => ix.kind === "unique");
+
+/** Whether two documents share an entry of a unique index. The one on `ut` counts only when `utags`. */
 function sharesUniqueIn(docs: Iterable<Doc>, utags: boolean): boolean {
-  const seen = new Set<string>();
-  for (const d of docs) {
-    const values = d.u === undefined ? [] : [`u ${JSON.stringify(d.u)}`];
-    if (utags && d.ut !== undefined) {
-      for (const t of new Set(d.ut)) values.push(`ut ${JSON.stringify(t)}`);
-    }
-    for (const k of values) {
-      if (seen.has(k)) return true;
-      seen.add(k);
-    }
-  }
-  return false;
+  const all = [...docs];
+  return [...uniques, ...(utags ? [UNIQUE_TAGS.model] : [])].some((ix) => {
+    const values = expected(all, ix, {}).map((h) => JSON.stringify(h.values));
+    return new Set(values).size < values.length;
+  });
 }
 
 /** `declared`: the first schema already declares the unique multi index. */

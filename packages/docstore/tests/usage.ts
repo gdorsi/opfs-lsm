@@ -221,6 +221,49 @@ collection<Note>().unique("x", "slug", { include: ["owner"] });
 // @ts-expect-error a text index takes no include
 collection<Note>().text("x", "owner", "body", { include: ["slug"] });
 
+type Ticket = { id: string; status: 0 | 1 | 2 | 3; deleted?: boolean; priority: number; tags: string[]; meta: { sprint: string | null } };
+
+export const partialSchema = defineSchema({
+  version: 1,
+  collections: {
+    tickets: collection<Ticket>()
+      .index("open", "priority", { where: { status: [0, 1, 2], deleted: false } })
+      .index("sprint", "priority", { include: ["status"], where: { "meta.sprint": [null, "s1"] } })
+      .unique("onlyOne", "priority", { where: { status: 3 } })
+      .text("search", "priority", "id", { where: { deleted: [false] } }),
+  },
+});
+
+export async function partialQueries(store: DocStore<typeof partialSchema>): Promise<unknown[]> {
+  const tickets = store.collection("tickets");
+  const open = await tickets.query({ index: "open", eq: [[1, 2]], limit: 50 });
+  const entries = await tickets.queryEntries({ index: "sprint" });
+  const statuses: (0 | 1 | 2 | 3)[] = entries.entries.map((e) => e.fields.status);
+  const where: IndexInfo["where"] = tickets.indexes.get("open")?.where;
+  return [open, statuses, where];
+}
+
+// @ts-expect-error status has no such value
+collection<Ticket>().index("x", "priority", { where: { status: 4 } });
+// @ts-expect-error a value of the wrong type in a list
+collection<Ticket>().index("x", "priority", { where: { status: [0, "1"] } });
+// @ts-expect-error not a field of Ticket
+collection<Ticket>().index("x", "priority", { where: { state: 1 } });
+// @ts-expect-error an array field has no scalar to test
+collection<Ticket>().index("x", "priority", { where: { tags: ["a"] } });
+// @ts-expect-error a field of an object is named by its dot path
+collection<Ticket>().index("x", "priority", { where: { meta: { sprint: "s1" } } });
+// @ts-expect-error the wrong type at a nested path
+collection<Ticket>().index("x", "priority", { where: { "meta.sprint": 1 } });
+// @ts-expect-error a unique index checks its where as well
+collection<Ticket>().unique("x", "priority", { where: { status: 9 } });
+// @ts-expect-error a text index checks its where as well
+collection<Ticket>().text("x", "priority", "id", { where: { deleted: "no" } });
+// @ts-expect-error include and where are checked together
+collection<Ticket>().index("x", "priority", { include: ["status"], where: { status: 9 } });
+// @ts-expect-error where is the only other option of a unique index
+collection<Ticket>().unique("x", "priority", { where: { status: 3 }, include: ["status"] });
+
 // @ts-expect-error [] marks an array field, and owner is a string
 defineSchema({ version: 1, collections: { notes: collection<Note>().index("m", "owner[]") } });
 // @ts-expect-error an array field needs the [] mark
