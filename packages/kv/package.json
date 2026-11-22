@@ -55,6 +55,7 @@
   ],
   "scripts": {
     "build:wasm": "sh engine/build.sh",
+    "build:wasm-checked": "tsx checked/build.ts",
     "build": "sh -c 'test -f wasm/engine.wasm || pnpm run build:wasm' && tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build",
     "test": "pnpm run build && vitest run",

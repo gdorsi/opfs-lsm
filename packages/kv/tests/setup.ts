@@ -1,6 +1,18 @@
 import "fake-indexeddb/auto";
 import "../src/testing.js";
-import { expect } from "vitest";
+import { afterEach, expect } from "vitest";
+import { importEngineWith, readEngineWith } from "../src/store/engine.js";
+import { checkedForBridge, takeCheckedReports } from "../checked/engine-under-test.ts";
+
+// The whole suite on the checked twin: a memory error fails the test it
+// happens in, even when the code under test caught what was thrown.
+if (process.env.KV_ENGINE === "checked") {
+  readEngineWith(checkedForBridge.read);
+  importEngineWith(checkedForBridge.imports);
+  afterEach(() => {
+    expect(takeCheckedReports()).toEqual([]);
+  });
+}
 
 // `toEqual` walks a Uint8Array as a generic object, and the sims compare
 // thousands of keys and values per history. Two arrays of the same class are
