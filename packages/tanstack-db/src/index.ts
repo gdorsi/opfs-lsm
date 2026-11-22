@@ -360,7 +360,12 @@ class DemandRun {
       }
       case "gap":
         // Writes may have been missed: read every demand again, and every row TanStack holds.
-        void this.fetch([...this.phase.demands.values()], true).catch(() => undefined);
+        // Rows that read fails to refresh could be stale, so the collection fails rather than keep them as ready.
+        void this.fetch([...this.phase.demands.values()], true).catch((err: unknown) => {
+          if (this.phase.kind === "stopped") return;
+          this.stop();
+          this.p.fail(err);
+        });
         return;
       case "closed":
         this.stop();

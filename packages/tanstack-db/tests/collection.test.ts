@@ -142,8 +142,14 @@ function gatedView<T extends JsonDoc>(docs: Collection<T, any>) {
 function tappedFeed<T extends JsonDoc>(docs: Collection<T, any>) {
   const listeners = new Set<(event: CollectionChange<T>) => void>();
   let hide = 0;
+  let failView: Error | undefined;
   const tapped = new Proxy(docs, {
     get(target, prop) {
+      if (prop === "view" && failView) {
+        const err = failView;
+        failView = undefined;
+        return () => Promise.reject(err);
+      }
       if (prop === "changes") {
         return (listener: (event: CollectionChange<T>) => void) => {
           listeners.add(listener);
@@ -164,6 +170,9 @@ function tappedFeed<T extends JsonDoc>(docs: Collection<T, any>) {
   return {
     docs: tapped,
     hideNextAppend: () => hide++,
+    failNextView: (err: Error) => {
+      failView = err;
+    },
     emit: (event: CollectionChange<T>) => {
       for (const listener of listeners) listener(event);
     },
@@ -661,6 +670,24 @@ test("a gap reloads every loaded subset, its puts and its deletes", async () => 
 
   tap.emit({ kind: "gap" });
   await polled(() => c.has("X-2") && !c.has("X-1"), "the reload after the gap");
+});
+
+test("a gap whose reload fails fails the collection instead of reporting stale rows as ready", async () => {
+  const name = dbName();
+  const writer = (await open(name)).store.collection("comments");
+  const r = await open(name);
+  const tap = tappedFeed(r.store.collection("comments"));
+  const c = onDemand(tap.docs);
+  await writer.put(comment("X", 1));
+  await r.kv.sync();
+  const ofX = commentsOf(c, "X");
+  await ofX.preload();
+  assert.equal(ofX.size, 1);
+
+  tap.failNextView(new Error("storage gone"));
+  tap.emit({ kind: "gap" });
+  await polled(() => c.health.error != null, "the failed reload");
+  assert.deepEqual([...c.keys()], ["X-1"]);
 });
 
 test("an ordered window holds its page, takes a write that sorts into it and leaves out one that sorts past it", async () => {
