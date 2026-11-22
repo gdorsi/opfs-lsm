@@ -10,18 +10,8 @@ const chipText = (name: "Status" | "Priority", codes: readonly Code[], labels: r
 
 const TWEEN_MS = 250;
 
-// The strong ease-out of `.count` in app.css, as a function of time so the number can follow it.
-const easeOut = (x: number) => {
-  const at = (a: number, b: number, t: number) => 3 * a * (1 - t) ** 2 * t + 3 * b * (1 - t) * t ** 2 + t ** 3;
-  let lo = 0;
-  let hi = 1;
-  for (let i = 0; i < 20; i++) {
-    const mid = (lo + hi) / 2;
-    if (at(0.23, 0.32, mid) < x) lo = mid;
-    else hi = mid;
-  }
-  return at(1, 1, (lo + hi) / 2);
-};
+// Ease-out quint, the curve of the opacity transition on `.count` in app.css.
+const easeOut = (t: number) => 1 - (1 - t) ** 5;
 
 /**
  * The issue total. While a count runs the last total stays on screen, dimmed. A new total is counted up or down from
