@@ -143,11 +143,11 @@ suite("versus", () => {
 suite("timed phases", () => {
   const open = phase("coldopen", {
     wallMs: 100,
-    spanMs: 80,
+    spanMs: 55,
     ops: 1000,
     latency: { open: hist(1, 40_000), get: hist(1000, 50_000) },
   });
-  const m = measure([run([open]), run([{ ...open, wallMs: 120, spanMs: 100, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
+  const m = measure([run([open]), run([{ ...open, wallMs: 120, spanMs: 52, latency: { open: hist(1, 60_000), get: hist(1000, 50_000) } }])]);
   const at = (metric: Metric) => series(m, metric, "coldopen");
 
   test("mean:<op> is the run's own sum over count, and mean:open is the store open", () => {
@@ -160,7 +160,7 @@ suite("timed phases", () => {
   });
 
   test("rate divides ops by the span of the timed calls, not by the wall time", () => {
-    assert.deepEqual(at("rate")!.values, [(1000 / 80) * 1000, (1000 / 100) * 1000]);
+    assert.deepEqual(at("rate")!.values, [(1000 / 55) * 1000, (1000 / 52) * 1000]);
   });
 
   test("an untimed phase has no timing series", () => {

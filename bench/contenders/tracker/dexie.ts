@@ -11,8 +11,9 @@ const { minKey, maxKey } = Dexie;
  * IndexedDB keys reject null, so an issue with no assignee is simply absent
  * from the assignee indexes, which no goal reads for unassigned issues.
  * A multiEntry index cannot be part of a compound one, so a label page walks
- * the project's issues newest first and tests the labels: at small and large that
- * reads fewer rows than `*labelIds`, which spans every project and status.
+ * the project's issues newest first and tests the labels. For the curated
+ * bindings at small and large that reads fewer rows than `*labelIds`, which
+ * spans every project and status.
  */
 export default defineContender({
   family: "tracker",
