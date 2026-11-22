@@ -129,7 +129,7 @@ Contenders import only the dataset's `types.ts`. oxlint keeps the history and th
 
 Four tracker goals are one screen each: `statusPage`, `labelPage`, `myIssues` and `recentActivity`. Each is a live query built with TanStack's query builder: the issues the screen lists, left-joined to their project (for the key) and assignee (for the name), newest update first, 50 rows. Label names come from one live query of all labels, mapped by id, because TanStack joins only on equality and a card holds an array of label ids. Every join is a left join: TanStack loads a window in order from an on-demand collection only when no join can drop a row. Each screen subscribes to its query, as `useLiveQuery` does. TanStack collects a live query that has no subscriber after 5 s.
 
-The collections hold users, projects, labels and issues. No screen reads comments, so comment events are left out. A patch writes the changed fields of the row the collection holds: `update` on an eager collection. On demand, SQLite first holds the batch's rows with a live query on their ids, and docstore uses `utils.transact`, which reads them in its own transaction.
+The collections hold users, projects, labels and issues. No screen reads comments, so comment events are left out. A patch writes the changed fields of the row the collection holds. A batch's inserts, updates and deletes of one entity go in one `createTransaction`, which `utils.acceptMutations` persists in one commit. On demand, SQLite first holds the batch's rows with a live query on their ids, and docstore uses `utils.transact`, which reads them in its own transaction and also writes once per entity.
 
 The phases:
 

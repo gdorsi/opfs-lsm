@@ -4,7 +4,7 @@
  * the collections. A contender supplies only its collections and, for an
  * on-demand collection, how it writes rows it has not loaded.
  */
-import { and, BTreeIndex, coalesce, concat, createLiveQueryCollection, eq, inArray, type Collection, type InitialQueryBuilder } from "@tanstack/db";
+import { and, BTreeIndex, coalesce, concat, createLiveQueryCollection, createTransaction, eq, inArray, type Collection, type InitialQueryBuilder } from "@tanstack/db";
 import type { LiveScreen, LiveStore, Screen } from "../core/families.ts";
 import { LIMITS, OPEN, type Issue, type IssueCard, type Label, type Project, type TrackerSpec, type User } from "../datasets/tracker/types.ts";
 import { changesOf, type Change } from "./tracker.ts";
@@ -92,8 +92,10 @@ function patchOf(was: Row, now: Row): Record<string, unknown> {
 }
 
 /**
- * Writes rows the collection holds: inserts, updates and deletes, one TanStack
- * transaction each. `load` makes an on-demand collection hold `ids` first and
+ * Writes rows the collection holds: inserts, updates and deletes of a batch in
+ * one manual TanStack transaction, which the collection persists in one commit
+ * through `utils.acceptMutations`, as TanStack's docs write a multi-operation
+ * transaction. `load` makes an on-demand collection hold `ids` first and
  * returns how to let them go.
  */
 export function writeHeld(c: Collections, load?: (entity: Entity, ids: readonly string[]) => Promise<() => Promise<void>>): Modify {
@@ -113,15 +115,17 @@ export function writeHeld(c: Collections, load?: (entity: Entity, ids: readonly 
         else if (now && was) updates.set(id, patchOf(was, now));
         else if (!now && was) deletes.push(id);
       });
-      if (inserts.length > 0) await col.insert(inserts).when("settled");
-      if (updates.size > 0) {
-        await col
-          .update([...updates.keys()], (drafts) => {
+      const tx = createTransaction({ autoCommit: false, mutationFn: ({ transaction }) => col.utils.acceptMutations(transaction) });
+      tx.mutate(() => {
+        if (inserts.length > 0) col.insert(inserts);
+        if (updates.size > 0) {
+          col.update([...updates.keys()], (drafts) => {
             for (const d of drafts) Object.assign(d, updates.get(d.id));
-          })
-          .when("settled");
-      }
-      if (deletes.length > 0) await col.delete(deletes).when("settled");
+          });
+        }
+        if (deletes.length > 0) col.delete(deletes);
+      });
+      await tx.commit();
     } finally {
       await release?.();
     }

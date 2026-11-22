@@ -7,7 +7,7 @@ export default defineContender({
   family: "tanstack-live",
   durability: "idb-default",
   fastPath:
-    "indexedDBCollectionOptions on createIndexedDB, eager (its only mode), an object store per entity; TanStack BTree indexes on the issue fields the screens filter and sort by; preload() getAll; insert, update and delete with an array = one TanStack transaction = one IndexedDB readwrite transaction",
+    "indexedDBCollectionOptions on createIndexedDB, eager (its only mode), an object store per entity; TanStack BTree indexes on the issue fields the screens filter and sort by; preload() getAll; insert, update and delete in one createTransaction whose mutationFn calls utils.acceptMutations = one IndexedDB readwrite transaction",
   engine: false,
   async open(name) {
     const db = await createIndexedDB({ name: `tanstack-live-${name}`, version: 1, stores: ["users", "projects", "labels", "issues"] });

@@ -15,7 +15,7 @@ export default defineContender({
   family: "tanstack-live",
   durability: "idb-default",
   fastPath:
-    "docstoreCollectionOptions, eager, a collection per entity on openDocStore on openDb, no docstore indexes; TanStack BTree indexes on the issue fields the screens filter and sort by; preload() reads each collection from one view; insert, update and delete with an array = one TanStack transaction = one putMany or deleteMany",
+    "docstoreCollectionOptions, eager, a collection per entity on openDocStore on openDb, no docstore indexes; TanStack BTree indexes on the issue fields the screens filter and sort by; preload() reads each collection from one view; insert, update and delete in one createTransaction whose mutationFn calls utils.acceptMutations = one docstore write",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
