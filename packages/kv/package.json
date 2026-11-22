@@ -65,6 +65,7 @@
     "kill-chrome": "pnpm run build && tsx scripts/kill-chrome.ts",
     "power-loss-chrome": "pnpm run build && tsx scripts/power-loss-chrome.ts",
     "probe:wasm-memory": "tsx scripts/wasm-memory.ts",
+    "engine:gate": "tsx scripts/engine-gate.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",

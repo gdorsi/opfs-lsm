@@ -56,7 +56,7 @@ function readText(path: string): string | null {
  * names a module by the path it was reached by, and the transform finds the
  * allocator by that name.
  */
-async function buildChecked(root = KV, outDir = CHECKED_DIR): Promise<void> {
+export async function buildChecked(root = KV, outDir = CHECKED_DIR): Promise<void> {
   const twin = await compile(root, "engine/index.ts", ["--debug"], [Instrument]);
   // The engine's static data always takes a page, and the allocator counts on one.
   const alloc = await compile(root, "alloc-harness.ts", ["--noAssert", "--initialMemory", "1"]);

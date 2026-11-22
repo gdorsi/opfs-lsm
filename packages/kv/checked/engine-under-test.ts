@@ -12,7 +12,7 @@ import { createShadow } from "./shadow.ts";
 export { takeCheckedReports } from "./shadow.ts";
 
 const KV = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SHIPPED = join(KV, "wasm/engine.wasm");
+export const SHIPPED = join(KV, "wasm/engine.wasm");
 /** Where checked/build.ts writes. `KV_CHECKED_DIR` points the suites at another build, such as a planted bug's. */
 export const CHECKED_DIR = join(KV, "checked/.build");
 export const checkedFile = (name: "engine.wasm" | "alloc.wasm") => join(process.env.KV_CHECKED_DIR || CHECKED_DIR, name);
