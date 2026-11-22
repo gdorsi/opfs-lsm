@@ -323,6 +323,34 @@ describe("opening a schema", () => {
     expect(await next.store.collection("todos").count({ index: "perLabel" })).toBe(8200);
   });
 
+  it("fails an index whose entries for one row written before it pass kv's batch limit, and opens every time", async () => {
+    const name = freshName();
+    type Doc = { id: string; tags?: string[]; body?: string };
+    const docs = collection<Doc>();
+    const old = await at(name, defineSchema({ version: 1, collections: { docs } }));
+    const tags = Array.from({ length: 1000 }, (_, i) => `t${i}`);
+    await old.store.collection("docs").putMany([
+      { id: "big", tags, body: "b".repeat(8150) },
+      { id: "small", tags: ["a"], body: "b" },
+    ]);
+    const v2 = defineSchema({ version: 2, collections: { docs: docs.index("byTagBody", ["tags[]", "body"]) } });
+    for (let i = 0; i < 2; i++) {
+      const next = await at(name, v2);
+      const c = next.store.collection("docs");
+      expect(await c.queryIds({ index: "byTagBody" }).catch((e: unknown) => e)).toMatchObject({ code: "index-failed", ids: ["big"] });
+      expect(await c.get("small")).toMatchObject({ id: "small" });
+    }
+  });
+
+  it("stores and indexes a document whose entries in one index take over 4 MiB but fit one kv batch", async () => {
+    const name = freshName();
+    const docs = collection<{ id: string; tags: string[]; body: string }>().index("byTagBody", ["tags[]", "body"]);
+    const { store } = await at(name, defineSchema({ version: 1, collections: { docs } }));
+    const tags = Array.from({ length: 1000 }, (_, i) => `t${i}`);
+    await store.collection("docs").put({ id: "wide", tags, body: "b".repeat(4200) });
+    expect(await store.collection("docs").count({ index: "byTagBody" })).toBe(1000);
+  });
+
   it("resolves two handles opening the next version at once, with its definitions stored once", async () => {
     const name = freshName();
     await at(name, v1);
