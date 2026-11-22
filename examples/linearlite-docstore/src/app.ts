@@ -25,10 +25,10 @@ export type App = ReturnType<typeof createApp>;
 export function createApp(store: Store) {
   const list = createList(store);
   let state: AppState = { empty: false, generating: undefined, filter: DEFAULT_FILTER, total: undefined, issue: undefined, detail: undefined };
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(state: AppState) => void>();
   const set = (patch: Partial<AppState>) => {
     state = { ...state, ...patch };
-    for (const listener of listeners) listener();
+    for (const listener of listeners) listener(state);
   };
   let run = 0;
 
@@ -107,11 +107,12 @@ export function createApp(store: Store) {
 
   return {
     list,
-    subscribe(listener: () => void) {
+    /** Calls `listener` with the state now, and again after every change. Returns the call that stops it. */
+    subscribe(listener: (state: AppState) => void) {
       listeners.add(listener);
+      listener(state);
       return () => listeners.delete(listener);
     },
-    state: () => state,
     show,
 
     filter(patch: Partial<Filter>) {

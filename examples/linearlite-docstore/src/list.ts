@@ -44,7 +44,7 @@ export function createList(store: Store) {
   let height = 0;
   let resets = 0;
   let snapshot: ListWindow = { count: 0, rows: [], none: false, top: 0 };
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(win: ListWindow) => void>();
 
   function render() {
     const count = total ?? Math.max(-1, ...rows.keys()) + 1;
@@ -58,7 +58,7 @@ export function createList(store: Store) {
       shown.push({ at, issue });
     }
     snapshot = { count, rows: shown, none: count === 0 && tried.has(0), top: resets };
-    for (const listener of listeners) listener();
+    for (const listener of listeners) listener(snapshot);
     wanted = [...missing].filter((page) => !tried.has(page));
     void pump();
   }
@@ -146,11 +146,12 @@ export function createList(store: Store) {
   }
 
   return {
-    subscribe(listener: () => void) {
+    /** Calls `listener` with the window now, and again after every change. Returns the call that stops it. */
+    subscribe(listener: (win: ListWindow) => void) {
       listeners.add(listener);
+      listener(snapshot);
       return () => listeners.delete(listener);
     },
-    snapshot: () => snapshot,
 
     /** The scroller moved or changed size. */
     scroll(top: number, size: number) {
@@ -204,7 +205,7 @@ export function createList(store: Store) {
     grow(by: number): number | undefined {
       if (total !== undefined) total += by;
       snapshot = { ...snapshot, count: total ?? 0 };
-      for (const listener of listeners) listener();
+      for (const listener of listeners) listener(snapshot);
       return total;
     },
 

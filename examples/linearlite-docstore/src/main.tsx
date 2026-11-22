@@ -1,7 +1,7 @@
 import { destroyDb } from "@opfs-lsm/kv";
 import { ensureEngine } from "@opfs-lsm/kv/testing";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { createRoot } from "react-dom/client";
+import { render } from "@solidjs/web";
+import { createEffect, createMemo, createSignal, Errored, from, onSettled, Show } from "solid-js";
 import { createApp, type App, type AppState } from "./app.ts";
 import "./app.css";
 import { Compose } from "./compose.tsx";
@@ -28,86 +28,104 @@ const n = (x: number) => x.toLocaleString("en-US");
 
 const width = (g: NonNullable<AppState["generating"]>) => `${(g.written / g.count) * 100}%`;
 
+const Frame = () => <div class="topbar" />;
+
 /** The page. Until the database is open there is no `app`, and the page shows its frame only. */
-function Page({ app }: { app: App | undefined }) {
+function Page(props: { app: App | undefined }) {
   return (
-    <div className="app">
-      <main className="main">{app ? <Issues app={app} /> : <div className="topbar" />}</main>
+    <div class="app">
+      <main class="main">
+        <Show when={props.app} fallback={<Frame />}>
+          {(app) => (
+            <Errored fallback={(error) => <Failed error={error()} />}>
+              <Issues app={app()} />
+            </Errored>
+          )}
+        </Show>
+      </main>
     </div>
   );
 }
 
-const useAppState = (app: App) => useSyncExternalStore(app.subscribe, app.state);
+function Failed(props: { error: unknown }) {
+  createEffect(() => props.error, failed);
+  return <Frame />;
+}
 
-function Issues({ app }: { app: App }) {
-  const { empty, generating, filter, total, issue, detail } = useAppState(app);
-  const [composing, setComposing] = useState(false);
-  const close = useCallback(() => setComposing(false), []);
-  const generate = () => void app.generate(COUNT).catch(failed);
+function Issues(props: { app: App }) {
+  const state = createMemo(() => from(props.app.subscribe));
+  const [composing, setComposing] = createSignal(false);
+  const [createMore, setCreateMore] = createSignal(false);
+  const generate = () => void props.app.generate(COUNT).catch(failed);
   const data: Item[] = [
-    { label: <span>Generate {n(COUNT)} more</span>, on: false, pick: generate },
-    { label: <span>Delete the data</span>, on: false, pick: app.destroy },
+    { label: () => <span>Generate {n(COUNT)} more</span>, on: false, pick: generate },
+    { label: () => <span>Delete the data</span>, on: false, pick: () => props.app.destroy() },
   ];
 
-  useEffect(() => {
+  onSettled(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !composing) app.close();
+      if (e.key === "Escape" && !composing()) props.app.close();
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [app, composing]);
+  });
 
   return (
     <>
       <Toolbar
-        filter={filter}
-        total={total}
+        filter={state().filter}
+        total={state().total}
         data={data}
-        progress={generating && !empty ? width(generating) : undefined}
-        set={app.filter}
+        progress={state().generating && !state().empty ? width(state().generating!) : undefined}
+        set={(patch) => props.app.filter(patch)}
         create={() => setComposing(true)}
       />
-      {empty ? (
-        <div className="empty">
-          {generating ? (
-            <div className="demo-progress">
-              <h2>Writing issues</h2>
-              <p className="mono">
-                {n(generating.written)} of {n(generating.count)}
-              </p>
-              <div className="bar">
-                <i style={{ width: width(generating) }} />
+      <Show when={state().empty} fallback={<IssueList app={props.app} />}>
+        <div class="empty">
+          <Show
+            when={state().generating}
+            fallback={
+              <div id="start">
+                <h2>No issues yet</h2>
+                <p>They are generated in a dedicated WebWorker and stored in this browser.</p>
+                <button class="btn primary" id="demo-generate" onClick={generate}>
+                  Generate {n(COUNT)} issues
+                </button>
               </div>
-            </div>
-          ) : (
-            <div id="start">
-              <h2>No issues yet</h2>
-              <p>They are generated in a dedicated WebWorker and stored in this browser.</p>
-              <button className="btn primary" id="demo-generate" onClick={generate}>
-                Generate {n(COUNT)} issues
-              </button>
-            </div>
-          )}
+            }
+          >
+            {(generating) => (
+              <div class="demo-progress">
+                <h2>Writing issues</h2>
+                <p class="mono">
+                  {n(generating().written)} of {n(generating().count)}
+                </p>
+                <div class="bar">
+                  <i style={{ width: width(generating()) }} />
+                </div>
+              </div>
+            )}
+          </Show>
         </div>
-      ) : (
-        <IssueList app={app} />
-      )}
-      {issue && <Detail key={issue.id} app={app} issue={issue} detail={detail} />}
-      {composing && <Compose create={app.create} close={close} />}
+      </Show>
+      <Show when={state().issue}>{(issue) => <Detail app={props.app} issue={issue()} detail={state().detail} />}</Show>
+      <Show when={composing()}>
+        <Compose create={(draft) => props.app.create(draft)} close={() => setComposing(false)} more={createMore()} setMore={setCreateMore} />
+      </Show>
     </>
   );
 }
 
 async function main() {
-  const root = createRoot(document.getElementById("root")!);
-  root.render(<Page app={undefined} />);
+  const [opened, setOpened] = createSignal<App>();
+  render(() => <Page app={opened()} />, document.getElementById("root")!);
   // The wasm module is fetched and compiled before the clock starts, so network time stays out of the open time.
   await ensureEngine();
   const t0 = performance.now();
   const store = await openStore(NAME);
   const openedMs = performance.now() - t0;
   const app = createApp(store);
-  root.render(<Page app={app} />);
+  setOpened(app);
 
   addEventListener("message", (e: MessageEvent<ToDemo & { source?: string }>) => {
     if (e.origin !== location.origin || e.data?.source !== SOURCE) return;

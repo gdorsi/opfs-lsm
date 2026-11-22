@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createSignal, onSettled, Show } from "solid-js";
 import { Dots } from "./icons.tsx";
 import { codeItems, MenuButton, type Item } from "./menu.tsx";
 import { PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
@@ -20,68 +20,72 @@ export function Toolbar(props: {
   set(patch: Partial<Filter>): void;
   create(): void;
 }) {
-  const { filter, set } = props;
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = createSignal("");
+  let typing: ReturnType<typeof setTimeout> | undefined;
+  onSettled(() => () => clearTimeout(typing));
 
-  useEffect(() => {
-    const q = search.trim();
-    if (q === filter.q) return;
-    const typing = setTimeout(() => set({ q }), 80);
-    return () => clearTimeout(typing);
-  }, [search]);
+  const type = (text: string) => {
+    setSearch(text);
+    clearTimeout(typing);
+    typing = setTimeout(() => {
+      const q = text.trim();
+      if (q !== props.filter.q) props.set({ q });
+    }, 80);
+  };
+  const clear = () => {
+    clearTimeout(typing);
+    setSearch("");
+    props.set({ status: [], priority: [], q: "" });
+  };
 
-  const codes = (field: "status" | "priority") => codeItems(field, (c) => filter[field].includes(c), (c) => set({ [field]: toggled(filter[field], c) }));
-  const sorts: Item[] = [
+  const codes = (field: "status" | "priority") =>
+    codeItems(field, (c) => props.filter[field].includes(c), (c) => props.set({ [field]: toggled(props.filter[field], c) }));
+  const sorts = (): Item[] => [
     { head: "Order by" },
-    ...SORTS.map((s): Item => ({ label: <span>{SORT_LABELS[s]}</span>, on: filter.sort === s, pick: () => set({ sort: s }) })),
+    ...SORTS.map((s): Item => ({ label: () => <span>{SORT_LABELS[s]}</span>, on: props.filter.sort === s, pick: () => props.set({ sort: s }) })),
     "separator",
-    { label: <span>Descending</span>, on: filter.dir === "desc", pick: () => set({ dir: "desc" }) },
-    { label: <span>Ascending</span>, on: filter.dir === "asc", pick: () => set({ dir: "asc" }) },
+    { label: () => <span>Descending</span>, on: props.filter.dir === "desc", pick: () => props.set({ dir: "desc" }) },
+    { label: () => <span>Ascending</span>, on: props.filter.dir === "asc", pick: () => props.set({ dir: "asc" }) },
   ];
 
   return (
-    <div className="topbar">
-      <span className="title">All issues</span>
-      <span id="count" className="count mono">
+    <div class="topbar">
+      <span class="title">All issues</span>
+      <span id="count" class="count mono">
         {props.total?.toLocaleString("en-US")}
       </span>
-      <div className="chips">
-        <MenuButton className={filter.status.length ? "chip on" : "chip"} title="Filter by status" keepOpen items={codes("status")}>
-          {chipText("Status", filter.status, STATUS_LABELS)}
+      <div class="chips">
+        <MenuButton class={["chip", { on: props.filter.status.length > 0 }]} title="Filter by status" keepOpen items={codes("status")}>
+          {chipText("Status", props.filter.status, STATUS_LABELS)}
         </MenuButton>
-        <MenuButton className={filter.priority.length ? "chip on" : "chip"} title="Filter by priority" keepOpen items={codes("priority")}>
-          {chipText("Priority", filter.priority, PRIORITY_LABELS)}
+        <MenuButton class={["chip", { on: props.filter.priority.length > 0 }]} title="Filter by priority" keepOpen items={codes("priority")}>
+          {chipText("Priority", props.filter.priority, PRIORITY_LABELS)}
         </MenuButton>
-        {(filter.status.length > 0 || filter.priority.length > 0 || filter.q !== "") && (
-          <button
-            className="chip plain"
-            data-clear
-            onClick={() => {
-              setSearch("");
-              set({ status: [], priority: [], q: "" });
-            }}
-          >
+        <Show when={props.filter.status.length > 0 || props.filter.priority.length > 0 || props.filter.q !== ""}>
+          <button class="chip plain" data-clear onClick={clear}>
             Clear
           </button>
-        )}
-        <MenuButton className="chip plain" title="Sort" items={sorts}>
-          {`${SORT_LABELS[filter.sort]} ${filter.dir === "desc" ? "↓" : "↑"}`}
+        </Show>
+        <MenuButton class="chip plain" title="Sort" items={sorts()}>
+          {`${SORT_LABELS[props.filter.sort]} ${props.filter.dir === "desc" ? "↓" : "↑"}`}
         </MenuButton>
       </div>
-      <button className="btn primary" id="new" onClick={props.create}>
+      <button class="btn primary" id="new" onClick={() => props.create()}>
         New issue
       </button>
-      <MenuButton className="btn icon" title="Data" label="Data" items={props.data}>
+      <MenuButton class="btn icon" title="Data" label="Data" items={props.data}>
         <Dots />
       </MenuButton>
-      <label className="search">
-        <input id="search" type="search" placeholder="Search titles" autoComplete="off" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <label class="search">
+        <input id="search" type="search" placeholder="Search titles" autocomplete="off" value={search()} onInput={(e) => type(e.currentTarget.value)} />
       </label>
-      {props.progress && (
-        <div className="bar">
-          <i style={{ width: props.progress }} />
-        </div>
-      )}
+      <Show when={props.progress}>
+        {(width) => (
+          <div class="bar">
+            <i style={{ width: width() }} />
+          </div>
+        )}
+      </Show>
     </div>
   );
 }
