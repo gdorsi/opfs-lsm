@@ -67,6 +67,34 @@ describe("batch limits", () => {
     await db.close();
   });
 
+  it("stores a key of 8 KiB, and rejects one a byte longer in every call that takes a key", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
+    const longest = new Uint8Array(8 * 1024).fill(0x6b);
+    const over = new Uint8Array(8 * 1024 + 1).fill(0x6b);
+    await db.put(longest, enc.encode("v"));
+    const calls: Record<string, () => Promise<unknown>> = {
+      put: () => db.put(over, enc.encode("v")),
+      delete: () => db.delete(over),
+      "deleteRange start": () => db.batch((tx) => tx.deleteRange({ start: over })),
+      "deleteRange endExclusive": () => db.batch((tx) => tx.deleteRange({ endExclusive: over })),
+      update: () => db.update([over], () => undefined),
+      get: () => db.get(over),
+      getMany: () => db.getMany([longest, over]),
+      range: () => db.range({ start: over })[Symbol.asyncIterator]().next(),
+      count: () => db.count({ endExclusive: over }),
+    };
+    for (const [name, call] of Object.entries(calls)) {
+      const failed = await call().then(
+        () => "resolved",
+        (err: unknown) => (err instanceof ConstraintError ? "ConstraintError" : String(err)),
+      );
+      expect(`${name}: ${failed}`).toBe(`${name}: ConstraintError`);
+    }
+    expect(await db.count()).toBe(1);
+    expect(await db.get(longest)).toEqual(enc.encode("v"));
+    await db.close();
+  });
+
   it("rejects a batch over 8 MiB of keys and values and writes none of it", async () => {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
     const value = new Uint8Array(1024 * 1024);

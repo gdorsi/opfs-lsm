@@ -59,7 +59,12 @@ export type HistOp = Base &
       }
     | { readonly kind: "get"; readonly key: Uint8Array; value?: Uint8Array | undefined }
     | { readonly kind: "range"; readonly range: OracleRange; entries?: readonly OracleEntry[] }
-    | { readonly kind: "view"; readonly reads: ViewRead[] }
+    | {
+        readonly kind: "view";
+        readonly reads: ViewRead[];
+        /** `snap.seq`: the prefix every read of the view must be the fold of. */
+        seq?: number;
+      }
   );
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -223,7 +228,8 @@ function check(h: History): Oracle {
         throw fail(`saw ${showEntries(r.entries!)}, head has ${showEntries(oracle.rangeAt(r.range))}`);
       }
     } else if (r.kind === "view") {
-      let set: number[] | undefined;
+      let set = r.seq === undefined ? undefined : within([r.seq].filter((p) => p >= lo));
+      if (set?.length === 0) throw fail(`view has snap.seq ${r.seq}`);
       for (const read of r.reads) {
         const next =
           read.kind === "get"
@@ -327,7 +333,7 @@ function describe(op: HistOp): string {
     case "range":
       return `range ${showRange(op.range)} = ${op.entries ? showEntries(op.entries) : "?"}`;
     case "view":
-      return `view[${op.reads
+      return `view${op.seq === undefined ? "" : ` @snap.seq ${op.seq}`}[${op.reads
         .map((r) => (r.kind === "get" ? `get ${show(r.key)} = ${showValue(r.value)}` : `range ${showRange(r.range)} = ${showEntries(r.entries)}`))
         .join("; ")}]`;
   }

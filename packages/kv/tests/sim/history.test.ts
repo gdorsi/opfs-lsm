@@ -90,6 +90,19 @@ describe("history checker", () => {
     expect(() => checkHistory(h)).toThrow(/view/);
   });
 
+  it("rejects a view whose snap.seq is not the prefix its reads see", () => {
+    const h = new History();
+    const a = session(h);
+    const b = session(h);
+    write(h, a, [put("x", "1")]);
+    write(h, a, [put("y", "1")]);
+    const view = h.invoke({ kind: "view", session: b, reads: [] });
+    view.seq = 1;
+    view.reads.push({ kind: "get", key: utf("y"), value: utf("1") });
+    h.respond(view);
+    expect(() => checkHistory(h)).toThrow(/view is not one prefix/);
+  });
+
   it("rejects a read that sees a write not invoked yet", () => {
     const h = new History();
     const a = session(h);

@@ -845,8 +845,9 @@ class DbImpl implements Db {
     });
   }
 
-  /** Read the tail and catch up to it. */
+  /** Read the tail and catch up to it. After close the connection is gone, and as in `follow` there is nothing to catch up. */
   private catchUpOnce(): Promise<"done" | Retry> {
+    if (this.closed) return Promise.resolve("done");
     return this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail));
   }
 
