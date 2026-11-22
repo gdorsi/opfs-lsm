@@ -60,25 +60,25 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
       live = { history: d.history(ctx.size, ctx.params.seed), oracle: d.oracle() };
       const { oracle } = live;
       const { during, every, read } = d.duringLoad;
-      // The history is generated lazily, so it is drawn whole, with each batch's timing inputs, before the first timed call.
-      const batches = [...live.history.load].map((tx) => ({ tx, op: d.txOp(tx), bytes: d.txBytes(tx), count: d.txCount(tx) }));
-      // Answers are kept and compared after the last timed call: oracle work between calls would lengthen the span and give
-      // background-working stores idle time that a store committing in the call does not get.
-      const answers: { readonly batch: number; readonly got: Json }[] = [];
+      // Answers are compared after the last timed call, against a second copy of the seeded history: oracle work between
+      // calls would give stores that work in the background idle time a store committing in the call does not get, and
+      // holding the batches instead would keep the whole history in the page's heap.
+      const answers = new Map<number, Json>();
+      let n = 0;
       let matched = 0;
-      for (const [i, { tx, op, bytes, count }] of batches.entries()) {
-        await ctx.time(op, bytes, () => store.apply(tx), count);
-        if (op === during && ++matched % every === 0) {
-          answers.push({ batch: i + 1, got: await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0) });
-        }
-        if ((i + 1) % 500 === 0) ctx.progress(`replay: ${i + 1} batches`);
+      for (const tx of live.history.load) {
+        const op = d.txOp(tx);
+        await ctx.time(op, d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
+        n++;
+        if (op === during && ++matched % every === 0) answers.set(n, await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0));
+        if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
       }
-      let applied = 0;
-      for (const { batch, got } of answers) {
-        for (; applied < batch; applied++) oracle.apply(batches[applied]!.tx);
-        check(ctx, `${read.goal} after batch ${batch}`, got, oracle.goals[read.goal]!(read.params));
+      n = 0;
+      for (const tx of d.history(ctx.size, ctx.params.seed).load) {
+        oracle.apply(tx);
+        const got = answers.get(++n);
+        if (got !== undefined) check(ctx, `${read.goal} after batch ${n}`, got, oracle.goals[read.goal]!(read.params));
       }
-      for (; applied < batches.length; applied++) oracle.apply(batches[applied]!.tx);
       ctx.carry.liveLogicalBytes = oracle.liveBytes();
     },
   };
@@ -99,11 +99,12 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     async run(ctx) {
       const store = await storeOf(ctx);
       const { history, oracle } = running();
-      for (const tx of history.recent()) {
-        oracle.apply(tx);
+      const batches = [...history.recent()];
+      for (const tx of batches) {
         await ctx.time(d.txOp(tx), d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
         await yieldTask();
       }
+      for (const tx of batches) oracle.apply(tx);
     },
   };
 
