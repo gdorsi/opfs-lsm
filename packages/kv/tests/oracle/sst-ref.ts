@@ -344,7 +344,7 @@ export function blockLengths(meta: Uint8Array, footer: SstFooter): number[] {
 
 /** Every record of one block, checking the block holds nothing after them. */
 function walkBlock(b: BlockBytes): SstEntry[] {
-  const w = RecordWalker.ofBlock(b);
+  const w = new RecordWalker(b);
   const out: SstEntry[] = new Array(w.count);
   for (let i = 0; i < w.count; i++) {
     w.next();

@@ -85,28 +85,28 @@ export class RecordWalker {
   valLen = 0;
   private prefix: Uint8Array | undefined = undefined;
 
-  constructor(
-    readonly buf: Uint8Array,
-    readonly view: DataView,
-    public o: number,
-    readonly end: number,
-    readonly count: number,
-    readonly prefixAt: number,
-    readonly prefixLen: number,
-    readonly start: number,
-  ) {}
+  readonly buf: Uint8Array;
+  readonly view: DataView;
+  readonly start: number;
+  readonly count: number;
+  readonly prefixAt: number;
+  readonly prefixLen: number;
+  /** Where the records end and the offset table starts. */
+  readonly end: number;
+  o: number;
 
-  /**
-   * One block: u32 count, varint prefix length, prefix, then records. `end`
-   * is where the offset table starts.
-   */
-  static ofBlock(b: BlockBytes): RecordWalker {
-    const count = b.view.getUint32(b.start, true);
-    const w = new RecordWalker(b.buf, b.view, b.start + 4, b.end, count, 0, 0, b.start);
-    const p = w.len();
-    const end = b.end - offsetTableBytes(count);
-    if (w.o + p > end) throw new CorruptDatabaseError("sst prefix OOB");
-    return new RecordWalker(b.buf, b.view, w.o + p, end, count, w.o, p, b.start);
+  /** One block: u32 count, varint prefix length, prefix, then records. */
+  constructor(b: BlockBytes) {
+    this.buf = b.buf;
+    this.view = b.view;
+    this.start = b.start;
+    this.end = b.end;
+    this.o = b.start + 4;
+    this.count = b.view.getUint32(b.start, true);
+    this.prefixLen = this.len();
+    this.prefixAt = this.o;
+    this.end = b.end - offsetTableBytes(this.count);
+    if ((this.o += this.prefixLen) > this.end) throw new CorruptDatabaseError("sst prefix OOB");
   }
 
   /** Where record `j * OFFSET_STRIDE` starts, for `j >= 1`, from the block's offset table. */
@@ -116,7 +116,7 @@ export class RecordWalker {
     return o;
   }
 
-  /** Reads the record at `o`. Gets walk a block with this, so lengths under 128 skip `len`. */
+  /** Reads the record at `o`. Gets walk a block with this, so lengths under 16 KiB skip `len`. */
   next(): void {
     const buf = this.buf;
     let o = this.o;
@@ -126,7 +126,10 @@ export class RecordWalker {
     o += 9;
     let n = buf[o]!;
     if (n < 0x80) o++;
-    else {
+    else if (buf[o + 1]! < 0x80) {
+      n = (n & 0x7f) | (buf[o + 1]! << 7);
+      o += 2;
+    } else {
       this.o = o;
       n = this.len();
       o = this.o;
@@ -137,7 +140,10 @@ export class RecordWalker {
     if (tag === TAG_PUT) {
       n = buf[o]!;
       if (n < 0x80) o++;
-      else {
+      else if (buf[o + 1]! < 0x80) {
+        n = (n & 0x7f) | (buf[o + 1]! << 7);
+        o += 2;
+      } else {
         this.o = o;
         n = this.len();
         o = this.o;
@@ -321,7 +327,7 @@ function seekInBlock(w: RecordWalker, key: Uint8Array): number {
  * and copies nothing: the caller takes what it needs from the walker.
  */
 export function findInBlock(b: BlockBytes, key: Uint8Array): RecordWalker | undefined {
-  const w = RecordWalker.ofBlock(b);
+  const w = new RecordWalker(b);
   const p = w.prefixLen;
   if (key.byteLength < p) return undefined;
   for (let i = 0; i < p; i++) if (w.buf[w.prefixAt + i] !== key[i]) return undefined;
@@ -335,7 +341,7 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): RecordWalker | unde
  * or after `seek`, each as `RecordWalker.inPlace` gives it.
  */
 export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
-  const w = RecordWalker.ofBlock(b);
+  const w = new RecordWalker(b);
   let left = seek ? seekInBlock(w, seek) : w.count;
   return () => {
     if (left === 0) return undefined;
@@ -347,7 +353,7 @@ export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry
 
 /** Like `blockEntries`, from the last record below `seek` down. */
 export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
-  const w = RecordWalker.ofBlock(b);
+  const w = new RecordWalker(b);
   const first = w.o;
   const below = seek ? w.count - seekInBlock(w, seek) : w.count;
   const starts: number[] = [];
