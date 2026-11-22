@@ -101,6 +101,23 @@ bench:
           - { measure: "Automerge: one keystroke, with its persistence", ours: 0.521 ms, theirs: 0.288 ms, ratio: 0.55× ‡ }
           - { measure: "Automerge: reopening right after typing", ours: 63.6 ms, theirs: 59.0 ms, ratio: 0.93× }
           - { measure: "Automerge: reopening once kv has settled", ours: 66.3 ms, theirs: 58.8 ms, ratio: 0.89× }
+      - title: A task tracker at 200,000 issues
+        versus: docstore against Dexie, warm
+        stores: [docstore, Dexie]
+        setup: The same call again, medians of 5 runs on an Apple M5 Max
+        note: Cold, the first call in a fresh tab, docstore is faster on 5 of the 11 goals and slower on 6.
+        rows:
+          - { measure: "First 50 open issues with a label", ours: 0.305 ms, theirs: 142 ms, ratio: 460× }
+          - { measure: "Issues per status in a project", ours: 0.118 ms, theirs: 7.96 ms, ratio: 67× }
+          - { measure: "Rows at 90% of a project's list", ours: 0.356 ms, theirs: 23.7 ms, ratio: 67× }
+          - { measure: "The column a sprint close just emptied", ours: 1.32 ms, theirs: 73.3 ms, ratio: 56× }
+          - { measure: "First 20 issues whose title contains a word", ours: 0.177 ms, theirs: 5.23 ms, ratio: 30× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 0.444 ms, theirs: 6.30 ms, ratio: 14× }
+          - { measure: "Open issues per person, top 10", ours: 0.620 ms, theirs: 6.40 ms, ratio: 10× }
+          - { measure: "An issue with its comments and their authors", ours: 0.0833 ms, theirs: 0.417 ms, ratio: 5.0× }
+          - { measure: "First 50 open issues assigned to a person", ours: 0.325 ms, theirs: 1.56 ms, ratio: 4.8× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 0.271 ms, theirs: 1.00 ms, ratio: 3.7× }
+          - { measure: "The 50 most recently updated issues", ours: 0.422 ms, theirs: 1.10 ms, ratio: 2.6× }
   - title: Against SQLite on OPFS
     theirs: SQLite
     groups:
@@ -345,7 +362,7 @@ await db.view(async (snap) => {
 
 <div class="bench-foot">
 
-Runs in headless Chrome 157 on an Apple M2 Pro.
+Runs in headless Chrome 157 on an Apple M2 Pro, and on an Apple M5 Max for the tracker at 200,000 issues.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 
