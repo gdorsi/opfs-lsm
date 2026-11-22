@@ -278,8 +278,11 @@ function dropsTombstonesAtBottomInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
   return (
-    /dropTombstones:\s*plan\.bottom,/.test(read("../../src/host/compact.ts")) &&
-    /return\s*\(level === undefined \|\| level > outputLevel\) && !inputs\.includes\(r\);[\s\S]*?bottom:\s*!below\.some\(\(r\) => overlaps\(r\.range, range\)\)/.test(read("../../src/store/levels.ts")) &&
+    /dropTombstones:\s*plan\.bottom\s*[,}]/.test(read("../../src/host/compact.ts")) &&
+    // The range is of every input, and the runs it is held against are every run that is no input and not above the output.
+    /const\s+range\s*=\s*span\(inputs\);\s*const\s+(\w+)\s*=\s*runs\.filter\(\(r\)\s*=>\s*\{\s*const\s+level\s*=\s*levelOf\(r\.path\);\s*return\s*\(level === undefined \|\| level >=? outputLevel\) && !inputs\.includes\(r\);\s*\}\);[\s\S]*?bottom:\s*!\1\.some\(\(r\)\s*=>\s*overlaps\(r\.range,\s*range\)\)/.test(
+      read("../../src/store/levels.ts"),
+    ) &&
     /Kind::Del if self\.drop_tombstones => \{\}/.test(read("../../../../crates/engine-core/src/merge.rs")) &&
     /if \(e\.kind === "del" && this\.dropTombstones\)/.test(read("../../tests/oracle/merge-ts.ts"))
   );
