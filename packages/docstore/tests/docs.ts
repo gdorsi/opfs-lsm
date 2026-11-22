@@ -12,6 +12,7 @@ export type Doc = {
   tags?: Scalar[] | undefined;
   u?: Scalar | undefined;
   t?: string | undefined;
+  ut?: Scalar[] | undefined;
 };
 
 export const schema = defineSchema({
@@ -35,7 +36,13 @@ export const MODEL: Record<string, ModelIndex> = {
   search: { kind: "text", on: ["a"], text: "t" },
   covered: { kind: "sorted", on: ["b", "a"], include: ["t", "tags", "u"] },
 };
-const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
+export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
+
+/** A unique multi index, which gives a document one unique entry per distinct element of `ut`. */
+export const withUniqueTags = schema.collections.docs.unique("utags", "ut[]");
+export const UNIQUE_TAGS = { name: "utags", model: { kind: "multi", on: ["ut"] }, arity: 1 } as const;
+/** The unique indexes: `eq` takes no list on them. */
+const UNIQUE: ReadonlySet<string> = new Set(["uniq", UNIQUE_TAGS.name]);
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
@@ -86,14 +93,14 @@ function boundArb(value: fc.Arbitrary<Scalar>): fc.Arbitrary<QueryInput> {
   );
 }
 
-export const queryArb: fc.Arbitrary<{ index: string | undefined; q: QueryInput }> = fc
-  .constantFrom(undefined, ...Object.keys(MODEL))
-  .chain((index) => {
-    const arity = index === undefined ? 1 : ARITY[index]!;
+/** A query on the rows or on one of `indexes`, given by name with the number of fields of its `by`. */
+export const queryArbOn = (indexes: Record<string, number>): fc.Arbitrary<{ index: string | undefined; q: QueryInput }> =>
+  fc.constantFrom(undefined, ...Object.keys(indexes)).chain((index) => {
+    const arity = index === undefined ? 1 : indexes[index]!;
     const value = index === undefined ? idArb : denseScalarArb;
     // A slot of `eq` can be a list, as long as the index is not unique. Lists may repeat a value or be empty.
     const slot: fc.Arbitrary<Scalar | Scalar[]> =
-      index === undefined || index === "uniq"
+      index === undefined || UNIQUE.has(index)
         ? value
         : fc.oneof({ weight: 2, arbitrary: value }, { weight: 1, arbitrary: fc.array(fc.oneof(poolArb, value), { maxLength: 4 }) });
     return fc.integer({ min: 0, max: arity }).chain((k) =>
@@ -121,14 +128,17 @@ function pick(doc: object, fields: readonly string[]): object {
   return Object.fromEntries(fields.filter((f) => Object.hasOwn(doc, f)).map((f) => [f, (doc as Record<string, unknown>)[f]]));
 }
 
+export const queryArb = queryArbOn(ARITY);
+
 export async function checkQuery(
   c: Pick<Docs, "query" | "queryIds" | "queryEntries" | "count">,
   docs: readonly Doc[],
   index: string | undefined,
   q: QueryInput,
   pageSize: number,
+  indexes: Record<string, ModelIndex> = MODEL,
 ): Promise<void> {
-  const ix = index === undefined ? undefined : MODEL[index];
+  const ix = index === undefined ? undefined : indexes[index];
   const want = expected(docs, ix, q);
   const query = asQuery(q);
   expect((await c.queryIds(query)).ids).toEqual(want.map((h) => h.id));

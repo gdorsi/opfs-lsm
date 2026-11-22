@@ -386,7 +386,7 @@ describe("ids", () => {
 
   it("round-trips ids holding U+0000, characters outside the BMP, and 1,024 UTF-8 bytes", async () => {
     const { notes: c } = await notes();
-    const ids = ["a\u0000b", "😀", "é".repeat(512)];
+    const ids = ["a\u0000b", "😀", "é".repeat(512), `${"日".repeat(341)}x`];
     await c.putMany(ids.map((id) => ({ id })));
     for (const id of ids) expect((await c.get(id))!.id).toBe(id);
     expect((await c.queryIds({})).ids.sort()).toEqual([...ids].sort());
@@ -397,6 +397,8 @@ describe("ids", () => {
     ["an empty id", ""],
     ["a non-string id", 7],
     ["1,025 UTF-8 bytes", `${"é".repeat(512)}x`],
+    ["1,026 UTF-8 bytes of three-byte characters", "日".repeat(342)],
+    ["1,025 UTF-8 bytes of four-byte characters", `${"😀".repeat(256)}x`],
   ])("throws document for %s and writes nothing", async (_, id) => {
     const { notes: c } = await notes();
     expect(await codeOf(c.put({ id } as unknown as Note))).toBe("document");
@@ -418,6 +420,16 @@ describe("values an index cannot hold", () => {
     await c.put({ id: "1", title: "ok", tags: ["ok"] });
     expect(await codeOf(c.put({ id: "1", title: "ok", tags: ["ok"], ...change }))).toBe("document");
     expect(await c.get("1")).toEqual({ id: "1", title: "ok", tags: ["ok"] });
+  });
+
+  it("indexes a value whose key is exactly kv's 8 KiB limit, and throws document one byte past it", async () => {
+    const { notes: c } = await notes();
+    // A byTitle key is 4 prefix bytes, the string's tag, the title, its 00 terminator, then the id.
+    const titleFor = (keyBytes: number, id: string) => "x".repeat(keyBytes - 6 - id.length);
+    await c.put({ id: "1", title: titleFor(8 * 1024, "1") });
+    expect((await c.queryIds({ index: "byTitle" })).ids).toEqual(["1"]);
+    expect(await codeOf(c.put({ id: "2", title: titleFor(8 * 1024 + 1, "2") }))).toBe("document");
+    expect(await c.get("2")).toBeUndefined();
   });
 });
 
@@ -465,6 +477,25 @@ describe("unique", () => {
     const { notes: c } = await notes();
     await c.putMany([{ id: "a", slug: null }, { id: "b" }, { id: "c" }]);
     expect(await codeOf(c.put({ id: "d", slug: null }))).toBe("unique");
+  });
+
+  it("refuses a document that shares any element of a unique multi index, and lets one document repeat an element", async () => {
+    const tagged = defineSchema({ version: 1, collections: { t: collection<Note>().unique("byTag", "tags[]") } });
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, tagged)).collection("t");
+    await c.put({ id: "a", tags: ["x", "y", "x"] });
+    const err = await c.put({ id: "b", tags: ["z", "y"] }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "unique", ids: ["b", "a"] });
+    expect(await codeOf(c.putMany([{ id: "b", tags: ["z"] }, { id: "c", tags: ["w", "z"] }]))).toBe("unique");
+    expect(await c.getMany(["b", "c"])).toEqual([undefined, undefined]);
+    await c.put({ id: "a", tags: ["x"] });
+    await c.put({ id: "b", tags: ["z", "y"] });
+    expect((await c.queryEntries({ index: "byTag" })).entries).toEqual([
+      { id: "a", values: ["x"] },
+      { id: "b", values: ["y"] },
+      { id: "b", values: ["z"] },
+    ]);
   });
 });
 
