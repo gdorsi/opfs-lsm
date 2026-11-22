@@ -28,7 +28,8 @@ const SCHEMA = [
   "CREATE INDEX IF NOT EXISTS issues_assignee ON issues (assigneeId, updatedAt, status)",
   "CREATE INDEX IF NOT EXISTS issues_project_assignee ON issues (projectId, assigneeId, status)",
   "CREATE INDEX IF NOT EXISTS issues_updated ON issues (updatedAt)",
-  "CREATE INDEX IF NOT EXISTS issues_project_updated ON issues (projectId, updatedAt)",
+  // The title rides in the index, as docstore's text index holds it: search tests it there and reads only the rows that match.
+  "CREATE INDEX IF NOT EXISTS issues_project_updated ON issues (projectId, updatedAt, title)",
   "CREATE INDEX IF NOT EXISTS issue_labels_label ON issue_labels (labelId, issueId)",
   "CREATE INDEX IF NOT EXISTS comments_issue ON comments (issueId, createdAt)",
 ];
