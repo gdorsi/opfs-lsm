@@ -56,6 +56,16 @@ describe("batch tx", () => {
     await db.close();
   });
 
+  it("a read copy's buffer can be transferred without detaching stored values", async () => {
+    const db = await open();
+    await db.put(b(1), new Uint8Array(100).fill(1));
+    const got = (await db.get(b(1)))!;
+    await db.put(b(2), new Uint8Array(100).fill(2));
+    structuredClone(got, { transfer: [got.buffer as ArrayBuffer] });
+    expect((await db.getMany([b(1), b(2)])).map((v) => v?.length)).toEqual([100, 100]);
+    await db.close();
+  });
+
   it("an update stores what a reused buffer held at each put", async () => {
     const db = await open();
     const key = new Uint8Array(1);

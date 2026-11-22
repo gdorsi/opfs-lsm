@@ -37,22 +37,32 @@ export function sharedPrefix(a: Uint8Array, b: Uint8Array): number {
  */
 const POOLED = 1024;
 const POOL_BYTES = 8192;
-let pool = new Uint8Array(0);
-let used = 0;
-
-/** A copy of `src`. Its buffer may hold other copies: it starts at `byteOffset`. */
-export function copyOut(src: Uint8Array): Uint8Array {
-  const n = src.length;
-  if (n <= 64 || n > POOLED) return new Uint8Array(src);
-  if (used + n > pool.length) {
-    pool = new Uint8Array(POOL_BYTES);
-    used = 0;
-  }
-  const at = used;
-  used = (at + n + 7) & ~7;
-  pool.set(src, at);
-  return pool.subarray(at, at + n);
+/**
+ * A copier with a pool of its own. Reads and writes each keep one, so an app
+ * that transfers the buffer of a value it read detaches no stored value.
+ */
+function pooledCopier(): (src: Uint8Array) => Uint8Array {
+  let pool = new Uint8Array(0);
+  let used = 0;
+  return (src) => {
+    const n = src.length;
+    if (n <= 64 || n > POOLED) return new Uint8Array(src);
+    if (used + n > pool.length) {
+      pool = new Uint8Array(POOL_BYTES);
+      used = 0;
+    }
+    const at = used;
+    used = (at + n + 7) & ~7;
+    pool.set(src, at);
+    return pool.subarray(at, at + n);
+  };
 }
+
+/** A copy of `src` to hand out. Its buffer may hold other copies: it starts at `byteOffset`. */
+export const copyOut = pooledCopier();
+
+/** A copy of `src` to store. Its buffer may hold other stored values. */
+export const copyIn = pooledCopier();
 
 /** Smallest key strictly after every key that starts with `prefix`. */
 export function successor(prefix: Uint8Array): Uint8Array | undefined {
