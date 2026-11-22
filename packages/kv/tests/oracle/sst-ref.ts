@@ -81,7 +81,7 @@ function commonPrefix(a: Uint8Array, b: Uint8Array): number {
  * A record's bytes besides its key suffix. The suffix length varint is
  * sized from the whole key, an upper bound that stays fixed as the
  * block prefix shrinks, so a block is sized from running sums.
- * `crates/engine-core/src/sst.rs` sizes blocks the same way.
+ * `packages/kv/engine/sst.ts` sizes blocks the same way.
  */
 function recordOverhead(e: SstEntry): number {
   const n = 1 + 8 + varintLen(e.key.byteLength);

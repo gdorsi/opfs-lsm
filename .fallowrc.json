@@ -21,7 +21,8 @@
     "docs/research/android-device-run/*.mjs"
   ],
   "ignorePatterns": [
-    "site/stageshow/kit/**"
+    "site/stageshow/kit/**",
+    "packages/kv/engine/**"
   ],
   "ignoreBinaries": [
     "wasm-pack",
@@ -29,6 +30,7 @@
     "cloudflared"
   ],
   "ignoreDependencies": [
+    "assemblyscript",
     "lucide-react",
     "vue",
     "@automerge/automerge-repo-storage-indexeddb"

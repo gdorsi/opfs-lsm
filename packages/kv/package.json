@@ -54,7 +54,7 @@
     "wasm"
   ],
   "scripts": {
-    "build:wasm": "sh ../../crates/engine-wasm/build.sh",
+    "build:wasm": "sh engine/build.sh",
     "build": "sh -c 'test -f wasm/engine.wasm || pnpm run build:wasm' && tsc -p tsconfig.json",
     "prepublishOnly": "pnpm run build",
     "test": "pnpm run build && vitest run",
@@ -79,6 +79,7 @@
   },
   "devDependencies": {
     "@jazzer.js/core": "4.0.0",
+    "assemblyscript": "0.28.20",
     "esbuild": "0.28.2",
     "fake-indexeddb": "^6.0.0",
     "fast-check": "^4.10.2",

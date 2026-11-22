@@ -1,8 +1,9 @@
 # Engine WASM ABI
 
 The contract between `packages/kv/src/store/engine.ts` and any engine
-`.wasm`. `crates/engine-wasm` (Rust) implements it. The loader does not
-know which implementation it has, so another language can provide a
+`.wasm`. The AssemblyScript sources next to this file implement it, and
+`build.sh` builds them into `packages/kv/wasm/engine.wasm`. The loader does
+not know which implementation it has, so another language can provide a
 module without touching the loader. A module is conformant when the kv
 unit and fuzz suites pass with it copied to `packages/kv/wasm/engine.wasm`.
 
@@ -50,7 +51,8 @@ merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64,
            chunk_bytes, tail_bytes, yield_bytes) -> i32
     Input: source list (below), newest source first, then the base
     manifest's marks block, which the session copies without checking it:
-    the host encoded it, and a malformed block traps. Reserves the working
+    the host encoded it, and a malformed block traps when a pump reads the
+    malformed part. Reserves the working
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
     -12 while a session is open, -5 for a malformed list, -1 for a run
     shorter than a footer, or -10 when the working set cannot be reserved.
@@ -138,15 +140,15 @@ and the input size, and -12, -14 and -15, which are host bugs, not corrupt data.
 
 ## Memory
 
-The Rust module allocates dynamically. `input_ptr` grows a reused input
-buffer, and an operation allocates what it needs through the module's
-allocator. Outside a merge session it never returns -10; running out of
-memory inside an operation aborts, which the loader sees as a
-`WebAssembly.RuntimeError` and answers by replacing the instance and
-throwing. A merge session
-reserves its working set in `merge_open` and grows its input buffers (for
-a block, a run's bloom and index, or an entry larger than any before)
-without aborting, so it returns -10 instead. The output writer's per-run
-state (one bloom hash per key and one index row per block of the open
-run) still grows with the run, bounded by `target_bytes`, and running
-out of memory there aborts as it does outside a session.
+The module allocates dynamically and grows its memory by what an
+allocation lacks. `input_ptr` grows a reused input buffer, and an
+operation allocates what it needs through the module's allocator. Outside
+a merge session it never returns -10; running out of memory inside an
+operation traps, which the loader sees as a `WebAssembly.RuntimeError` and
+answers by replacing the instance and throwing. A merge session reserves
+its working set in `merge_open` and grows its input buffers (for a block,
+a run's bloom and index, or an entry larger than any before) without
+trapping, so it returns -10 instead. The output writer's per-run state
+(one bloom hash per key and one index row per block of the open run)
+still grows with the run, bounded by `target_bytes`, and running out of
+memory there traps as it does outside a session.
