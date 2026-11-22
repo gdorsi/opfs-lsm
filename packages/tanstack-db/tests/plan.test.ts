@@ -206,6 +206,19 @@ test("a pinned prefix beyond the partial index still beats it", () => {
   assert.deepEqual(planWithOpen({ where }), [{ kind: "ranges", ranges: [{ index: "byStatus", eq: [false, 1, 7] }] }]);
 });
 
+test("a condition path the ranges already pin counts once", () => {
+  const indexes = new Map<string, IndexInfo>([
+    ["openByStatus", { ...sorted("status", "modified"), where: [["status", [0, 1, 2]]] }],
+    ["byStatusPriority", sorted("status", "priority", "modified")],
+  ]);
+  const pins = and(inArray(ref("status"), [0, 1, 2]), eq(ref("priority"), 1));
+  const ranges = (index: string, ...tail: number[]) => [0, 1, 2].map((status) => ({ index, eq: [status, ...tail] }));
+  assert.deepEqual(planLoad({ where: pins }, indexes).map((r) => r.plan), [{ kind: "ranges", ranges: ranges("byStatusPriority", 1) }]);
+  const [ordered] = planLoad({ where: pins, orderBy: desc("modified"), limit: 10 }, indexes).map((r) => r.plan);
+  assert.ok(ordered?.kind === "ranges");
+  assert.ok(ordered.ranges.every((r) => r.index === "byStatusPriority"), JSON.stringify(ordered));
+});
+
 test("a multi index is never read", () => {
   assert.deepEqual(plan({ where: eq(ref("tags"), "x") }), [{ kind: "scan" }]);
 });

@@ -117,16 +117,17 @@ function orderOf(clause: IR.OrderByClause | undefined): Order | undefined {
 const usable = (info: IndexInfo) => info.kind !== "multi";
 
 /**
- * How many paths of a partial index's condition the `where` pins to exactly the listed values. Such a path narrows
- * like a pinned component read in one range. A path pinned to fewer values counts for nothing, since the index
- * then holds rows the `where` rejects. Undefined when the `where` accepts a row the index does not hold.
+ * How many paths of a partial index's condition the `where` pins to exactly the listed values, past the first `k`
+ * components of `by`, which the ranges already pin. Such a path narrows like a pinned component read in one range.
+ * A path pinned to fewer values counts for nothing, since the index then holds rows the `where` rejects. Undefined
+ * when the `where` accepts a row the index does not hold.
  */
-function exactPins(info: IndexInfo, facts: Facts): number | undefined {
+function exactPins(info: IndexInfo, facts: Facts, k: number): number | undefined {
   let exact = 0;
   for (const [path, listed] of info.where ?? []) {
     const pinned = facts.pins.get(path);
     if (!pinned || !pinned.every((v) => listed.includes(v))) return undefined;
-    if (pinned.length === listed.length) exact++;
+    if (pinned.length === listed.length && !info.by.slice(0, k).includes(path)) exact++;
   }
   return exact;
 }
@@ -196,10 +197,11 @@ function boundsOn(path: string, facts: Facts): Pick<DocstoreQuery, "gt" | "gte" 
 function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, IndexInfo>): DocstoreQuery[] | undefined {
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
-    const served = exactPins(info, facts);
-    if (!usable(info) || served === undefined) continue;
+    if (!usable(info)) continue;
     const at = info.by.indexOf(order.path);
     if (at < 0 || pinnedPrefix(info.by, facts, at) < at) continue;
+    const served = exactPins(info, facts, at);
+    if (served === undefined) continue;
     const own = facts.pins.get(order.path)?.length ?? 1;
     if (combos(info.by, at, facts).length * own > MAX_RANGES) continue;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
@@ -236,9 +238,10 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
 function unorderedRanges(facts: Facts, indexes: ReadonlyMap<string, IndexInfo>): Plan | undefined {
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
-    const served = exactPins(info, facts);
-    if (!usable(info) || served === undefined) continue;
+    if (!usable(info)) continue;
     const k = pinnedPrefix(info.by, facts, info.by.length);
+    const served = exactPins(info, facts, k);
+    if (served === undefined) continue;
     const next = info.by[k];
     const bounded = next !== undefined && (facts.lower.has(next) || facts.upper.has(next)) ? 1 : 0;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
