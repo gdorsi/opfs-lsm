@@ -1,6 +1,7 @@
 /**
- * One op of a WAL record. The bytes are the memtable's: read them, never
- * write to them. Switch on `type` exhaustively: a `deleteRange` has no `key`.
+ * One op of a WAL record. The bytes are the memtable's, and a value may share
+ * its buffer with other stored values: read them, never write to or transfer
+ * them. Switch on `type` exhaustively: a `deleteRange` has no `key`.
  */
 export type ChangeOp =
   | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }

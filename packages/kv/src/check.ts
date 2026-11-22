@@ -1,4 +1,4 @@
-import { compareBytes } from "./bytes.js";
+import { compareBytes, copyIn } from "./bytes.js";
 import { ConstraintError } from "./errors.js";
 import { asSeq, type Seq } from "./seq.js";
 
@@ -81,7 +81,7 @@ export function checkKey(bytes: Uint8Array): CheckedKey {
 
 export function checkValue(bytes: Uint8Array): CheckedValue {
   assertBuffer(bytes, "value");
-  return new Uint8Array(bytes) as CheckedValue;
+  return copyIn(bytes) as CheckedValue;
 }
 
 /** Key and value bytes of an op: a range delete counts its bounds. */
