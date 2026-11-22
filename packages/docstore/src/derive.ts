@@ -120,6 +120,7 @@ export function entriesOf(
 
 export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
   const { spec } = plan;
+  if (spec.where && !spec.where.every(([path, values]) => values.includes(readPath(doc, path) as Scalar))) return NONE;
   const multi = spec.kind === "sorted" && spec.multi;
   const values: Scalar[] = [];
   let firsts: readonly Scalar[] | undefined;

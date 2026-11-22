@@ -164,9 +164,10 @@ describe("stored bytes", () => {
 
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
+    for (const format of [1, 2, 4]) {
+      expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format } as unknown as StoredCatalog)))).toBe("schema");
+    }
+    expect(() => parseCatalog(encodeCatalog({ format: 3 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
 
@@ -223,6 +224,57 @@ describe("transitions", () => {
   });
 });
 
+describe("a partial index in the catalog", () => {
+  const open1 = { c: { x: { by: "a", where: { status: [2, 0, 1] } } } };
+
+  it("keeps the index when the same condition is declared in another spelling, at the same version or a higher one", () => {
+    const c = open(undefined, 1, open1);
+    const respelled = { c: { x: { by: "a", where: { status: [0, 1, 2, 1] } } } };
+    expect(reconcile(c, declare(1, respelled))).toBeUndefined();
+    expect(idOf(open(c, 2, respelled), "c", "x")).toBe(idOf(c, "c", "x"));
+    const single = open(undefined, 1, { c: { x: { by: "a", where: { deleted: false } } } });
+    expect(reconcile(single, declare(1, { c: { x: { by: "a", where: { deleted: [false] } } } }))).toBeUndefined();
+  });
+
+  it.each<[string, object | undefined]>([
+    ["another value", { status: [0, 1] }],
+    ["another field", { state: [0, 1, 2] }],
+    ["an added field", { status: [0, 1, 2], deleted: false }],
+    ["no where", undefined],
+  ])("refuses %s at the same version, and rebuilds the index under a new id at a higher one", (_, where) => {
+    const c = open(undefined, 1, open1);
+    const changed = { c: { x: where ? { by: "a", where } : { by: "a" } } };
+    expect(() => reconcile(c, declare(1, changed))).toThrow(/bump the version/);
+    const next = open(c, 2, changed);
+    expect(idOf(next, "c", "x")).not.toBe(idOf(c, "c", "x"));
+    expect(next.collections["c"]!.indexes["x"]!.state).toEqual({ kind: "building" });
+    expect(next.dropped).toEqual([{ collection: c.collections["c"]!.id, index: idOf(c, "c", "x") }]);
+  });
+
+  it("treats an index that gains a where as redefined", () => {
+    const c = open(undefined, 1, { c: { x: { by: "a" } } });
+    expect(codeOf(() => reconcile(c, declare(1, open1)))).toBe("schema");
+    expect(idOf(open(c, 2, open1), "c", "x")).not.toBe(idOf(c, "c", "x"));
+  });
+
+  it("round-trips a stored where, and refuses one of the wrong shape as corrupt", () => {
+    const c = open(undefined, 1, open1);
+    expect(parseCatalog(encodeCatalog(c))).toEqual(c);
+    const x = c.collections["c"]!.indexes["x"]!;
+    const withWhere = (where: unknown) =>
+      encodeCatalog({ ...c, collections: { c: { ...c.collections["c"]!, indexes: { x: { ...x, spec: { ...x.spec, where } } } } } } as unknown as StoredCatalog);
+    for (const bad of ["status", [["status"]], [[1, [1]]], [["status", []]], [["status", 1]], [["status", [{}]]]]) {
+      expect(() => parseCatalog(withWhere(bad))).toThrow(CorruptDatabaseError);
+    }
+  });
+
+  it("makes a handle that declared the old condition unable to read the index", () => {
+    const c = open(open(undefined, 1, open1), 2, { c: { x: { by: "a", where: { status: [0] } } } });
+    const stale = bind(encodeCatalog(c), c, declare(1, open1)).collections.get("c")!;
+    expect(stale.readable.get("x")).toEqual({ kind: "spec-changed" });
+  });
+});
+
 describe("bind", () => {
   it("lets a handle read only the ready indexes whose stored definition equals its own, and write every live one", () => {
     const c1 = open(undefined, 1, v1);
@@ -276,6 +328,19 @@ describe("normalizeSchema", () => {
     ["include of no fields", { version: 1, collections: { a: { x: { by: "b", include: [] } } } }],
     ["include of 17 fields", { version: 1, collections: { a: { x: { by: "b", include: Array.from({ length: 17 }, (_, i) => `f${i}`) } } } }],
     ["include that is not a list", { version: 1, collections: { a: { x: { by: "b", include: "c" } } } }],
+    ["a where that is not an object", { version: 1, collections: { a: { x: { by: "b", where: [["c", [1]]] } } } }],
+    ["a null where", { version: 1, collections: { a: { x: { by: "b", where: null } } } }],
+    ["a where of no fields", { version: 1, collections: { a: { x: { by: "b", where: {} } } } }],
+    ["a where of nine fields", { version: 1, collections: { a: { x: { by: "b", where: Object.fromEntries("abcdefghi".split("").map((f) => [f, 1])) } } } }],
+    ["a where field with an empty segment", { version: 1, collections: { a: { x: { by: "b", where: { "c..d": 1 } } } } }],
+    ["a where field that ends in an array mark", { version: 1, collections: { a: { x: { by: "b", where: { "c[]": 1 } } } } }],
+    ["a where list of no value", { version: 1, collections: { a: { x: { by: "b", where: { c: [] } } } } }],
+    ["a where value that is an object", { version: 1, collections: { a: { x: { by: "b", where: { c: { d: 1 } } } } } }],
+    ["a where value that is a list in a list", { version: 1, collections: { a: { x: { by: "b", where: { c: [[1]] } } } } }],
+    ["a where value that is undefined", { version: 1, collections: { a: { x: { by: "b", where: { c: undefined } } } } }],
+    ["a where value that is NaN", { version: 1, collections: { a: { x: { by: "b", where: { c: [1, Number.NaN] } } } } }],
+    ["a where value that is Infinity", { version: 1, collections: { a: { x: { by: "b", where: { c: Number.POSITIVE_INFINITY } } } } }],
+    ["a where string with a lone surrogate", { version: 1, collections: { a: { x: { by: "b", where: { c: "\ud800" } } } } }],
     ["a drop that is not an array", { version: 1, collections: {}, drop: "a" }],
     ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
     ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
@@ -324,6 +389,29 @@ describe("normalizeSchema", () => {
     ]);
   });
 
+  it("stores a where as pairs sorted by path, each path's values distinct and sorted by their JSON text, on every kind of index", () => {
+    const where = { z: "x", status: [2, 0, 1, 0], "meta.on": [true, null, false], n: -0 };
+    const canonical = [
+      ["meta.on", [false, null, true]],
+      ["n", [0]],
+      ["status", [0, 1, 2]],
+      ["z", ["x"]],
+    ];
+    const specs = declare(1, {
+      c: { s: { by: "a", where }, u: { by: "a", unique: true, where }, t: { by: "a", text: "t", where }, i: { by: "a", include: ["t"], where }, plain: { by: "a" } },
+    }).collections.get("c")!;
+    for (const name of ["s", "u", "t", "i"]) expect(JSON.parse(JSON.stringify(specs.get(name)!.where))).toEqual(canonical);
+    expect(specs.get("plain")).not.toHaveProperty("where");
+  });
+
+  it("describes the where of a partial index, and only of one", () => {
+    const specs = declare(1, { c: { open: { by: "a", where: { deleted: false, status: [1, 0] } }, all: { by: "a" } } }).collections.get("c")!;
+    expect([...describeIndexes(specs)]).toStrictEqual([
+      ["open", { kind: "sorted", by: ["a"], unique: false, where: [["deleted", [false]], ["status", [0, 1]]] }],
+      ["all", { kind: "sorted", by: ["a"], unique: false }],
+    ]);
+  });
+
   it("accepts 16 included fields", () => {
     const include = Array.from({ length: 16 }, (_, i) => `f${i}`);
     expect(describeIndexes(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!).get("x")?.include).toEqual(include);
@@ -331,7 +419,7 @@ describe("normalizeSchema", () => {
 
   it("opens a catalog stored before by existed without writing it again", () => {
     const stored = encodeCatalog({
-      format: 2,
+      format: 3,
       version: 1,
       nextCollectionId: 2,
       collections: {
