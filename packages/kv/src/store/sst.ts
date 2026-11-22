@@ -95,12 +95,11 @@ export class RecordWalker {
     this.buf = b.buf;
     this.view = b.view;
     this.start = b.start;
-    this.end = b.end;
     this.o = b.start + 4;
     this.count = b.view.getUint32(b.start, true);
+    this.end = b.end - offsetTableBytes(this.count);
     this.prefixLen = this.len();
     this.prefixAt = this.o;
-    this.end = b.end - offsetTableBytes(this.count);
     if ((this.o += this.prefixLen) > this.end) throw new CorruptDatabaseError("sst prefix OOB");
   }
 

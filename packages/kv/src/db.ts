@@ -171,7 +171,9 @@ export interface Db {
    * A copy of the value. Every read hands out copies, and a copy of 65 bytes
    * to 1 KiB is a view of a buffer shared with other copies, as Node's
    * Buffer pool makes them: read it through `byteOffset`, a multiple of 8,
-   * and `byteLength`, and `slice()` it before posting or storing its `buffer`.
+   * and `byteLength`. Posting or storing it clones the whole shared buffer,
+   * and transferring that buffer detaches the other copies, so `slice()` it
+   * before you post, store, transfer or keep it.
    */
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   /**

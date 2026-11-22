@@ -147,7 +147,7 @@ bench:
           - { measure: "First 50 open issues with a label", ours: 0.425 ms, theirs: 4.01 ms, ratio: 9.4× }
           - { measure: "First 50 open issues assigned to a person", ours: 0.365 ms, theirs: 0.570 ms, ratio: 1.6× }
           - { measure: "The 50 most recently updated issues", ours: 0.535 ms, theirs: 0.803 ms, ratio: 1.5× }
-          - { measure: "Open issues per person, top 10", ours: 0.403 ms, theirs: 0.373 ms, ratio: 0.93× ‡ }
+          - { measure: "Open issues per person, top 10", ours: 0.403 ms, theirs: 0.373 ms, ratio: 0.93× }
           - { measure: "First 20 issues whose title contains a word", ours: 0.214 ms, theirs: 0.679 ms, ratio: 3.2× }
       - title: TanStack DB on demand
         versus: against its SQLite persistence
