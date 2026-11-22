@@ -7,6 +7,7 @@ import { NO_MARKS } from "../src/store/marks.js";
 import { decodeSst } from "./oracle/sst-ref.js";
 
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 
 const run = (path: string, bytes: number, smallest?: string, largest?: string): RunMeta =>
   smallest === undefined
@@ -175,6 +176,31 @@ describe("bottom compaction", () => {
     expect(entries.map((e) => e.kind)).toEqual(["put"]);
     expect(await db.get(enc.encode("a"))).toBeUndefined();
     expect(new TextDecoder().decode((await db.get(enc.encode("b")))!)).toBe("1");
+    await db.close();
+  });
+
+  it("keeps a tombstone that a deeper run still shadows, so the deleted key stays deleted", async () => {
+    const fs = new MemoryFs();
+    const db = await openHarnessDb({ name: NAME, fs, forceMemory: true });
+    // Past the 40 MiB budget of L1, so its first run, which holds "a", moves down to L2.
+    await db.put(enc.encode("a"), enc.encode("1"));
+    const value = new Uint8Array(1 << 20);
+    for (let i = 0; i < 44; i++) await db.put(enc.encode(`b${String(i).padStart(2, "0")}`), value);
+    await ingest(db);
+    const holdsA = (runs: readonly RunMeta[], level: string) =>
+      runs.filter((r) => r.path.startsWith(level) && r.range && dec.decode(r.range.smallest) <= "a" && dec.decode(r.range.largest) >= "a");
+    expect(holdsA((await loadLatestGeneration(fs))!.runs, "l2/")).toHaveLength(1);
+
+    // Four L0 runs make an L0 step into L1, with the L2 run of "a" below it: not a bottom merge.
+    for (let i = 0; i < 4; i++) {
+      await db.delete(enc.encode("a"));
+      await ingest(db);
+    }
+    const runs = (await loadLatestGeneration(fs))!.runs;
+    expect(runs.filter((r) => r.path.startsWith("l0/"))).toEqual([]);
+    expect(holdsA(runs, "l2/")).toHaveLength(1);
+    expect(await db.get(enc.encode("a"))).toBeUndefined();
+    expect(await db.count({ endExclusive: enc.encode("b") })).toBe(0);
     await db.close();
   });
 });

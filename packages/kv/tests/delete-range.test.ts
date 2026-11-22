@@ -215,6 +215,46 @@ async function runReads(db: Db): Promise<{ reads: number; bytes: number }> {
   return out;
 }
 
+describe("a flush that a range delete overtakes", () => {
+  it("keeps the delete's mark when the tab installs the flush, so the rows it covers stay hidden", async () => {
+    let release!: () => void;
+    let reached!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const stopped = new Promise<void>((r) => (reached = r));
+    let first = true;
+    const gated: AsyncFs = {
+      read: (path, offset, length) => fs.read(path, offset, length),
+      open: (path) => fs.open(path),
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      create: async (path) => {
+        if (first && path.startsWith("l0/")) {
+          first = false;
+          reached();
+          await hold;
+        }
+        return fs.create(path);
+      },
+    };
+    const host = new EngineHost(() => gated);
+    const db = await openHarnessDb({ name: NAME, fs: gated, ingest: createLocalIngestClient(host), writerId: "w1", maxWalBytes: 1 << 30 });
+    opened.push(db);
+    await writeRows(db);
+    // A mark the flush folds, so installing it retires marks.
+    await db.batch((tx) => tx.deleteRange({ start: b("a"), endExclusive: b("b") }));
+    const flushing = ingest(db);
+    await stopped;
+    // One seq past the flush: the installed run holds the rows it covers, and only the memtable's mark hides them.
+    await db.batch((tx) => tx.deleteRange(M));
+    release();
+    await flushing;
+    await db.sync();
+    expect(await keys(db)).toEqual(["z=v:z"]);
+    expect(await db.get(b("m/1"))).toBeUndefined();
+  });
+});
+
 describe("a scan over a range delete", () => {
   const value = (k: string) => b(`v:${k}:`.padEnd(300, "."));
 
