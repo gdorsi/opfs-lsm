@@ -1,4 +1,4 @@
-import { createSignal, onSettled, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, onSettled, Show } from "solid-js";
 import { Dots } from "./icons.tsx";
 import { codeItems, MenuButton, type Item } from "./menu.tsx";
 import { PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
@@ -7,6 +7,58 @@ const toggled = (codes: readonly Code[], code: Code) => (codes.includes(code) ? 
 
 const chipText = (name: "Status" | "Priority", codes: readonly Code[], labels: readonly string[]) =>
   codes.length === 0 ? name : codes.length === 1 ? labels[codes[0]!]! : `${codes.length} ${name === "Status" ? "statuses" : "priorities"}`;
+
+const TWEEN_MS = 250;
+
+// The strong ease-out of `.count` in app.css, as a function of time so the number can follow it.
+const easeOut = (x: number) => {
+  const at = (a: number, b: number, t: number) => 3 * a * (1 - t) ** 2 * t + 3 * b * (1 - t) * t ** 2 + t ** 3;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (at(0.23, 0.32, mid) < x) lo = mid;
+    else hi = mid;
+  }
+  return at(1, 1, (lo + hi) / 2);
+};
+
+/**
+ * The issue total. While a count runs the last total stays on screen, dimmed. A new total is counted up or down from
+ * the number on screen, so a total that changes many times a second keeps moving instead of restarting.
+ */
+function Total(props: { total: number | undefined }) {
+  const target = createMemo<number | undefined>((last) => props.total ?? last);
+  const counting = () => props.total === undefined && target() !== undefined;
+  const [shown, setShown] = createSignal<number>();
+  // The number on screen, as a plain variable: an effect callback is not a tracking scope, so reading `shown` there warns.
+  let current: number | undefined;
+  const show = (n: number) => setShown((current = n));
+
+  createEffect(target, (to) => {
+    if (to === undefined) return;
+    const from = current;
+    if (from === undefined || from === to || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      show(to);
+      return;
+    }
+    const start = performance.now();
+    let frame = 0;
+    const step = (now: number) => {
+      const t = Math.min((now - start) / TWEEN_MS, 1);
+      show(t === 1 ? to : Math.round(from + (to - from) * easeOut(t)));
+      if (t < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  });
+
+  return (
+    <span id="count" class={["count", "mono", { counting: counting() }]}>
+      {shown()?.toLocaleString("en-US")}
+    </span>
+  );
+}
 
 /**
  * The filter chips, the sort menu, the button for a new issue, the `data` menu and the title search. `set` gets every
@@ -51,9 +103,7 @@ export function Toolbar(props: {
   return (
     <div class="topbar">
       <span class="title">All issues</span>
-      <span id="count" class="count mono">
-        {props.total?.toLocaleString("en-US")}
-      </span>
+      <Total total={props.total} />
       <div class="chips">
         <MenuButton class={["chip", { on: props.filter.status.length > 0 }]} title="Filter by status" keepOpen items={codes("status")}>
           {chipText("Status", props.filter.status, STATUS_LABELS)}
