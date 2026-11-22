@@ -12,7 +12,7 @@
  * retire what no run can still hold, reads what it read before.
  *
  * Sync: latestSstEntry walks levels newest-first; the merge session and its
- * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.rs,
+ * TypeScript oracle keep the earlier source on a tie (`a < b` in merge.zig,
  * `< 0` in tests/oracle/merge-ts.ts); compact.ts passes `plan.bottom` as
  * `dropTombstones`, and levels.ts sets it only when no deeper run overlaps.
  */
@@ -67,16 +67,16 @@ function newestFirstInSource(): boolean {
   const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
   const merge = read("../../src/store/read.ts");
   const session = read("../../tests/oracle/merge-ts.ts");
-  const engine = read("../../../../crates/engine-core/src/merge.rs");
+  const engine = read("../../engine/src/merge.zig");
   // latestSstEntry: for (const level of levels), levels are newest-first
   // merge-ts.ts: for (const s of this.sources) ... compareBytes(e.key, entry.key) < 0
-  // merge.rs: Ordering::Equal => a < b
+  // merge.zig: .eq => a < b
   return (
     /function latestSstEntry[\s\S]*?for\s*\(\s*const\s+level\s+of\s+levels\s*\)/.test(merge) &&
     /for\s*\(\s*const\s+s\s+of\s+this\.sources\s*\)\s*\{\s*const\s+e\s*=\s*s\.settled\(\);[^}]*?compareBytes\(\s*e\.key\s*,\s*entry\.key\s*\)\s*<\s*0\s*\)/.test(
       session,
     ) &&
-    /Ordering::Equal\s*=>\s*a\s*<\s*b\s*,/.test(engine)
+    /\.eq\s*=>\s*a\s*<\s*b\s*,/.test(engine)
   );
 }
 
@@ -198,7 +198,7 @@ function readUnder(runs: readonly Held[], through: number): number | undefined {
 
 type MergeRule = (winner: Held, base: number, bottom: boolean) => Entry;
 
-/** merge.rs `next_key`: a winner the base mark covers is gone; a delete drops at the bottom. */
+/** merge.zig `nextKey`: a winner the base mark covers is gone; a delete drops at the bottom. */
 const markCorrect: MergeRule = (w, base, bottom) => (w.seq <= base ? undefined : bottom && w.v?.kind === "del" ? undefined : w.v);
 /** Broken: covers one seq past the mark, so a live winner is dropped and the older version comes back. */
 const markOneTooHigh: MergeRule = (w, base, bottom) => (w.seq <= base + 1 ? undefined : markCorrect(w, base, bottom));
@@ -259,17 +259,17 @@ for (const [name, rule, claim] of [
 function appliesMarksInSource(): boolean {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const read = (rel: string) => fs.readFileSync(path.resolve(here, rel), "utf8");
-  const engine = read("../../../../crates/engine-core/src/merge.rs");
+  const engine = read("../../engine/src/merge.zig");
   const session = read("../../tests/oracle/merge-ts.ts");
   const compact = read("../../src/host/compact.ts");
   return (
-    /if\s+through\s*>\s*0\s*&&\s*winner\.seq\s*<=\s*through\s*\{\s*self\.retire\(w\);\s*return\s+Ok\(\(\)\);\s*\}\s*match\s+winner\.kind/.test(engine) &&
+    /if\s*\(\s*through\s*>\s*0\s+and\s+winner\.seq\s*<=\s*through\s*\)\s*\{\s*s\.retire\(w\);\s*return;\s*\}\s*if\s*\(\s*!\(\s*winner\.kind/.test(engine) &&
     /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*this\.marks\.length\s*>\s*0\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
     /marksThrough:\s*base\.through\s*\}/.test(compact)
   );
 }
 if (!appliesMarksInSource()) {
-  console.error("FAIL CompactPreserve — merge.rs / merge-ts.ts / compact.ts no longer drop a covered winner first and claim base.through");
+  console.error("FAIL CompactPreserve — merge.zig / merge-ts.ts / compact.ts no longer drop a covered winner first and claim base.through");
   process.exit(1);
 }
 
@@ -283,18 +283,18 @@ function dropsTombstonesAtBottomInSource(): boolean {
     /const\s+range\s*=\s*span\(inputs\);\s*const\s+(\w+)\s*=\s*runs\.filter\(\(r\)\s*=>\s*\{\s*const\s+level\s*=\s*levelOf\(r\.path\);\s*return\s*\(level === undefined \|\| level >=? outputLevel\) && !inputs\.includes\(r\);\s*\}\);[\s\S]*?bottom:\s*!\1\.some\(\(r\)\s*=>\s*overlaps\(r\.range,\s*range\)\)/.test(
       read("../../src/store/levels.ts"),
     ) &&
-    /Kind::Del if self\.drop_tombstones => \{\}/.test(read("../../../../crates/engine-core/src/merge.rs")) &&
+    /if \(!\(winner\.kind == \.del and s\.drop_tombstones\)\)/.test(read("../../engine/src/merge.zig")) &&
     /if \(e\.kind === "del" && this\.dropTombstones\)/.test(read("../../tests/oracle/merge-ts.ts"))
   );
 }
 if (!dropsTombstonesAtBottomInSource()) {
-  console.error("FAIL CompactPreserve — compact.ts / levels.ts / merge.rs / merge-ts.ts no longer drop a delete only in a bottom merge");
+  console.error("FAIL CompactPreserve — compact.ts / levels.ts / merge.zig / merge-ts.ts no longer drop a delete only in a bottom merge");
   process.exit(1);
 }
 
 if (!newestFirstInSource()) {
   console.error(
-    "FAIL CompactPreserve — read.ts / merge.rs / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
+    "FAIL CompactPreserve — read.ts / merge.zig / tests/oracle/merge-ts.ts no longer newest-first get / newer source wins a tie",
   );
   process.exit(1);
 }

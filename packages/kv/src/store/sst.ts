@@ -20,7 +20,7 @@ const TAG_DEL = 2;
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after
  * the first, so a get binary-searches them and walks at most
- * `OFFSET_STRIDE - 1` records. `crates/engine-core/src/sst.rs` uses the
+ * `OFFSET_STRIDE - 1` records. `packages/kv/engine/src/sst.zig` uses the
  * same stride.
  */
 const OFFSET_STRIDE = 4;

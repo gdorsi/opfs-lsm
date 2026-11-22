@@ -1,9 +1,6 @@
-/target
-**/target
 node_modules
-# packages/*/wasm  — committed so cold clones pass without Rust
+# packages/*/wasm  — committed so cold clones pass without Zig
 packages/*/dist
-crates/kv
 bench/.out
 bench/.data
 bench/results

@@ -1,5 +1,5 @@
 /**
- * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`.
+ * Engine-core bridge. Loads a module that implements `packages/kv/engine/engine-abi.md`.
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
@@ -65,7 +65,7 @@ export type EngineExports = {
 
 /**
  * A compaction merge that the host drives a stop at a time
- * (crates/engine-abi.md, "Merge session"), so it holds a window of each
+ * (packages/kv/engine/engine-abi.md, "Merge session"), so it holds a window of each
  * input instead of the whole input.
  */
 export type MergeSpec = {
@@ -304,7 +304,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
 }
 
 /**
- * A run record (crates/engine-abi.md). The body is a view into `bytes`. The
+ * A run record (packages/kv/engine/engine-abi.md). The body is a view into `bytes`. The
  * keys are copies, so the manifest does not keep `bytes` alive.
  */
 function readRun(bytes: Uint8Array): EncodedRun {
@@ -464,7 +464,7 @@ function restartEngine(): void {
 
 /** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
 type EngineMemory = {
-  /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
+  /** The current instance's memory. Wasm memory never shrinks, so it only grows until a recycle. */
   wasmBytes: number;
   /** The most memory any instance reached. */
   wasmPeakBytes: number;

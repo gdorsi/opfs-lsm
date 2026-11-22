@@ -7,7 +7,7 @@ import { readFooter, SST_FOOTER_BYTES, type RunEnd, type SstEntry, type SstFoote
 import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize } from "./sst-ref.js";
 
 /**
- * The merge session in TypeScript (crates/engine-abi.md, "Merge session"),
+ * The merge session in TypeScript (packages/kv/engine/engine-abi.md, "Merge session"),
  * as an oracle for the wasm one. It asks for the same reads and merges by
  * the same rules, but holds more: it decodes each read's blocks at once and
  * gathers an output run's entries before it encodes them.

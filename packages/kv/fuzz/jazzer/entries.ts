@@ -3,7 +3,8 @@
  * runs one entry under libFuzzer; a `RuleBroken` (or any other throw) is a
  * finding. The checks are the ones the fast-check properties run
  * (`../targets.ts`). These cover the TypeScript decoders only: the wasm
- * ones are covered natively by `cargo fuzz` (crates/engine-core/fuzz/).
+ * ones run under the fast-check properties of `../engine-reference.test.ts`
+ * and `../differential.test.ts`.
  */
 import {
   checkDecodeSst,

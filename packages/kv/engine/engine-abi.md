@@ -1,10 +1,11 @@
 # Engine WASM ABI
 
 The contract between `packages/kv/src/store/engine.ts` and any engine
-`.wasm`. `crates/engine-wasm` (Rust) implements it. The loader does not
-know which implementation it has, so another language can provide a
-module without touching the loader. A module is conformant when the kv
-unit and fuzz suites pass with it copied to `packages/kv/wasm/engine.wasm`.
+`.wasm`. The Zig module in `src/` next to this file implements it. The
+loader does not know which implementation it has, so another language can
+provide a module without touching the loader. A module is conformant when
+the kv unit and fuzz suites pass with it copied to
+`packages/kv/wasm/engine.wasm`.
 
 ## Shape
 
@@ -138,15 +139,14 @@ and the input size, and -12, -14 and -15, which are host bugs, not corrupt data.
 
 ## Memory
 
-The Rust module allocates dynamically. `input_ptr` grows a reused input
+The module allocates dynamically. `input_ptr` grows a reused input
 buffer, and an operation allocates what it needs through the module's
 allocator. Outside a merge session it never returns -10; running out of
-memory inside an operation aborts, which the loader sees as a
+memory inside an operation traps, which the loader sees as a
 `WebAssembly.RuntimeError` and answers by replacing the instance and
-throwing. A merge session
-reserves its working set in `merge_open` and grows its input buffers (for
+throwing. A merge session reserves its working set in `merge_open` and grows its input buffers (for
 a block, a run's bloom and index, or an entry larger than any before)
-without aborting, so it returns -10 instead. The output writer's per-run
+without trapping, so it returns -10 instead. The output writer's per-run
 state (one bloom hash per key and one index row per block of the open
 run) still grows with the run, bounded by `target_bytes`, and running
-out of memory there aborts as it does outside a session.
+out of memory there traps as it does outside a session.
