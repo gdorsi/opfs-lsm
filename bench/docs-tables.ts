@@ -152,6 +152,20 @@ export const TABLES: readonly Table[] = [
     ],
   },
   {
+    id: "goals-large",
+    file: "2026-11-22T14-47-06-apple-m5-max",
+    size: "large",
+    workload: "tracker/goals",
+    unit: null,
+    columns: [
+      { head: "Goal" },
+      { head: "Dexie", at: "tracker/dexie" },
+      { head: "docstore", at: "tracker/docstore" },
+      { head: "docstore vs Dexie", ratio: { of: "docstore", over: "Dexie" } },
+    ],
+    rows: GOALS.map(({ label, phase }) => ({ label, phase, metric: ["mean:cold", "mean:warm"] as const })),
+  },
+  {
     id: "writes",
     file: "2026-11-22T16-08-00-apple-m2-pro",
     workload: "tracker/goals",

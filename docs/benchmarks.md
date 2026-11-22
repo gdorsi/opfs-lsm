@@ -1,6 +1,6 @@
 # Benchmarks
 
-These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M2 Pro that other work shared, so the load average under a table is high and some cells split into two clusters. Runs differ in load, so compare numbers inside one table, not across two.
+These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M2 Pro, except the goals at 200,000 issues, which ran on an Apple M5 Max. Other work shared both machines, so the load average under a table is high and some cells split into two clusters. Runs differ in load, so compare numbers inside one table, not across two.
 
 ## Storage calls
 
@@ -141,6 +141,32 @@ Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load av
 The last row is a read: after every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be.
 
 Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. SQLite is faster on 2: the open issues by priority, by 16%, and the open issues per person, by 7%. The runs do not separate the two on the column a sprint close emptied and the deep window. Cold, docstore is faster than SQLite on 4 of the 11 goals and slower on 4, and it is the slowest of the three stores on 5: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three. The emptied column costs docstore the most: the deletes of the sprint close still sit above the settled runs, and the scan steps over each deleted entry until a compaction drops it. A deep window walks every index entry up to the window on docstore, whose index has no count to jump by: `offset` passes over them without copying a key or reading a document. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no statement once the schema exists, so its first query in a fresh tab also reads the schema. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
+
+### At 200,000 issues
+
+A larger workspace from the same simulation, against Dexie: 200,000 issues, 600 people, 120 projects and 60 labels. Its sprint close holds about 7,500 issues, which docstore writes in batches of 1,200 events, and those writes sit above the stored data when the goals run. Each cell is cold / warm in ms, as above. The last column is Dexie's time over docstore's: above 1×, docstore is faster. These runs are on another machine than the tables above, so compare their ratios, not their times.
+
+<!-- bench:table goals-large -->
+| Goal | Dexie | docstore | docstore vs Dexie |
+| --- | ---: | ---: | ---: |
+| Issues per status in a project | 12.4 † / 7.96 | 3.55 † / 0.118 † | 3.5× / 67× |
+| First 50 todo issues, with assignee and label names | 2.11 / 1.00 † | 13.5 / 0.271 | 0.16× / 3.7× |
+| The column a sprint close just emptied | 75.0 / 73.3 | 6.75 / 1.32 † | 11× / 56× |
+| Rows at 90% of a project's list | 24.7 / 23.7 | 13.2 / 0.356 † | 1.9× / 67× |
+| An issue with its comments and their authors | 1.48 / 0.417 † | 7.42 / 0.0833 | 0.20× / 5.0× |
+| First 50 open issues by priority, with comment counts | 8.09 † / 6.30 † | 19.2 / 0.444 | 0.42× / 14× |
+| First 50 open issues with a label | 146 / 142 | 14.5 / 0.305 † | 10× / 460× |
+| First 50 open issues assigned to a person | 3.21 / 1.56 † | 14.0 / 0.325 | 0.23× / 4.8× |
+| The 50 most recently updated issues | 2.28 / 1.10 | 4.56 / 0.422 | 0.50× / 2.6× |
+| Open issues per person, top 10 | 8.24 / 6.40 † | 5.09 † / 0.620 | 1.6× / 10× |
+| First 20 issues whose title contains a word | 6.46 † / 5.23 | 9.93 / 0.177 † | 0.65× / 30× |
+
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M5 Max, load average 3.7 to 10.7, commit 1e24b5ec. Full results: [2026-11-22T14-47-06-apple-m5-max](results/2026-11-22T14-47-06-apple-m5-max.md).
+
+† The runs of a marked cell form two clusters, so its median hides two states.
+<!-- /bench:table -->
+
+Warm, docstore is faster than Dexie on all 11 goals, from 2.6× to 460×. Cold, it is faster on 5 and slower on 6. The open issues with a label show the largest gap. IndexedDB cannot put an array field, the issue's labels, in one index with other fields. So Dexie reads every issue that carries the label, keeps the open ones of the project and sorts them, and that work grows with the issues. docstore's index holds the label, the project, the status and the update time, so it walks the entries of each open status newest first, together, and stops after 50 issues.
 
 ### TanStack DB live queries
 
