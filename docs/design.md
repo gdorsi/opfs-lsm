@@ -220,9 +220,9 @@ recorded generation and `meta.topGeneration`. Numbers can skip.
 ## Reads
 
 `get` reads the memtable, then the installed levels newest first, up to the first that holds the
-key. Each L0 run is a level; a deeper one searches its runs' key ranges and asks one run. A level
-not cached does not end the walk: its loads start in the same turn, and the walk runs again once
-they land. A get touches neither IndexedDB nor the host. `getMany` with `decode` copies no value.
+key; each L0 run is a level, and a deeper one asks the run whose range holds the key. It goes on
+past a run whose layout is not cached, so those layouts load together, and waits at one that may
+hold the key. It touches neither IndexedDB nor the host. `getMany` reads many keys at once, and with `decode` copies no value.
 
 `range` merges one cursor per source: the memtable, each L0 run, and each deeper level as a
 whole. For each key the newest source wins, and tombstones are dropped. The waiting sources sit

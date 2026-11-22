@@ -241,6 +241,9 @@ export class Miss {
   constructor(readonly ready: Promise<readonly Fill[]>) {}
 }
 
+/** A Miss for a run's layout alone: the run cannot yet say whether it may hold the key. */
+export class LayoutMiss extends Miss {}
+
 export type Maybe<T> = T | Miss;
 
 /** One Miss that is ready when all of `misses` are. */

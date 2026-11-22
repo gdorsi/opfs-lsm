@@ -5,6 +5,7 @@ import {
   compareEntries,
   entryCursor,
   filterCursor,
+  LayoutMiss,
   lowerBoundKeys,
   Miss,
   untilHit,
@@ -114,8 +115,10 @@ export function keysReader<T = Uint8Array>(
 /**
  * The newest entry for `key`, tombstone included. Each level asks at most
  * one run. A newer level must answer before an older one can, so a level
- * that misses makes the read miss. The walk still goes on to the first level
- * that holds the key, so a cold read loads every level it needs in one round.
+ * that misses makes the read miss. A level that misses only its layout has
+ * not said whether it may hold the key, so the walk goes on past it and a
+ * cold read starts those layout loads together. It stops at a level that may
+ * hold the key, so it reads no page of a level an older version is in.
  */
 export function latestSstEntry(
   levels: readonly RunLevel[],
@@ -124,10 +127,22 @@ export function latestSstEntry(
   let misses: Miss[] | undefined;
   for (const level of levels) {
     const hit = level.get(key);
-    if (hit instanceof Miss) (misses ??= []).push(hit);
-    else if (hit) return misses ? allMissed(misses) : hit;
+    if (hit === undefined) continue;
+    if (!(hit instanceof Miss)) return misses ? walkMiss(misses) : hit;
+    (misses ??= []).push(hit);
+    if (!(hit instanceof LayoutMiss)) break;
   }
-  return misses ? allMissed(misses) : undefined;
+  return misses && walkMiss(misses);
+}
+
+/**
+ * The newest level's Miss. The loads of the older levels go on without it:
+ * a retry that reaches them joins them, and a read that never does neither
+ * waits for them nor fails with them.
+ */
+function walkMiss(misses: readonly Miss[]): Miss {
+  for (let i = 1; i < misses.length; i++) misses[i]!.ready.catch(() => undefined);
+  return misses[0]!;
 }
 
 type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };
