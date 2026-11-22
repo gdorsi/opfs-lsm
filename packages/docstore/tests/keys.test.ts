@@ -5,7 +5,8 @@ import { DocStoreError } from "../src/errors.js";
 import {
   compareBytes,
   encodeCursor,
-  entryId,
+  entryRowKey,
+  keyId,
   idBytes,
   indexPrefix,
   rowPrefix,
@@ -14,6 +15,7 @@ import {
   type DocId,
   type CollectionId,
   type IndexId,
+  type IndexTarget,
   type ScanTarget,
 } from "../src/keys.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
@@ -30,7 +32,7 @@ const hex = (key: Uint8Array) => Array.from(key, (b) => b.toString(16).padStart(
 type Stored = { readonly values: Scalar[]; readonly id: string };
 type Ix = { readonly kind: "sorted" | "unique" | "text"; readonly arity: number; readonly entries: Stored[] };
 
-const indexTarget = (ix: Ix): ScanTarget => ({
+const indexTarget = (ix: Ix): IndexTarget => ({
   kind: ix.kind,
   prefix: indexPrefix(COLLECTION, INDEX),
   rowPrefix: rowPrefix(COLLECTION),
@@ -139,7 +141,7 @@ describe("scanPlan", () => {
           const entries = ix.entries.map((e) => entryOf(ix, e));
           const hits = kvScan(entries, q, target);
           expect(hits.map((h) => hex(h.key))).toEqual(expected.map((e) => hex(entryOf(ix, e).key)));
-          expect(hits.map((h) => fromUtf8.decode(entryId(target, h.key, h.value)))).toEqual(expected.map((e) => e.id));
+          expect(hits.map((h) => fromUtf8.decode(entryRowKey(target, h.key, h.value).subarray(rowPrefix(COLLECTION).length)))).toEqual(expected.map((e) => e.id));
           if (hits.length === 0) return;
           const i = pick % hits.length;
           const rest = kvScan(entries, { ...q, after: encodeCursor(hits[i]!.key) }, target);
@@ -174,7 +176,7 @@ describe("scanPlan", () => {
           value: EMPTY,
         }));
         const hits = kvScan(entries, q, target);
-        expect(hits.map((h) => fromUtf8.decode(entryId(target, h.key, h.value)))).toEqual(expected);
+        expect(hits.map((h) => keyId(target, h.key))).toEqual(expected);
         if (hits.length === 0) return;
         const i = pick % hits.length;
         const rest = kvScan(entries, { ...q, after: encodeCursor(hits[i]!.key) }, target);

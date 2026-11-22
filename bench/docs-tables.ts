@@ -30,7 +30,7 @@ const GOALS = [
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
-    file: "2026-11-21T13-16-06-apple-m2-pro",
+    file: "2026-11-22T15-56-51-apple-m2-pro",
     columns: [
       { head: "Workload" },
       { head: "IndexedDB", at: "kv/idb" },
@@ -136,7 +136,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-21T14-18-57-apple-m2-pro",
+    file: "2026-11-22T16-08-00-apple-m2-pro",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -153,7 +153,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-21T14-18-57-apple-m2-pro",
+    file: "2026-11-22T16-08-00-apple-m2-pro",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },
