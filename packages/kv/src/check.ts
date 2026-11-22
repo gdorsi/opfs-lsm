@@ -37,7 +37,7 @@ export type CheckedOp =
       readonly through: Seq;
     };
 
-/** An op as `BatchTx` collects it, before `checkBatch`. */
+/** An op as `BatchTx` collects it, before `CheckedBatch` checks it. */
 export type BatchOp =
   | { readonly type: "put"; readonly key: Uint8Array; readonly value: Uint8Array }
   | { readonly type: "del"; readonly key: Uint8Array }
@@ -115,33 +115,37 @@ function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): Checke
   return { type: "deleteRange", start, ...(end ? { endExclusive: end } : {}), through: asSeq(op.through ?? Number.MAX_SAFE_INTEGER) };
 }
 
-export function checkBatch(ops: readonly BatchOp[]): readonly CheckedOp[] {
-  let bytes = 0;
-  const out: CheckedOp[] = [];
-  for (const op of ops) {
+/**
+ * A batch's ops, each checked and copied as it is added, so a buffer the
+ * caller changes after `tx.put` returns does not reach the batch.
+ */
+export class CheckedBatch {
+  readonly ops: CheckedOp[] = [];
+  private bytes = 0;
+
+  add(op: BatchOp): void {
     if (op.type === "put" && op.value === undefined) {
       throw new ConstraintError("put requires a value");
     }
     // Counted before the copies below, so an oversized value is never copied.
-    bytes += ROW_OVERHEAD + opBytes(op);
-    if (bytes > LIMITS.batchBytes) {
+    this.bytes += ROW_OVERHEAD + opBytes(op);
+    if (this.bytes > LIMITS.batchBytes) {
       throw new ConstraintError(
         `batch larger than ${LIMITS.batchBytes} bytes, counting ${ROW_OVERHEAD} bytes per op`,
       );
     }
     switch (op.type) {
       case "put":
-        out.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
+        this.ops.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
         break;
       case "del":
-        out.push({ type: "del", key: checkKey(op.key) });
+        this.ops.push({ type: "del", key: checkKey(op.key) });
         break;
       case "deleteRange":
-        out.push(checkDeleteRange(op));
+        this.ops.push(checkDeleteRange(op));
         break;
     }
   }
-  return out;
 }
 
 export function newWriterId(): WriterId {

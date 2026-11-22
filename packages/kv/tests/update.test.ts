@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClosedError, prefixBound, type Db, type Range, type ViewSnapshot } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
-import { checkBatch, checkDbName } from "../src/check.js";
+import { CheckedBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
 import { watchWalGroups } from "./wal-groups.js";
 
@@ -32,10 +32,16 @@ afterEach(() => {
 
 const open = (writerId: string, fs: MemoryFs) => openHarnessDb({ name: NAME, writerId, fs, forceMemory: true, maxWalBytes });
 
+function putOps(key: string, value: string) {
+  const batch = new CheckedBatch();
+  batch.add({ type: "put", key: utf(key), value: utf(value) });
+  return batch.ops;
+}
+
 /** A write of another connection that posts nothing, so an open handle hears of it only from the WAL. */
 async function unheard(key: string, value: string): Promise<void> {
   const silent = await TabWal.open(checkDbName(NAME));
-  await silent.appendAfter(0, () => ({ ops: checkBatch([{ type: "put", key: utf(key), value: utf(value) }]), result: undefined }));
+  await silent.appendAfter(0, () => ({ ops: putOps(key, value), result: undefined }));
   silent.close();
 }
 
@@ -248,7 +254,7 @@ describe("update", () => {
     await db.put(utf("n"), utf("1"));
     const silent = await TabWal.open(checkDbName(NAME));
     await silent.appendAfter(0, () => ({
-      ops: checkBatch([{ type: "put", key: utf("n"), value: utf("5") }]),
+      ops: putOps("n", "5"),
       result: undefined,
     }));
     silent.close();

@@ -92,6 +92,9 @@ const BACKFILL_OPS = 8_000;
 const BACKFILL_BYTES = 4 * 1024 * 1024;
 /** What kv's batch limit counts for an op besides its key and value. */
 const OP_BYTES = 256;
+/** kv's batch limit, counting keys, values, and `OP_BYTES` per op. */
+const KV_BATCH_BYTES = 8 * 1024 * 1024;
+const TOO_LARGE: Unindexable = { path: "", why: "entries-too-large" };
 
 type Violation = { readonly reason: "unique" | "value"; readonly ids: readonly string[] };
 
@@ -300,9 +303,14 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
       let bytes = 0;
       const range = { start: from ? after(from) : rowPrefix, endExclusive: tupleBounds(rowPrefix).endExclusive, limit: BACKFILL_ROWS };
       for await (const row of this.kv.range(range)) {
-        const entries = indexEntries(plan, row.key.subarray(rowPrefix.length), decodeDoc(row.value));
+        let entries = indexEntries(plan, row.key.subarray(rowPrefix.length), decodeDoc(row.value));
         let size = 0;
         if (Array.isArray(entries)) for (const e of entries) size += OP_BYTES + e.key.length + e.value.length;
+        // One kv batch cannot hold these entries, so no backfill step can write them.
+        if (size > KV_BATCH_BYTES) {
+          entries = TOO_LARGE;
+          size = 0;
+        }
         // Stop before the row that passes the bound: with it, the step could pass kv's batch limit.
         if (rows.length > 0 && bytes + size > BACKFILL_BYTES) break;
         rows.push(row);

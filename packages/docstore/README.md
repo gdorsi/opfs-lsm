@@ -840,6 +840,8 @@ const tags = Array.from({ length: 1001 }, (_, i) => `t${i}`);
 await todos.put({ ...todo, tags });
 // throws DocStoreError "document", over 1,000 distinct elements
 // in an array field
+// an index added later fails over a stored document whose
+// entries in it pass 8 MiB, counting 256 bytes per entry
 const days = Array.from({ length: 33 }, (_, i) => i);
 await todos.queryIds({ index: "open", eq: [[false, true], days] });
 // throws DocStoreError "query", 2 x 33 combinations in eq,

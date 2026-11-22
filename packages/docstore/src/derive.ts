@@ -83,7 +83,7 @@ const MAX_FIELDS_BYTES = 1024 * 1024;
 /** Why one document cannot be in one index. A missing path is not here: it means "not in this index". */
 export type Unindexable = {
   readonly path: string;
-  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries" | "fields-too-large";
+  readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries" | "fields-too-large" | "entries-too-large";
 };
 
 const NONE: Entry[] = [];

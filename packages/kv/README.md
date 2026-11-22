@@ -93,7 +93,9 @@ await db.put(key, new Uint8Array(9 << 20));
 ```ts
 // `build` runs synchronously. Every op lands in one WAL record,
 // with one ack. The 8 MiB limit counts key bytes, value bytes,
-// and 256 bytes per op.
+// and 256 bytes per op. Each op copies its bytes when it is
+// called, so a buffer can be reused for the next op. A `tx`
+// used after `build` returns throws `ConstraintError`.
 const seq = await db.batch((tx) => {
   tx.put(enc("a"), enc("1"));
   tx.put(enc("b"), enc("2"));

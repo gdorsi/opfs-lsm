@@ -1,7 +1,7 @@
 import { Backpressure, memtableCaps, type MemtableCaps } from "./backpressure.js";
 import { successor } from "./bytes.js";
 import {
-  checkBatch,
+  CheckedBatch,
   checkDbName,
   checkKey,
   newWriterId,
@@ -151,6 +151,11 @@ export type DeleteRangeOptions = {
   readonly through?: number;
 };
 
+/**
+ * Each op copies its bytes when it is called, so the caller may reuse a
+ * buffer for the next op. A tx used after its callback returned throws
+ * `ConstraintError`.
+ */
 export interface BatchTx {
   put(key: Uint8Array, value: Uint8Array): void;
   delete(key: Uint8Array): void;
@@ -427,18 +432,30 @@ async function openStores(
 function collectBatch(
   build: (tx: BatchTx) => unknown,
 ): readonly CheckedOp[] {
-  const ops: BatchOp[] = [];
-  const ret = build({
-    put: (key, value) => {
-      ops.push({ type: "put", key, value });
-    },
-    delete: (key) => {
-      ops.push({ type: "del", key });
-    },
-    deleteRange: (bounds, options) => {
-      ops.push({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through });
-    },
-  });
+  const batch = new CheckedBatch();
+  let open = true;
+  // A build that catches a check error still rejects the whole batch.
+  let failure: { readonly error: unknown } | undefined;
+  const add = (op: BatchOp) => {
+    if (!open) throw new ConstraintError("tx used after its callback returned");
+    try {
+      batch.add(op);
+    } catch (error) {
+      failure ??= { error };
+      throw error;
+    }
+  };
+  let ret: unknown;
+  try {
+    ret = build({
+      put: (key, value) => add({ type: "put", key, value }),
+      delete: (key) => add({ type: "del", key }),
+      deleteRange: (bounds, options) =>
+        add({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through }),
+    });
+  } finally {
+    open = false;
+  }
   if (
     ret !== undefined &&
     ret !== null &&
@@ -446,7 +463,8 @@ function collectBatch(
   ) {
     throw new ConstraintError("callback must not return a thenable");
   }
-  return checkBatch(ops);
+  if (failure) throw failure.error;
+  return batch.ops;
 }
 
 /** An open run file and the number of `Layers` that list it. */
