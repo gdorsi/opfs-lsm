@@ -666,8 +666,8 @@ await todos.put({ ...todo, done: true });
 //            done: true } }]
 await todos.delete("t1");
 // changes => [{ id: "t1", deleted: true }], with no doc
-// doc is parsed when you first read it, so reading only id and
-// deleted costs no JSON.parse
+// an event's docs are parsed together when you first read one, so
+// reading only id and deleted costs no JSON.parse
 ```
 
 **Note.** A gap means kv skipped records a flush folded, or the collection was cleared or dropped. Index entries and catalog writes send no event, and a listener that throws is logged and skipped.

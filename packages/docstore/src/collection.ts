@@ -1,7 +1,7 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
+import { decodeDocs, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
 import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
@@ -132,10 +132,10 @@ type Prior = {
 const buildingUnique = (coll: BoundCollection) =>
   coll.maintained.some((p) => p.target.kind === "unique" && p.state.kind === "building");
 
-function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc?: StoredDoc): Prior {
+function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc: StoredDoc | undefined): Prior {
   if (!bytes) return { bytes, before: NONE, owned: NONE };
   const owned: Entry[] | undefined = buildingUnique(coll) ? [] : undefined;
-  return { bytes, before: entriesOf(coll, idb, doc ?? decodeDoc(bytes), "stored", owned), owned: owned ?? NONE };
+  return { bytes, before: entriesOf(coll, idb, doc!, "stored", owned), owned: owned ?? NONE };
 }
 
 /**
@@ -198,14 +198,17 @@ function planChanges(
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
       let existed = 0;
+      const rows = values.slice(0, n);
+      const kept = rows.map((old, i) => (docs[i] ? bytesEqual(old, docs[i]!.bytes) : old === undefined));
+      const olds = prior ? [] : decodeDocs(rows.map((old, i) => (kept[i] ? undefined : old)));
       for (let i = 0; i < n; i++) {
-        const old = values[i];
+        const old = olds[i];
         const doc = docs[i];
-        if (old) existed++;
-        if (doc ? bytesEqual(old, doc.bytes) : old === undefined) continue;
+        if (rows[i]) existed++;
+        if (kept[i]) continue;
         if (doc) tx.put(rowKeys[i]!, doc.bytes);
         else tx.delete(rowKeys[i]!);
-        const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, decodeDoc(old), "stored") : NONE;
+        const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, old, "stored") : NONE;
         const diff = diffEntries(before, after[i]!);
         for (const k of diff.remove) {
           const at = owners.get(keyString(k));
@@ -242,13 +245,13 @@ type Slot = EncodedDoc | null | undefined;
  */
 function planModify<T extends JsonDoc, In>(
   coll: BoundCollection,
-  encode: (doc: unknown) => EncodedDoc,
+  encode: (docs: readonly unknown[]) => EncodedDoc[],
   docIds: readonly DocId[],
   idbs: readonly Uint8Array[],
   olds: readonly (Uint8Array | undefined)[],
   fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
 ): { readonly next: readonly Slot[]; readonly changed: readonly number[]; readonly plan: WritePlan<number> } {
-  const docs = olds.map((bytes) => bytes && decodeDoc(bytes));
+  const docs = decodeDocs(olds);
   // Before `fn`, which may change the objects it is given.
   const priors = olds.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
 
@@ -256,13 +259,15 @@ function planModify<T extends JsonDoc, In>(
   if (!Array.isArray(out) || out.length !== docIds.length) {
     throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
   }
+  const encoded = encode(out.filter((d) => d !== undefined && d !== null));
+  let k = 0;
   const next = out.map((d, i): Slot => {
     if (d === undefined || d === null) return d;
-    const encoded = encode(d);
-    if (encoded.id !== docIds[i]) {
-      throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
+    const doc = encoded[k++]!;
+    if (doc.id !== docIds[i]) {
+      throw new DocStoreError("document", `fn returned a document with id "${doc.id}" for "${docIds[i]}"`);
     }
-    return encoded;
+    return doc;
   });
 
   const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
@@ -280,7 +285,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     private readonly store: StoreCore,
     readonly name: string,
     readonly indexes: ReadonlyMap<string, IndexInfo>,
-    private readonly encode: (doc: unknown) => EncodedDoc,
+    private readonly encode: (docs: readonly unknown[]) => EncodedDoc[],
   ) {}
 
   get(id: string): Promise<T | undefined> {
@@ -296,7 +301,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
   }
 
   async putMany(docs: readonly In[]): Promise<void> {
-    const encoded = docs.map(this.encode);
+    const encoded = this.encode(docs);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
     await this.store.write<unknown>(this.name, (coll) =>
@@ -377,7 +382,8 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
   private async priors(coll: BoundCollection, ids: readonly DocId[]): Promise<Prior[]> {
     const idbs = ids.map(idBytes);
     const rows = await this.store.kv.getMany(idbs.map((idb) => concat(coll.rows.prefix, idb)));
-    return rows.map((bytes, i) => priorOf(coll, idbs[i]!, bytes));
+    const docs = decodeDocs(rows);
+    return rows.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
   }
 
   clear(): Promise<void> {

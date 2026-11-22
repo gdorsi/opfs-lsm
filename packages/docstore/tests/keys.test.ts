@@ -269,10 +269,11 @@ describe("idBytes and textValue", () => {
   const stringOfAnyLength = fc.oneof(
     fc.string({ unit: "grapheme-ascii", maxLength: 40 }),
     fc.string({ unit, maxLength: 40 }),
+    fc.tuple(fc.string({ unit: "grapheme-ascii", maxLength: 70 }), unit, fc.string({ unit: "grapheme-ascii", maxLength: 70 })).map(([a, c, b]) => a + c + b),
     fc.constantFrom(0, 1, 340, 341, 1023, 1024, 1025, 1026, 3000).chain((n) => fc.string({ unit: fc.constantFrom("a", "é", "😀"), minLength: n, maxLength: n })),
   );
 
-  it("idBytes is the UTF-8 of the id, lone surrogates as U+FFFD, for ids of any length", () => {
+  it("idBytes is the UTF-8 of the id, lone surrogates as U+FFFD, for ids of any length and with a non-ASCII unit anywhere", () => {
     fc.assert(
       fc.property(stringOfAnyLength, (id) => {
         expect(idBytes(id as DocId)).toEqual(utf8.encode(id));

@@ -38,6 +38,39 @@ describe("get and getMany", () => {
   });
 });
 
+describe("a read of many documents", () => {
+  it("returns every document of pages past 64 KiB, not ASCII and with lone surrogates, around deleted rows", async () => {
+    const { c } = await docs();
+    const all: Doc[] = Array.from({ length: 1_200 }, (_, i) => ({
+      id: `d${String(i).padStart(4, "0")}`,
+      a: i % 4,
+      b: i,
+      t: i % 5 ? `plain ${"x".repeat(i % 150)}` : `ünï 😀 \ud800 ${i}`,
+      tags: [i % 3],
+    }));
+    await c.putMany(all);
+    await c.deleteMany(all.filter((_, i) => i % 3 === 1).map((d) => d.id));
+    const live = all.filter((_, i) => i % 3 !== 1).map((d) => JSON.parse(JSON.stringify(d)) as Doc);
+
+    expect((await c.query({})).docs).toEqual(live);
+    const paged: Doc[] = [];
+    for (let after: Cursor | undefined, page; (page = await c.query({ limit: 97, after })); after = page.next) {
+      paged.push(...page.docs);
+      if (!page.next) break;
+    }
+    expect(paged).toEqual(live);
+    expect(await c.getMany(all.map((d) => d.id))).toEqual(all.map((d, i) => (i % 3 === 1 ? undefined : JSON.parse(JSON.stringify(d)))));
+    expect((await c.query({ index: "one", eq: [1] })).docs).toEqual(live.filter((d) => d.a === 1));
+    expect((await c.query({ index: "one", eq: [[2, 1]] })).docs).toEqual(live.filter((d) => d.a === 1 || d.a === 2));
+    const entries = (await c.queryEntries({ index: "covered" })).entries;
+    expect(entries.map((e) => [e.id, e.fields])).toEqual(live.map((d) => [d.id, { t: d.t, tags: d.tags }]));
+
+    const big = { id: "big", t: "ü".repeat(70_000) };
+    await c.put(big);
+    expect(await c.getMany(["d0000", "big", "d0002"])).toEqual([live[0], big, live[1]]);
+  });
+});
+
 describe("query matches a brute-force filter and sort", () => {
   it("for every index kind and the rows: the set, its order, reverse, paging, count and queryIds", async () => {
     await expect(
