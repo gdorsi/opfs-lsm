@@ -686,7 +686,8 @@ export class TabWal extends IdBWal {
       tx = this.db.transaction(WAL_STORE, "readwrite");
     } catch {
       // Only a connection that closed refuses a transaction here: another
-      // context's upgrade or delete closed it while these appends queued.
+      // context's upgrade or delete, or the browser, closed it while these
+      // appends queued.
       const err = new ClosedError("database is closed");
       this.open = undefined;
       for (const entry of entries) entry.reject(err);

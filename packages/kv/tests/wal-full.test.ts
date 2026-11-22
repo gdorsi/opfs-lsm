@@ -271,7 +271,7 @@ describe("a WAL append the browser refuses", () => {
     expect([await read(db, "a"), await read(db, "b"), await read(db, "c")]).toEqual(["1", "2", "3"]);
   });
 
-  it("holds the writes issued while an update's own transaction recovers, and lands them after it", async () => {
+  it("holds the writes issued while an update's own transaction recovers, and lands them", async () => {
     const a = await openFlushed();
     const b = await open();
     // b's put takes the seq a's update row names, so a's updates run in a transaction of their own from here.

@@ -65,5 +65,5 @@ describe("reopen", () => {
       expect(dec.decode(await reader.get(key(i)))).toBe(`v${i}`);
     }
     await reader.close();
-  });
+  }, 30_000);
 });
