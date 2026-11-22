@@ -67,6 +67,7 @@
     "probe:wasm-memory": "tsx scripts/wasm-memory.ts",
     "engine:gate": "tsx scripts/engine-gate.ts",
     "lint:engine": "tsx checked/lint-engine.ts",
+    "mutant-canary": "tsx scripts/mutant-canary.ts",
     "formal:ingest-visibility": "tsx formal/ingest-visibility/check.ts",
     "formal:kv": "tsx formal/run-all.ts",
     "formal:wal-over-sst": "tsx formal/wal-over-sst/check.ts",
