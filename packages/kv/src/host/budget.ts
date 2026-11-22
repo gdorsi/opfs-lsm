@@ -45,8 +45,15 @@ export const DEFAULT_MAX_WAL_BYTES = MiB;
 export const IDLE_FLUSH_MS = 2000;
 export const IDLE_FLUSH_SHARE = 8;
 
-/** Figures a test replaces: the budget's, and the idle wait. */
-export type HostOverrides = Partial<HostBudget> & { readonly idleFlushMs?: number };
+/**
+ * The longest a row waits for that flush while rows keep coming. A writer
+ * that never pauses for `IDLE_FLUSH_MS`, such as a typist, would otherwise
+ * leave up to `maxWalBytes` of small records for the next open to replay.
+ */
+export const IDLE_FLUSH_DUE_MS = 5000;
+
+/** Figures a test replaces: the budget's, and the idle waits. */
+export type HostOverrides = Partial<HostBudget> & { readonly idleFlushMs?: number; readonly idleFlushDueMs?: number };
 
 /**
  * Below this a step would merge fewer than 18 sources, and a stop at one

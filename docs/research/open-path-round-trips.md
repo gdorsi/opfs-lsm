@@ -182,3 +182,30 @@ a first screen would see, and a slow typist would get a run per pause.
 
 **Not measured.** The cost of the extra L0 runs to compaction over a long session, and a tail of
 many small records, where the replay costs more per byte.
+
+## 2026-11-22: a writer that never pauses
+
+Chrome 157 headless, Apple M2 Pro, `yjs/trace` at size `small`, kv only.
+
+**Question.** Some fresh-tab opens in `reopen` took 40 to 117 ms against 6 to 10 ms for the rest. Why?
+
+**Probe.** Timestamps at each await of `openDb`. In the slow tab the WAL held all 26,001 records,
+1,025,088 op bytes, and no generation was recorded. That is 23 KB under the 1 MiB `maxWalBytes`.
+So only the idle flush could have folded them. Every typed key restarted its 2 s wait, and a watch
+the last tab left gets none. The tab replayed the whole log: 70.7 ms to read and decode it, 12.3 ms
+to apply it, 89 ms for the open.
+
+**Choice.** The idle flush also fires 5 s after the first row since the last flush began, however
+busy the database. Rows waiting under an eighth of the limit still never flush.
+
+| build | `reopen` opens over 20 ms | `open` per rep, ms |
+|---|---|---|
+| before | 2 of 10 | 6.4 to 117.1, median 7.97 |
+| with the due time | 0 of 10 | 6.4 to 10.1, median 7.91 |
+
+Load average 5.8 to 9.8 during both runs. In 10 more runs with the timestamps, every fresh tab
+replayed 300 or 301 records against 26,001 in 1 of 10 before.
+
+**Not measured.** A writer between about 26 and 200 KiB/s now flushes runs of 128 KiB to 1 MiB
+every 5 s instead of one at 1 MiB. Its extra L0 runs cost compaction, and no workload here writes
+at that rate.

@@ -570,6 +570,18 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("flushes a database whose writer never pauses, once a row has waited the due time", async () => {
+    const fs = new MemoryFs();
+    const db = await open(new EngineHost(() => fs, { idleFlushMs: 60_000, idleFlushDueMs: 100 }), fs, "a", 800);
+    let generation: Awaited<ReturnType<typeof loadLatestGeneration>>;
+    for (let i = 0; i < 30 && !(generation = await loadLatestGeneration(fs)); i++) {
+      await db.put(utf(`k${i}`), new Uint8Array(20));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(generation, "flushed while the writer was still writing").toBeDefined();
+    await db.close();
+  });
+
   it("leaves a quiet database alone below that share", async () => {
     const fs = new MemoryFs();
     const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);
