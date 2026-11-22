@@ -1,8 +1,9 @@
 name: nightly
 
-# Long runs that do not fit a pull request: the real-Chrome kill loop, and
-# the seeded suites with random seeds and more runs. Every failure prints
-# its seed and a replay command (docs/verification.md).
+# Long runs that do not fit a pull request: the real-Chrome kill loop, the
+# seeded suites with random seeds and more runs, coverage-guided fuzzing of
+# the wasm engine, and the mutant canary. Every failure prints its seed or
+# input and a replay command (docs/verification.md).
 
 on:
   schedule:
@@ -70,6 +71,12 @@ jobs:
           - name: fuzz
             files: fuzz/
             env: KV_FUZZ_RUNS=50000 KV_FUZZ_REPORT=1
+          - name: engine-checked
+            files: fuzz/engine-checked.test.ts
+            env: KV_ENGINE_CASES=3000
+          - name: alloc-model
+            files: tests/alloc-model.test.ts
+            env: KV_ALLOC_SEEDS=1000
     name: seed-sweep (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
@@ -82,3 +89,49 @@ jobs:
       - run: pnpm --filter @opfs-lsm/kv build
       - working-directory: packages/kv
         run: env ${{ matrix.env }} pnpm exec vitest run ${{ matrix.files }}
+
+  # Coverage-guided fuzzing of the wasm engine. The corpus each target grows
+  # is kept between nights; only the seeds are committed.
+  engine-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [engine-encode, engine-scan, engine-merge]
+    name: engine-fuzz (${{ matrix.target }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: packages/kv/fuzz/corpus/${{ matrix.target }}
+          key: corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: corpus-${{ matrix.target }}-
+      - run: pnpm --filter @opfs-lsm/kv fuzz:jazzer ${{ matrix.target }} 1800
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-fuzz-${{ matrix.target }}
+          path: packages/kv/fuzz/.build/crash-*
+          if-no-files-found: ignore
+
+  # Each planted bug must fail the kv suite on its checked twin: proof the
+  # checks still see what they were built to see.
+  mutant-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @opfs-lsm/kv mutant-canary
