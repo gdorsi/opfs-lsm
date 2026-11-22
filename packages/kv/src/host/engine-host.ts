@@ -83,7 +83,7 @@ type IngestWatch = {
   bus: BroadcastChannel | undefined;
   /** Fires `IDLE_FLUSH_MS` after the last row heard. */
   idle: ReturnType<typeof setTimeout> | undefined;
-  /** Fires `IDLE_FLUSH_DUE_MS` after the first row heard since the last ingest started, however busy the database. */
+  /** Fires `IDLE_FLUSH_DUE_MS` after the first row heard since it last fired or an ingest started, however busy the database. */
   due: ReturnType<typeof setTimeout> | undefined;
 };
 
@@ -462,16 +462,15 @@ class HostedDb {
   private quiet(watch: IngestWatch): void {
     clearTimeout(watch.idle);
     if (this.watching !== watch) return;
-    const flush = () => {
-      clearTimeout(watch.idle);
-      clearTimeout(watch.due);
-      watch.due = undefined;
+    watch.idle = setTimeout(() => {
       this.maybeIngest(watch, true);
       // No flush will end a pass on a quiet database, and the reserve is written at the end of one.
       if (watch.state === "idle" && this.reserve.kind !== "held") this.compact().catch(() => undefined);
-    };
-    watch.idle = setTimeout(flush, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
-    watch.due ??= setTimeout(flush, this.overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
+    }, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+    watch.due ??= setTimeout(() => {
+      watch.due = undefined;
+      this.maybeIngest(watch, true);
+    }, this.overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
   }
 
   /**
