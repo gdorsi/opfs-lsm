@@ -1,6 +1,6 @@
 # Benchmarks
 
-These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M2 Pro that other work shared, so the load average under a table is high and some cells split into two clusters. Runs differ in load, so compare numbers inside one table, not across two.
+These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M2 Pro, except the goals at 200,000 issues, which ran on an Apple M5 Max. Other work shared both machines, so the load average under a table is high and some cells split into two clusters. Runs differ in load, so compare numbers inside one table, not across two.
 
 ## Storage calls
 
@@ -146,7 +146,7 @@ Warm, docstore answers 5 of the 11 goals fastest, because a tab reads on its own
 
 ### At 200,000 issues
 
-The same history with ten times the issues, against Dexie. Each cell is cold / warm in ms, as above. The last column is Dexie's time over docstore's: above 1×, docstore is faster. These runs are on another machine than the tables above, so compare their ratios, not their times.
+A larger workspace from the same simulation, against Dexie: 200,000 issues, 600 people, 120 projects and 60 labels. Its sprint close holds about 7,500 issues, which docstore writes in batches of 1,200 events, and those writes sit above the stored data when the goals run. Each cell is cold / warm in ms, as above. The last column is Dexie's time over docstore's: above 1×, docstore is faster. These runs are on another machine than the tables above, so compare their ratios, not their times.
 
 <!-- bench:table goals-large -->
 | Goal | Dexie | docstore | docstore vs Dexie |
