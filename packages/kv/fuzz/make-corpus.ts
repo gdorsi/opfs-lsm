@@ -8,6 +8,8 @@
  *
  * Output (only `seed-*` files are tracked; a fuzzing run adds the rest):
  *   packages/kv/fuzz/corpus/<target>/seed-*   Jazzer.js targets (fuzz/jazzer/)
+ *
+ * The engine targets' seeds are random bytes, which they read as choices.
  */
 import "fake-indexeddb/auto";
 import "../src/testing.js";
@@ -26,6 +28,7 @@ import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
+import { xorshift } from "./engine-drive.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsCorpus = join(here, "corpus");
@@ -114,6 +117,11 @@ async function main(): Promise<void> {
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
   await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
   await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));
+  // The engine targets read their input as a drive case's choices (engine-drive.ts), so any bytes make a case.
+  const choices = xorshift(1);
+  for (const target of ["engine-encode", "engine-scan", "engine-merge"]) {
+    await seeds(join(tsCorpus, target), [16, 64, 256, 1024, 4096].map((n) => choices.bytes(n)));
+  }
   console.log(`seeds: ${runs.length} runs, ${db.manifests.length} manifests, ${db.walRows.length} WAL rows`);
 }
 

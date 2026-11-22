@@ -2,8 +2,8 @@
  * Jazzer.js entry points, one per decoder. `run.ts` bundles this file and
  * runs one entry under libFuzzer; a `RuleBroken` (or any other throw) is a
  * finding. The checks are the ones the fast-check properties run
- * (`../targets.ts`). These cover the TypeScript decoders only: the wasm
- * engine is diffed against a frozen Rust build (`../rust-reference.test.ts`).
+ * (`../targets.ts`). These cover the TypeScript decoders; the wasm engine
+ * has its own targets (`engine-entries.ts`).
  */
 import {
   checkDecodeSst,

@@ -39,6 +39,26 @@ export function xorshift(seed: number): Source {
   });
 }
 
+/**
+ * A fuzzer's input, read front to back like libFuzzer's FuzzedDataProvider:
+ * a choice takes 4 bytes, bytes are copied as they are, and once the input
+ * runs out every choice is 0, so a short input makes a small case.
+ */
+export function bytesSource(data: Uint8Array): Source {
+  let at = 0;
+  const next = () => {
+    let v = 0;
+    for (let i = 0; i < 4 && at < data.byteLength; i++) v |= data[at++]! << (8 * i);
+    return v >>> 0;
+  };
+  return source(next, (n, alphabet = 256) => {
+    const out = data.slice(at, at + n);
+    at += out.byteLength;
+    if (alphabet < 256) for (let i = 0; i < out.byteLength; i++) out[i]! %= alphabet;
+    return out.byteLength === n ? out : concat([out, new Uint8Array(n - out.byteLength)]);
+  });
+}
+
 const NEED = 1;
 export const DONE = 5;
 const TAG_PUT = 1;
