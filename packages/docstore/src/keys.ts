@@ -80,14 +80,13 @@ const ASCII_LOOP_MAX = 64;
 function utf8Bytes(s: string): Uint8Array {
   const n = s.length;
   if (n <= ASCII_LOOP_MAX) {
-    const out = new Uint8Array(n);
     let i = 0;
-    for (; i < n; i++) {
-      const c = s.charCodeAt(i);
-      if (c >= 0x80) break;
-      out[i] = c;
+    while (i < n && s.charCodeAt(i) < 0x80) i++;
+    if (i === n) {
+      const out = new Uint8Array(n);
+      for (i = 0; i < n; i++) out[i] = s.charCodeAt(i);
+      return out;
     }
-    if (i === n) return out;
   }
   if (n > SCRATCH_UNITS) return utf8.encode(s);
   return scratch.slice(0, utf8.encodeInto(s, scratch).written);
