@@ -5,6 +5,7 @@ export const ROW = 40;
 const PAGE = 50;
 const OVERSCAN = 8;
 const reportedByCaller = () => undefined;
+const same = (a: Issue, b: Issue) => (Object.keys(b) as (keyof Issue)[]).every((key) => a[key] === b[key]);
 
 /** One issue of a write: as the list held it before, and as it is stored now. Absent on a side where it does not exist. */
 export type Change = { readonly before: Issue | undefined; readonly after: Issue | undefined };
@@ -43,7 +44,7 @@ export function createList(store: Store) {
   let height = 0;
   let resets = 0;
   let snapshot: ListWindow = { count: 0, rows: [], none: false, top: 0 };
-  const listeners = new Set<() => void>();
+  const listeners = new Set<(win: ListWindow) => void>();
 
   function render() {
     const count = total ?? Math.max(-1, ...rows.keys()) + 1;
@@ -57,9 +58,14 @@ export function createList(store: Store) {
       shown.push({ at, issue });
     }
     snapshot = { count, rows: shown, none: count === 0 && tried.has(0), top: resets };
-    for (const listener of listeners) listener();
+    for (const listener of listeners) listener(snapshot);
     wanted = [...missing].filter((page) => !tried.has(page));
     void pump();
+  }
+
+  function keepUnchanged(at: number, doc: Issue, held: Map<number, Issue>) {
+    const before = held.get(at);
+    rows.set(at, before && same(before, doc) ? before : doc);
   }
 
   /** Reads one page at a time, always one the list shows now: pages scrolled past are never read. */
@@ -72,7 +78,7 @@ export function createList(store: Store) {
       const docs = await from.read(page * PAGE, PAGE);
       if (from === view) {
         tried.add(page);
-        docs.forEach((doc, i) => rows.set(page * PAGE + i, doc));
+        docs.forEach((doc, i) => keepUnchanged(page * PAGE + i, doc, rows));
       }
     } finally {
       reading = false;
@@ -124,7 +130,9 @@ export function createList(store: Store) {
       .then((docs) => {
         const at = performance.now();
         if (view !== from) return { rows: docs[0]!.length, at };
-        rows = new Map(docs.flatMap((page, k) => page.map((doc, i): [number, Issue] => [(first + k) * PAGE + i, doc])));
+        const held = rows;
+        rows = new Map();
+        docs.forEach((page, k) => page.forEach((doc, i) => keepUnchanged((first + k) * PAGE + i, doc, held)));
         for (const page of pages) tried.add(page);
         if (!stay) {
           total = undefined;
@@ -138,11 +146,12 @@ export function createList(store: Store) {
   }
 
   return {
-    subscribe(listener: () => void) {
+    /** Calls `listener` with the window now, and again after every change. Returns the call that stops it. */
+    subscribe(listener: (win: ListWindow) => void) {
       listeners.add(listener);
+      listener(snapshot);
       return () => listeners.delete(listener);
     },
-    snapshot: () => snapshot,
 
     /** The scroller moved or changed size. */
     scroll(top: number, size: number) {
@@ -196,7 +205,7 @@ export function createList(store: Store) {
     grow(by: number): number | undefined {
       if (total !== undefined) total += by;
       snapshot = { ...snapshot, count: total ?? 0 };
-      for (const listener of listeners) listener();
+      for (const listener of listeners) listener(snapshot);
       return total;
     },
 

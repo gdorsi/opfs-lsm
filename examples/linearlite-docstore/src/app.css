@@ -62,7 +62,8 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .topbar { display: flex; align-items: center; gap: 10px; padding: 0 16px; height: 48px; border-bottom: 1px solid var(--line); flex: none; position: relative; }
 .topbar .bar { position: absolute; inset: auto 0 -1px; height: 2px; border-radius: 0; }
 .title { font-size: 14px; font-weight: 600; white-space: nowrap; }
-.count { color: var(--muted); min-width: 52px; }
+.count { color: var(--muted); min-width: 7ch; transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1); }
+.count.counting { opacity: 0.5; }
 .chips { display: flex; gap: 6px; align-items: center; }
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 13px; border: 1px dashed var(--line); color: var(--muted); white-space: nowrap; }
 .chip:hover { background: var(--hover); color: var(--text); }

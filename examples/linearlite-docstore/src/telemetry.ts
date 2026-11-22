@@ -50,8 +50,6 @@ if (on) {
         // Only at exit, as the SDK's own transport does. The browser refuses a keepalive body over 64 KiB.
         keepalive: document.visibilityState === "hidden",
       }),
-    // Redact's `nano` preset has no error boundaries. It sends a render error to `reportError`, which `errors()`
-    // records.
     instrumentations: [errors(), pageviews(), interactions(), webVitals(), network(), (ctx) => void (emit = ctx.emit)],
   });
 }

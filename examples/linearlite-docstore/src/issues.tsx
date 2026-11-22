@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { createEffect, createMemo, For, from, onSettled, Show } from "solid-js";
 import type { App } from "./app.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { ROW } from "./list.ts";
@@ -15,69 +15,78 @@ export const shortDate = (ms: number) => {
 export const shortId = (id: string) => `LL-${id.slice(0, 5).toUpperCase()}`;
 
 /** The rows in view of the list model: a row per read issue, a placeholder per place whose page is not read yet. */
-export function IssueList({ app }: { app: App }) {
-  const { list } = app;
-  const win = useSyncExternalStore(list.subscribe, list.snapshot);
-  const scroller = useRef<HTMLDivElement>(null);
+export function IssueList(props: { app: App }) {
+  const win = createMemo(() => from(props.app.list.subscribe));
+  const top = createMemo(() => win().top);
+  let scroller!: HTMLDivElement;
 
-  useEffect(() => {
-    const el = scroller.current!;
+  onSettled(() => {
+    const { list } = props.app;
     let frame = 0;
-    const report = () => list.scroll(el.scrollTop, el.clientHeight);
+    const report = () => list.scroll(scroller.scrollTop, scroller.clientHeight);
     const onScroll = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(report);
     };
-    el.addEventListener("scroll", onScroll, { passive: true });
+    scroller.addEventListener("scroll", onScroll, { passive: true });
     const resize = new ResizeObserver(report);
-    resize.observe(el);
+    resize.observe(scroller);
     return () => {
-      el.removeEventListener("scroll", onScroll);
+      scroller.removeEventListener("scroll", onScroll);
       resize.disconnect();
       cancelAnimationFrame(frame);
     };
-  }, [list]);
+  });
 
   // A list read from its first row starts at the top.
-  useLayoutEffect(() => {
-    scroller.current!.scrollTop = 0;
-  }, [win.top]);
+  createEffect(top, () => {
+    scroller.scrollTop = 0;
+  });
 
   return (
-    <div className="scroller" id="scroller" ref={scroller}>
-      <div className="rows" style={{ height: win.count * ROW }}>
-        {win.none && <div className="none">No issues match</div>}
-        {win.rows.map(({ at, issue }) => (issue ? <Row key={at} at={at} issue={issue} app={app} /> : <Skeleton key={at} at={at} />))}
+    <div class="scroller" id="scroller" ref={(el) => (scroller = el)}>
+      <div class="rows" style={{ height: `${win().count * ROW}px` }}>
+        <Show when={win().none}>
+          <div class="none">No issues match</div>
+        </Show>
+        <For each={win().rows} keyed={(row) => row.at}>
+          {(row) => (
+            <Show when={row().issue} fallback={<Skeleton at={row().at} />}>
+              {(issue) => <Row at={row().at} issue={issue()} app={props.app} />}
+            </Show>
+          )}
+        </For>
       </div>
     </div>
   );
 }
 
-function Row({ at, issue, app }: { at: number; issue: Issue; app: App }) {
+function Row(props: { at: number; issue: Issue; app: App }) {
   // The priority and status icons change the issue in place, as in LinearLite; the rest of the row opens it.
-  const pick = (field: "status" | "priority") => codeItems(field, (c) => issue[field] === c, (c) => app.edit(issue.id, { [field]: c }));
+  const pick = (field: "status" | "priority") =>
+    codeItems(field, (c) => props.issue[field] === c, (c) => props.app.edit(props.issue.id, { [field]: c }));
   return (
-    <div className="row" style={{ transform: `translateY(${at * ROW}px)` }} onClick={() => app.open(issue)}>
-      <MenuButton className="icon-btn" title="Priority" items={pick("priority")}>
-        <PriorityIcon code={issue.priority} />
+    <div class="row" style={{ transform: `translateY(${props.at * ROW}px)` }} onClick={() => props.app.open(props.issue)}>
+      <MenuButton class="icon-btn" title="Priority" items={pick("priority")}>
+        <PriorityIcon code={props.issue.priority} />
       </MenuButton>
-      <span className="id">{shortId(issue.id)}</span>
-      <MenuButton className="icon-btn" title="Status" items={pick("status")}>
-        <StatusIcon code={issue.status} />
+      <span class="id">{shortId(props.issue.id)}</span>
+      <MenuButton class="icon-btn" title="Status" items={pick("status")}>
+        <StatusIcon code={props.issue.status} />
       </MenuButton>
-      <span className="name">{issue.title}</span>
-      <span className="avatar" title={issue.username}>
-        {issue.username.slice(0, 1)}
+      <span class="name">{props.issue.title}</span>
+      <span class="avatar" title={props.issue.username}>
+        {props.issue.username.slice(0, 1)}
       </span>
-      <span className="date">{shortDate(issue.modified)}</span>
+      <span class="date">{shortDate(props.issue.modified)}</span>
     </div>
   );
 }
 
-const Skeleton = ({ at }: { at: number }) => (
-  <div className="skel" style={{ transform: `translateY(${at * ROW}px)` }}>
-    <i style={{ width: 14 }} />
-    <i style={{ width: 48 }} />
-    <i style={{ width: `${30 + ((at * 37) % 40)}%` }} />
+const Skeleton = (props: { at: number }) => (
+  <div class="skel" style={{ transform: `translateY(${props.at * ROW}px)` }}>
+    <i style={{ width: "14px" }} />
+    <i style={{ width: "48px" }} />
+    <i style={{ width: `${30 + ((props.at * 37) % 40)}%` }} />
   </div>
 );
