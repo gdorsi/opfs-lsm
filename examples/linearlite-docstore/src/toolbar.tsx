@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, onSettled, Show } from "solid-js";
 import { Dots } from "./icons.tsx";
 import { codeItems, MenuButton, type Item } from "./menu.tsx";
 import { PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
@@ -8,44 +8,11 @@ const toggled = (codes: readonly Code[], code: Code) => (codes.includes(code) ? 
 const chipText = (name: "Status" | "Priority", codes: readonly Code[], labels: readonly string[]) =>
   codes.length === 0 ? name : codes.length === 1 ? labels[codes[0]!]! : `${codes.length} ${name === "Status" ? "statuses" : "priorities"}`;
 
-const TWEEN_MS = 250;
-
-// Ease-out quint, the curve of the opacity transition on `.count` in app.css.
-const easeOut = (t: number) => 1 - (1 - t) ** 5;
-
-/**
- * The issue total. While a count runs the last total stays on screen, dimmed. A new total is counted up or down from
- * the number on screen, so a total that changes many times a second keeps moving instead of restarting.
- */
+/** The issue total. While a count runs, the last total stays on screen, dimmed. */
 function Total(props: { total: number | undefined }) {
-  const target = createMemo<number | undefined>((last) => props.total ?? last);
-  const counting = () => props.total === undefined && target() !== undefined;
-  const [shown, setShown] = createSignal<number>();
-  // The number on screen, as a plain variable: an effect callback is not a tracking scope, so reading `shown` there warns.
-  let current: number | undefined;
-  const show = (n: number) => setShown((current = n));
-
-  createEffect(target, (to) => {
-    if (to === undefined) return;
-    const from = current;
-    if (from === undefined || from === to || matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      show(to);
-      return;
-    }
-    let start: number | undefined;
-    let frame = 0;
-    const step = (now: number) => {
-      start ??= now;
-      const t = Math.min((now - start) / TWEEN_MS, 1);
-      show(t === 1 ? to : Math.round(from + (to - from) * easeOut(t)));
-      if (t < 1) frame = requestAnimationFrame(step);
-    };
-    frame = requestAnimationFrame(step);
-    return () => cancelAnimationFrame(frame);
-  });
-
+  const shown = createMemo<number | undefined>((last) => props.total ?? last);
   return (
-    <span id="count" class={["count", "mono", { counting: counting() }]}>
+    <span id="count" class={["count", "mono", { counting: props.total === undefined && shown() !== undefined }]}>
       {shown()?.toLocaleString("en-US")}
     </span>
   );
