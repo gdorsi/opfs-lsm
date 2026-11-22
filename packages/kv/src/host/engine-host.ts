@@ -15,7 +15,7 @@ import {
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_DUE_MS, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
@@ -83,6 +83,8 @@ type IngestWatch = {
   bus: BroadcastChannel | undefined;
   /** Fires `IDLE_FLUSH_MS` after the last row heard. */
   idle: ReturnType<typeof setTimeout> | undefined;
+  /** Fires `IDLE_FLUSH_DUE_MS` after the first row heard since the last ingest started, however busy the database. */
+  due: ReturnType<typeof setTimeout> | undefined;
 };
 
 /**
@@ -414,6 +416,7 @@ class HostedDb {
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
     clearTimeout(watch.idle);
+    clearTimeout(watch.due);
     this.watching = undefined;
     this.reserve = step(this.reserve, { kind: "last-unwatch" }).next;
   }
@@ -429,6 +432,7 @@ class HostedDb {
       watchers: 0,
       bus: undefined,
       idle: undefined,
+      due: undefined,
     };
     if (typeof BroadcastChannel !== "undefined") {
       watch.bus = new BroadcastChannel(layersChannel(this.name));
@@ -450,18 +454,24 @@ class HostedDb {
   }
 
   /**
-   * Flush once the database has been quiet for `IDLE_FLUSH_MS`, so the next
-   * open replays a short tail. Each row heard restarts the wait, and a
-   * watch the last tab left gets none.
+   * Flush once the database has been quiet for `IDLE_FLUSH_MS`, or once a
+   * row has waited `IDLE_FLUSH_DUE_MS`, so the next open replays a short
+   * tail even after a writer that never paused. Each row restarts the quiet
+   * wait, not the due one, and a watch the last tab left gets neither.
    */
   private quiet(watch: IngestWatch): void {
     clearTimeout(watch.idle);
     if (this.watching !== watch) return;
-    watch.idle = setTimeout(() => {
+    const flush = () => {
+      clearTimeout(watch.idle);
+      clearTimeout(watch.due);
+      watch.due = undefined;
       this.maybeIngest(watch, true);
       // No flush will end a pass on a quiet database, and the reserve is written at the end of one.
       if (watch.state === "idle" && this.reserve.kind !== "held") this.compact().catch(() => undefined);
-    }, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+    };
+    watch.idle = setTimeout(flush, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+    watch.due ??= setTimeout(flush, this.overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
   }
 
   /**
@@ -474,6 +484,8 @@ class HostedDb {
       idle && watch.triggerAt === watch.maxWalBytes ? watch.maxWalBytes / IDLE_FLUSH_SHARE : watch.triggerAt;
     if (watch.state !== "idle" || watch.pendingBytes < trigger || this.watching !== watch) return;
     watch.state = "ingesting";
+    clearTimeout(watch.due);
+    watch.due = undefined;
     void (async () => {
       try {
         await this.fold();
