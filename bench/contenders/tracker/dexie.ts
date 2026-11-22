@@ -10,14 +10,15 @@ const { minKey, maxKey } = Dexie;
 /**
  * IndexedDB keys reject null, so an issue with no assignee is simply absent
  * from the assignee indexes, which no goal reads for unassigned issues.
- * A multiEntry index cannot be part of a compound one, so the label index is
- * `*labelIds` alone.
+ * A multiEntry index cannot be part of a compound one, so a label page walks
+ * the project's issues newest first and tests the labels: at small and large that
+ * reads fewer rows than `*labelIds`, which spans every project and status.
  */
 export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "Dexie 4; a table per entity, compound indexes and *labelIds; where().between().reverse().limit(), count(), offset(), keys() for one key-only range read of the group-by; joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
+    "Dexie 4; a table per entity, compound indexes; where().between().reverse().limit(), count(), offset(), keys() for one key-only range read of the group-by; joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
   engine: false,
   async open(name) {
     const db = new Dexie(`dexie-${name}`);
@@ -26,7 +27,7 @@ export default defineContender({
       projects: "id, &key",
       labels: "id",
       issues:
-        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], *labelIds, [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt]",
+        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt]",
       comments: "id, [issueId+createdAt]",
     });
     await db.open();
@@ -144,14 +145,17 @@ export default defineContender({
             return page.map((i, k) => ({ ...ref[k]!, status: i.status, priority: i.priority, comments: counts[k]! }));
           }),
         labelPage: ({ projectId, labelId }) =>
-          read(async () => {
-            const tagged = await issues
-              .where("labelIds")
-              .equals(labelId)
-              .filter((i) => i.projectId === projectId && (OPEN as readonly string[]).includes(i.status))
-              .toArray();
-            return cards(tagged.sort(byUpdatedDesc).slice(0, LIMITS.page));
-          }),
+          read(async () =>
+            cards(
+              await issues
+                .where("[projectId+updatedAt]")
+                .between([projectId, minKey], [projectId, maxKey])
+                .reverse()
+                .filter((i) => i.labelIds.includes(labelId) && (OPEN as readonly string[]).includes(i.status))
+                .limit(LIMITS.page)
+                .toArray(),
+            ),
+          ),
         myIssues: ({ userId }) =>
           read(async () => {
             const lists = await Promise.all(
