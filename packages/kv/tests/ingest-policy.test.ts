@@ -487,6 +487,32 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("ingests once, not in a loop, when another host folded every row it heard", async () => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs, { idleFlushMs: 60_000 });
+    const other = new EngineHost(() => fs);
+    const db = await open(host, fs, "a", 100);
+    const releaseIngest = await holdLock(ingestLock(NAME));
+    onTestFinished(releaseIngest);
+    await db.put(utf("a"), new Uint8Array(60));
+    await settle();
+    // The other host's flush is first in line for the lock.
+    const flush = other.ingest(NAME);
+    await vi.waitFor(async () => expect(await someoneWaitsFor(ingestLock(NAME))).toBe(true), WAIT);
+    // Past maxWalBytes: the host's own ingest queues behind that flush, having heard both rows.
+    await db.put(utf("b"), new Uint8Array(60));
+    await settle();
+    releaseIngest();
+    expect((await flush).generation, "the other host folded seqs 1 and 2").toBe(1);
+    await vi.waitFor(async () => expect(await someoneWaitsFor(ingestLock(NAME))).toBe(false), WAIT);
+    await settle();
+    // Under maxWalBytes again: a host that still counted the folded rows would flush this one.
+    await db.put(utf("c"), new Uint8Array(60));
+    await settle();
+    expect((await loadLatestGeneration(fs))?.through).toBe(2);
+    await db.close();
+  });
+
   it("logs a failed ingest and retries once another maxWalBytes is waiting", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const { fs, state } = l0Fs();
