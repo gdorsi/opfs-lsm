@@ -5,6 +5,7 @@ export const ROW = 40;
 const PAGE = 50;
 const OVERSCAN = 8;
 const reportedByCaller = () => undefined;
+const same = (a: Issue, b: Issue) => (Object.keys(b) as (keyof Issue)[]).every((key) => a[key] === b[key]);
 
 /** One issue of a write: as the list held it before, and as it is stored now. Absent on a side where it does not exist. */
 export type Change = { readonly before: Issue | undefined; readonly after: Issue | undefined };
@@ -62,6 +63,11 @@ export function createList(store: Store) {
     void pump();
   }
 
+  function keepUnchanged(at: number, doc: Issue, held: Map<number, Issue>) {
+    const before = held.get(at);
+    rows.set(at, before && same(before, doc) ? before : doc);
+  }
+
   /** Reads one page at a time, always one the list shows now: pages scrolled past are never read. */
   async function pump(): Promise<void> {
     const page = wanted[0];
@@ -72,7 +78,7 @@ export function createList(store: Store) {
       const docs = await from.read(page * PAGE, PAGE);
       if (from === view) {
         tried.add(page);
-        docs.forEach((doc, i) => rows.set(page * PAGE + i, doc));
+        docs.forEach((doc, i) => keepUnchanged(page * PAGE + i, doc, rows));
       }
     } finally {
       reading = false;
@@ -124,7 +130,9 @@ export function createList(store: Store) {
       .then((docs) => {
         const at = performance.now();
         if (view !== from) return { rows: docs[0]!.length, at };
-        rows = new Map(docs.flatMap((page, k) => page.map((doc, i): [number, Issue] => [(first + k) * PAGE + i, doc])));
+        const held = rows;
+        rows = new Map();
+        docs.forEach((page, k) => page.forEach((doc, i) => keepUnchanged((first + k) * PAGE + i, doc, held)));
         for (const page of pages) tried.add(page);
         if (!stay) {
           total = undefined;
