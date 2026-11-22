@@ -85,7 +85,7 @@ export const TABLES: readonly Table[] = [
         unit: "edits/s",
         at: FRAMEWORKS.yjs,
       },
-      { label: ["Yjs", "One keystroke typed at 60 Hz, with its persistence"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
+      { label: ["Yjs", "One keystroke typed at 60 Hz, main-thread time"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
       { label: ["Automerge", "Cold load of 500 notes"], workload: "automerge/many-docs", phase: "load", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
       { label: ["Automerge", "Write 500 notes"], workload: "automerge/many-docs", phase: "persist", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
       {
@@ -111,7 +111,7 @@ export const TABLES: readonly Table[] = [
       { head: "Automerge, kv vs IndexedDB", ratio: { of: "Automerge on kv", over: "automerge-repo IndexedDB" } },
     ],
     rows: [
-      { label: "One keystroke, with its persistence", phase: "type", metric: "mean:key" },
+      { label: "One keystroke, main-thread time", phase: "type", metric: "mean:key" },
       { label: "Frames dropped over 300 keystrokes", phase: "type", metric: "main:droppedFrames" },
       { label: "Cold open before the settle", phase: "reopen", metric: "wall" },
       { label: "Cold open after the settle", phase: "load", metric: "wall" },

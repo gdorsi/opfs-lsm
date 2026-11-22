@@ -52,7 +52,7 @@ export default defineWorkload({
         const live = (session = { doc, binding, count: (n) => ctx.bytes(n) });
         doc.on("update", (u: Uint8Array) => live.count(u.byteLength));
         for (const edit of head) await ctx.time("edit", 0, async () => apply(doc, edit));
-        await ctx.time("flush", 0, () => binding.flush());
+        await ctx.time("flush", 0, () => binding.flush(), 0);
       },
     },
     // The writer stops for longer than either library's idle delay (1 s) before it merges stored updates, as a real history has.
@@ -76,7 +76,7 @@ export default defineWorkload({
           });
           await paceTo(start + (i + 1) * KEY_MS);
         }
-        await ctx.time("flush", 0, () => binding.flush());
+        await ctx.time("flush", 0, () => binding.flush(), 0);
         ctx.carry.text = hashText(doc.getText("text").toString());
         ctx.carry.liveLogicalBytes = Y.encodeStateAsUpdate(doc).byteLength;
         await binding.detach();

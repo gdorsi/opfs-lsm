@@ -30,7 +30,7 @@ export default defineWorkload({
             urls.push(h.url);
           });
         }
-        await ctx.time("flush", 0, () => repo.flush());
+        await ctx.time("flush", 0, () => repo.flush(), 0);
         session = { repo, urls };
         ctx.carry.urls = urls;
       },

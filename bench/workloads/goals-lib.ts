@@ -31,8 +31,11 @@ type Script = {
   readonly reread: { readonly tx: unknown; readonly reads: readonly Read[] };
 };
 
-/** The history and oracle of the run on this page. Only `same` phases after `replay` see it. */
-let live: { readonly history: History<unknown>; readonly oracle: Oracle<GoalSpecMap, unknown> } | undefined;
+/**
+ * The history and oracle of the run on this page. Only `same` phases after `replay` see it. `recent` leaves its batches
+ * in `unfolded` for `prepare` to fold, so the oracle stays out of that phase's main-thread measurement.
+ */
+let live: { readonly history: History<unknown>; readonly oracle: Oracle<GoalSpecMap, unknown>; unfolded: readonly unknown[] } | undefined;
 
 export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>>(family: F, dataset: Dataset<S, Tx, O>): Workload<F> {
   const d = dataset as unknown as Dataset<GoalSpecMap, unknown, Oracle<GoalSpecMap, unknown>>;
@@ -57,22 +60,30 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     timed: true,
     async run(ctx) {
       const store = await storeOf(ctx);
-      live = { history: d.history(ctx.size, ctx.params.seed), oracle: d.oracle() };
+      live = { history: d.history(ctx.size, ctx.params.seed), oracle: d.oracle(), unfolded: [] };
+      const { oracle } = live;
       const { during, every, read } = d.duringLoad;
+      // Answers are compared after the last timed call, against a second copy of the seeded history: oracle work between
+      // calls would give stores that work in the background idle time a store committing in the call does not get, and
+      // holding the batches instead would keep the whole history in the page's heap. An answer is kept as canonical JSON,
+      // so a store that hands out objects it later changes is checked on what it returned at that batch.
+      const answers = new Map<number, string>();
       let n = 0;
       let matched = 0;
       for (const tx of live.history.load) {
-        live.oracle.apply(tx);
         const op = d.txOp(tx);
         await ctx.time(op, d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
         n++;
-        if (op === during && ++matched % every === 0) {
-          const got = await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0);
-          check(ctx, `${read.goal} after batch ${n}`, got, live.oracle.goals[read.goal]!(read.params));
-        }
+        if (op === during && ++matched % every === 0) answers.set(n, canonical(await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0)));
         if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
       }
-      ctx.carry.liveLogicalBytes = live.oracle.liveBytes();
+      n = 0;
+      for (const tx of d.history(ctx.size, ctx.params.seed).load) {
+        oracle.apply(tx);
+        const got = answers.get(++n);
+        if (got !== undefined) check(ctx, `${read.goal} after batch ${n}`, JSON.parse(got) as Json, oracle.goals[read.goal]!(read.params));
+      }
+      ctx.carry.liveLogicalBytes = oracle.liveBytes();
     },
   };
 
@@ -91,12 +102,13 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     mainThread: true,
     async run(ctx) {
       const store = await storeOf(ctx);
-      const { history, oracle } = running();
-      for (const tx of history.recent()) {
-        oracle.apply(tx);
+      const run = running();
+      const batches = [...run.history.recent()];
+      for (const tx of batches) {
         await ctx.time(d.txOp(tx), d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
         await yieldTask();
       }
+      run.unfolded = batches;
     },
   };
 
@@ -106,7 +118,10 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     timed: false,
     footprint: true,
     async run(ctx) {
-      const { oracle } = running();
+      const run = running();
+      const { oracle } = run;
+      for (const tx of run.unfolded) oracle.apply(tx);
+      run.unfolded = [];
       ctx.carry.liveLogicalBytes = oracle.liveBytes();
       const goals: Record<string, { bindings: readonly JsonRow[]; expected: Json[] }> = {};
       for (const [goal, meta] of Object.entries(d.goals)) {

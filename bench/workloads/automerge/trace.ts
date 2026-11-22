@@ -65,7 +65,7 @@ export default defineWorkload({
             group.length,
           );
         }
-        await ctx.time("flush", 0, () => repo.flush());
+        await ctx.time("flush", 0, () => repo.flush(), 0);
       },
     },
     {
@@ -87,7 +87,7 @@ export default defineWorkload({
           });
           await paceTo(start + (i + 1) * KEY_MS);
         }
-        await ctx.time("flush", 0, () => repo.flush());
+        await ctx.time("flush", 0, () => repo.flush(), 0);
         ctx.carry.url = handle.url;
         ctx.carry.text = hashText(handle.doc()?.text ?? "");
         ctx.carry.liveLogicalBytes = (await repo.export(handle.documentId))?.byteLength ?? 0;

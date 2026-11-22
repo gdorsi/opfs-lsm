@@ -16,7 +16,7 @@ export default defineContender({
   family: "tanstack-live",
   durability: "sqlite-full",
   fastPath:
-    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker), a collection per entity; createIndex on the issue fields the screens filter and sort by, and on id, which become SQLite expression indexes; a batch's changes to stored rows first hold those rows with a live query on their ids, then insert, update and delete with an array = one TanStack transaction = one SQLite transaction",
+    "persistedCollectionOptions with syncMode on-demand on createBrowserWASQLitePersistence (wa-sqlite, OPFSCoopSyncVFS, in a dedicated WebWorker), a collection per entity; createIndex on the issue fields the screens filter and sort by, and on id, which become SQLite expression indexes; a batch's changes to stored rows first hold those rows with a live query on their ids, then insert, update and delete in one createTransaction whose mutationFn calls utils.acceptMutations = one SQLite transaction",
   engine: false,
   async open(name) {
     const database = await openBrowserWASQLiteOPFSDatabase({ databaseName: `tanstack-live-${name}.sqlite` });
