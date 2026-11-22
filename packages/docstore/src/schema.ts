@@ -54,6 +54,14 @@ type TextBy<T> = readonly [ScalarPath<T>, ...ScalarPath<T>[]] | ScalarPath<T>;
 /** Top-level fields of `T`, at least one. */
 type Include<T> = readonly [keyof T & string, ...(keyof T & string)[]];
 
+/**
+ * Which documents a partial index holds: per field, the value it must have or a list of the values it may have.
+ * A document is in the index when every field holds one of its values.
+ */
+type Condition<T> = { readonly [P in ScalarPath<T>]?: At<T, P> | readonly At<T, P>[] };
+
+type WhereOption<T> = { readonly where?: Condition<T> | undefined };
+
 /** The error an index name already in use gets: the name is a parameter of a type that no string has. */
 type Free<Ix, N extends string> = N extends keyof Ix ? "an index of this name is already declared" : N;
 
@@ -73,6 +81,10 @@ type Validator = StandardSchemaV1<unknown, JsonDoc>;
  * a list of fields. An array field is written with a `[]` suffix and only the
  * first may be one: the index then has one entry per distinct element, each
  * followed by the rest of `by`.
+ *
+ * Every kind takes `where`, which makes the index hold only the documents
+ * whose fields have the given values. A missing field, an array or an object
+ * is not one of them.
  */
 export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
   /** The indexes declared so far, by name, as the stored catalog reads them. */
@@ -81,11 +93,6 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
   readonly validator?: Validator | undefined;
   readonly [docType]?: T;
   readonly [inputType]?: In;
-  /** A sorted index. */
-  index<const N extends string, const B extends By<T>>(
-    name: Free<Ix, N>,
-    by: B,
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }, In>;
   /**
    * A sorted index whose entries also hold the top-level fields `include` of
    * their document, which `queryEntries` returns without reading it.
@@ -93,12 +100,19 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
   index<const N extends string, const B extends By<T>, const F extends Include<T>>(
     name: Free<Ix, N>,
     by: B,
-    options: { readonly include: F },
+    options: WhereOption<T> & { readonly include: F },
   ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly include: F } }, In>;
-  /** A sorted index in which no two documents share the values at `by`. */
+  /** A sorted index. */
+  index<const N extends string, const B extends By<T>>(
+    name: Free<Ix, N>,
+    by: B,
+    options?: WhereOption<T>,
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }, In>;
+  /** A sorted index in which no two documents it holds share the values at `by`. */
   unique<const N extends string, const B extends By<T>>(
     name: Free<Ix, N>,
     by: B,
+    options?: WhereOption<T>,
   ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly unique: true } }, In>;
   /**
    * A sorted index whose entries also carry the words of the string field
@@ -108,6 +122,7 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
     name: Free<Ix, N>,
     by: B,
     text: X,
+    options?: WhereOption<T>,
   ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly text: X } }, In>;
 }
 
@@ -119,11 +134,11 @@ class Declaration {
   index(name: string, by: unknown, option?: object): never {
     return new Declaration({ ...this.indexes, [name]: { by, ...option } }, this.validator) as never;
   }
-  unique(name: string, by: unknown): never {
-    return this.index(name, by, { unique: true });
+  unique(name: string, by: unknown, option?: object): never {
+    return this.index(name, by, { ...option, unique: true });
   }
-  text(name: string, by: unknown, text: unknown): never {
-    return this.index(name, by, { text });
+  text(name: string, by: unknown, text: unknown, option?: object): never {
+    return this.index(name, by, { ...option, text });
   }
 }
 
@@ -173,6 +188,9 @@ export type DocOf<S extends Schema, C extends CollectionName<S>> = DocsOf<S>[C];
 export type InputOf<S extends Schema, C extends CollectionName<S>> = InputsOf<S>[C];
 export type IndexesOf<S extends Schema, C extends CollectionName<S>> = S["collections"][C]["indexes"];
 
+/** A condition as stored: pairs sorted by path, each path's values distinct and sorted by their JSON text. */
+export type StoredCondition = readonly (readonly [path: string, values: readonly Scalar[]])[];
+
 /** What a declared index is, for layers that plan queries. */
 export type IndexInfo = {
   readonly kind: "sorted" | "multi" | "text";
@@ -183,6 +201,11 @@ export type IndexInfo = {
   readonly text?: string;
   /** The top-level fields a sorted or multi index holds in its entries. */
   readonly include?: readonly string[];
+  /**
+   * Absent: the index holds every document that has its `by` fields. Else it
+   * holds the documents whose value at each path is one of the listed ones.
+   */
+  readonly where?: StoredCondition;
 };
 
 declare const cursorBrand: unique symbol;

@@ -2,10 +2,13 @@ import type { QueryInput, Scalar } from "../src/schema.js";
 import { compareCodePoints, compareScalar, compareTuple } from "./order.js";
 
 /** An index as the oracle reads it, written from the schema rules rather than from the stored layout. */
-export type ModelIndex =
+export type ModelIndex = (
   | { readonly kind: "unique"; readonly on: readonly string[] }
   | { readonly kind: "sorted" | "multi"; readonly on: readonly string[]; readonly include?: readonly string[] }
-  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string };
+  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string }
+) & {
+  readonly where?: Readonly<Record<string, readonly Scalar[]>>;
+};
 
 type Doc = { readonly id: string; readonly [key: string]: unknown };
 type Hit = { readonly id: string; readonly values: readonly Scalar[]; readonly doc: Doc };
@@ -31,6 +34,7 @@ function wordsOf(text: string): string[] {
 }
 
 function entries(doc: Doc, ix: ModelIndex): Scalar[][] {
+  if (Object.entries(ix.where ?? {}).some(([path, listed]) => !listed.some((v) => at(doc, path) === v))) return [];
   const values = ix.on.map((p) => at(doc, p));
   if (values.some((v) => v === undefined)) return [];
   if (ix.kind === "text" && typeof at(doc, ix.text) !== "string") return [];
