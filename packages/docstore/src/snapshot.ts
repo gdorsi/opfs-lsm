@@ -111,19 +111,20 @@ async function mergeEntries<V>(snap: ViewSnapshot, plan: Merge, value: Decode<V>
 /** What a read plans: its target, the page size, and either the one range to scan or the ranges to merge. */
 type Plan = Merge & { readonly target: ScanTarget; readonly limit: number | undefined; readonly range: Range | undefined };
 
-/** What a point read needs of kv: a `Db` and a view snapshot both fit. */
-type PointSource = Pick<ViewSnapshot, "getMany">;
-
 /**
- * The point reads of one collection. `coll` must come from the catalog that
- * `source` holds. Over a live `Db`, only point reads are safe: a scan could
- * straddle a `clear`.
+ * The one implementation of every read. `coll` comes from the catalog that
+ * `snap` holds, so its prefixes and readable indexes match the data for good:
+ * no later `clear` or schema change reaches them.
  */
-export class PointReader<T extends JsonDoc> {
+export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot<T, Ix> {
+  readonly seq: number;
+
   constructor(
-    protected readonly snap: PointSource,
-    protected readonly coll: BoundCollection,
-  ) {}
+    private readonly snap: ViewSnapshot,
+    private readonly coll: BoundCollection,
+  ) {
+    this.seq = snap.seq;
+  }
 
   async get(id: string): Promise<T | undefined> {
     return (await this.getMany([id]))[0];
@@ -133,22 +134,6 @@ export class PointReader<T extends JsonDoc> {
   async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
     const keys = ids.map((id) => concat(this.coll.rows.prefix, idBytes(parseId(id))));
     return (await this.snap.getMany(keys, decodeDoc)) as unknown as (T | undefined)[];
-  }
-}
-
-/**
- * The one implementation of every read. The prefixes and readable indexes
- * match the data for good: no later `clear` or schema change reaches them.
- */
-export class SnapshotReader<T extends JsonDoc, Ix> extends PointReader<T> implements CollectionSnapshot<T, Ix> {
-  readonly seq: number;
-
-  constructor(
-    protected override readonly snap: ViewSnapshot,
-    coll: BoundCollection,
-  ) {
-    super(snap, coll);
-    this.seq = snap.seq;
   }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
