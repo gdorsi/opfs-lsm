@@ -95,10 +95,10 @@ bench:
         setup: kv settles by moving recent writes from its log into sorted files
         note: No frames dropped while typing, on any of the four. automerge-repo saves at most every 100 ms, so most Automerge keystrokes write nothing.
         rows:
-          - { measure: "Yjs: one keystroke, with its persistence", ours: 0.156 ms, theirs: 0.130 ms, ratio: 0.83× ‡ }
+          - { measure: "Yjs: one keystroke, main-thread time", ours: 0.156 ms, theirs: 0.130 ms, ratio: 0.83× ‡ }
           - { measure: "Yjs: reopening right after typing", ours: 16.5 ms, theirs: 8.36 ms, ratio: 0.50× }
           - { measure: "Yjs: reopening once kv has settled", ours: 16.5 ms, theirs: 8.20 ms, ratio: 0.50× }
-          - { measure: "Automerge: one keystroke, with its persistence", ours: 0.521 ms, theirs: 0.288 ms, ratio: 0.55× ‡ }
+          - { measure: "Automerge: one keystroke, main-thread time", ours: 0.521 ms, theirs: 0.288 ms, ratio: 0.55× ‡ }
           - { measure: "Automerge: reopening right after typing", ours: 63.6 ms, theirs: 59.0 ms, ratio: 0.93× }
           - { measure: "Automerge: reopening once kv has settled", ours: 66.3 ms, theirs: 58.8 ms, ratio: 0.89× }
   - title: Against SQLite on OPFS

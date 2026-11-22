@@ -41,7 +41,7 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | TanStack DB | Serial insert, one row per transaction | 3.30k rows/s † | 5.04k rows/s | 1.5× ‡ |
 | Yjs | Cold load of 500 notes | 1.90k notes/s † | 8.78k notes/s † | 4.6× |
 | Yjs | Editing trace written in one burst, 25,700 updates with no yield between keystrokes | 2.13k edits/s † | 18.5k edits/s | 8.7× |
-| Yjs | One keystroke typed at 60 Hz, with its persistence | 0.130 ms † | 0.156 ms † | 0.83× ‡ |
+| Yjs | One keystroke typed at 60 Hz, main-thread time | 0.130 ms † | 0.156 ms † | 0.83× ‡ |
 | Automerge | Cold load of 500 notes | 1.33k notes/s | 2.02k notes/s | 1.5× |
 | Automerge | Write 500 notes | 627 notes/s | 668 notes/s | 1.1× |
 | fate | Cold load of 100 lists of 100 records | 1.18k records/s | 3.14k records/s | 2.7× |
@@ -57,12 +57,12 @@ The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexedd
 
 ### Typing, then reopening
 
-The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 60 Hz frame, one update each. Then they open the document cold in a fresh tab, once before kv settles and once after, at size `small`. A cold open is the whole phase: it opens the store, loads the document and checks its text. The last two columns are the IndexedDB option's time over kv's: below 1×, kv is slower.
+The editing-trace workloads write the trace's first 25,700 keystrokes, then type the last 300 at one per 60 Hz frame, one update each. A keystroke is timed from the edit to the end of the task after it: what persistence costs the main thread, not the time until the write is stored. Then they open the document cold in a fresh tab, once before kv settles and once after, at size `small`. A cold open is the whole phase: it opens the store, loads the document and checks its text. The last two columns are the IndexedDB option's time over kv's: below 1×, kv is slower.
 
 <!-- bench:table typing-reopening -->
 | | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv | Yjs, kv vs y-indexeddb | Automerge, kv vs IndexedDB |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| One keystroke, with its persistence | 0.130 ms † | 0.156 ms † | 0.288 ms † | 0.521 ms † | 0.83× ‡ | 0.55× ‡ |
+| One keystroke, main-thread time | 0.130 ms † | 0.156 ms † | 0.288 ms † | 0.521 ms † | 0.83× ‡ | 0.55× ‡ |
 | Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 | | |
 | Cold open before the settle | 8.36 ms | 16.5 ms | 59.0 ms | 63.6 ms | 0.50× | 0.93× |
 | Cold open after the settle | 8.20 ms | 16.5 ms | 58.8 ms | 66.3 ms | 0.50× | 0.89× |
