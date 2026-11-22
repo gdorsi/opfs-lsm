@@ -102,7 +102,7 @@ export class PageCache {
       p = started;
       this.loading.set(key, p);
     }
-    return new Miss(p);
+    return new Miss(p, admit === "meta");
   }
 
   /** Drops a run's entries. Its loads still in flight land and are discarded. */

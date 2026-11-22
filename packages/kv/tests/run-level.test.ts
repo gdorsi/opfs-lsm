@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
-import { untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
+import { Miss, untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
 import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { scanStep } from "../src/view.js";
 import type { SstEntry } from "../src/store/sst.js";
@@ -36,6 +36,22 @@ function layout() {
     ...l2.map((_, i) => `l2/c1.${i}-0.sst`),
   ];
   return { paths, readers: [...l0, ...l1, ...l2] };
+}
+
+/** The bodies of `layout`, newest first, with the same paths. */
+function layoutBodies() {
+  const body = (keys: number[], tag: string) =>
+    encodeSstRef(keys.map((i): SstEntry => (i % 5 === 0 ? { kind: "del", key: key(i), seq: 1 } : { kind: "put", key: key(i), value: enc.encode(`${tag}${i}`), seq: 1 })), 64);
+  const l2 = [[0, 30], [40, 70], [75, 120]].map(([a, b]) => body(range(a!, b!, 1), "l2:"));
+  const l1 = [[10, 50], [60, 90]].map(([a, b]) => body(range(a!, b!, 3), "l1:"));
+  const l0 = [body(range(5, 100, 7), "l0a:"), body(range(0, 110, 11), "l0b:")];
+  return { paths: layout().paths, bodies: [...l0, ...l1, ...l2] };
+}
+
+/** A reader of `body` that calls `counted` for each file read. */
+function countedReader(body: Uint8Array, counted: () => void): SstReader {
+  const file = bytesFile(body);
+  return new SstReader({ size: file.size, read: (offset, length) => (counted(), file.read(offset, length)) }, new PageCache(), sstKeyRange(body));
 }
 
 function range(from: number, to: number, step: number): number[] {
@@ -94,6 +110,47 @@ describe("runLevels", () => {
       const want = all.find((e) => e !== undefined);
       expect(show(await untilHit(() => ownedEntry(latestSstEntry(levels, key(i)), key(i))))).toEqual(show(want));
     }
+  });
+
+  it("a cold get starts the layout read of every level whose range holds the key at once", () => {
+    for (let i = -2; i < 125; i++) {
+      const { paths, bodies } = layoutBodies();
+      const reads = bodies.map(() => 0);
+      const readers = bodies.map((body, r) => countedReader(body, () => reads[r]!++));
+      const got = latestSstEntry(runLevels(paths, readers), key(i));
+      const holding = bodies.map((body) => {
+        const { smallest, largest } = sstKeyRange(body)!;
+        return compareBytes(smallest, key(i)) <= 0 && compareBytes(key(i), largest) <= 0 ? 1 : 0;
+      });
+      expect(got instanceof Miss, `key ${i}`).toBe(holding.includes(1));
+      expect(reads, `key ${i}`).toEqual(holding);
+    }
+  });
+
+  it("a cold get of a key the newest level holds reads no page of an older level", async () => {
+    const versions = ["new", "mid", "old"].map((tag) => encodeSstRef([{ kind: "put", key: key(1), value: enc.encode(tag), seq: 1 }], 64));
+    const reads = versions.map(() => 0);
+    const readers = versions.map((body, r) => countedReader(body, () => reads[r]!++));
+    const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst", "l1/c1.0-0.sst"], readers);
+    const got = await untilHit(() => ownedEntry(latestSstEntry(levels, key(1)), key(1)));
+    expect(got?.kind === "put" && dec.decode(got.value)).toBe("new");
+    expect(reads[0]).toBe(2);
+    for (const older of reads.slice(1)) expect(older).toBeLessThanOrEqual(1);
+  });
+
+  it("an older run that fails to load fails only the reads that reach it", async () => {
+    const newer = encodeSstRef([{ kind: "put", key: key(1), value: enc.encode("new"), seq: 2 }], 64);
+    const older = encodeSstRef([1, 2].map((i) => ({ kind: "put" as const, key: key(i), value: enc.encode("old"), seq: 1 })), 64);
+    const broken = new Error("unreadable run");
+    const open = () => runLevels(["l0/2-2.sst", "l1/c1.0-0.sst"], [
+      readerOfBytes(newer),
+      new SstReader({ size: older.byteLength, read: () => Promise.reject(broken) }, new PageCache(), sstKeyRange(older)),
+    ]);
+    const levels = open();
+    const got = await untilHit(() => ownedEntry(latestSstEntry(levels, key(1)), key(1)));
+    expect(got?.kind === "put" && dec.decode(got.value)).toBe("new");
+    const fresh = open();
+    await expect(untilHit(() => latestSstEntry(fresh, key(2)))).rejects.toBe(broken);
   });
 
   it("keeps runs in key order inside a level", async () => {
