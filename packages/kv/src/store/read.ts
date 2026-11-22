@@ -5,7 +5,6 @@ import {
   compareEntries,
   entryCursor,
   filterCursor,
-  LayoutMiss,
   lowerBoundKeys,
   Miss,
   untilHit,
@@ -124,25 +123,17 @@ export function latestSstEntry(
   levels: readonly RunLevel[],
   key: Uint8Array,
 ): Maybe<RecordWalker | undefined> {
-  let misses: Miss[] | undefined;
+  let first: Miss | undefined;
   for (const level of levels) {
     const hit = level.get(key);
-    if (hit === undefined) continue;
-    if (!(hit instanceof Miss)) return misses ? walkMiss(misses) : hit;
-    (misses ??= []).push(hit);
-    if (!(hit instanceof LayoutMiss)) break;
+    if (hit instanceof Miss) {
+      // An older level's load runs on: a retry that reaches it joins it, and a read that never does neither waits for it nor fails with it.
+      if (first) hit.ready.catch(() => undefined);
+      else first = hit;
+      if (!hit.layout) break;
+    } else if (hit) return first ?? hit;
   }
-  return misses && walkMiss(misses);
-}
-
-/**
- * The newest level's Miss. The loads of the older levels go on without it:
- * a retry that reaches them joins them, and a read that never does neither
- * waits for them nor fails with them.
- */
-function walkMiss(misses: readonly Miss[]): Miss {
-  for (let i = 1; i < misses.length; i++) misses[i]!.ready.catch(() => undefined);
-  return misses[0]!;
+  return first;
 }
 
 type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };

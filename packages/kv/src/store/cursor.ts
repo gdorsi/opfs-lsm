@@ -238,11 +238,12 @@ export type Fill = readonly [key: number, value: unknown];
  * their positions.
  */
 export class Miss {
-  constructor(readonly ready: Promise<readonly Fill[]>) {}
+  /** `layout` is true when the bytes are a run's layout, so the run cannot yet say whether it may hold a key. */
+  constructor(
+    readonly ready: Promise<readonly Fill[]>,
+    readonly layout = false,
+  ) {}
 }
-
-/** A Miss for a run's layout alone: the run cannot yet say whether it may hold the key. */
-export class LayoutMiss extends Miss {}
 
 export type Maybe<T> = T | Miss;
 

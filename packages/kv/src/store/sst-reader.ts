@@ -3,7 +3,7 @@ import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomMightContain, type BloomFilter } from "./bloom.js";
-import { filterCursor, LayoutMiss, Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
+import { filterCursor, Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   blockBytes,
@@ -94,7 +94,7 @@ export class SstReader {
    */
   get(key: Uint8Array): Maybe<RecordWalker | undefined> {
     const meta = this.meta();
-    if (meta instanceof Miss) return new LayoutMiss(meta.ready);
+    if (meta instanceof Miss) return meta;
     const { index } = meta;
     if (meta.entryCount === 0 || compareBytes(key, index.last) > 0) return undefined;
     if (!bloomMightContain(meta.bloom, key)) return undefined;
