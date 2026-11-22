@@ -146,14 +146,14 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
       const next = trimPage(page, (h) => h.key, limit);
       return { docs: page.map((h) => h.value as unknown as T), ...next };
     }
-    const rowKey = (h: Entry) => entryRowKey(target, h.key, h.value);
+    const rowOf = (h: Entry) => entryRowKey(target, h.key, h.value);
     if (!range) {
       const page = await mergeEntries(this.snap, plan, (bytes) => bytes);
       const next = trimPage(page, (h) => h.key, limit);
-      const docs = await this.snap.getMany(page.map(rowKey), decodeDoc);
+      const docs = await this.snap.getMany(page.map(rowOf), decodeDoc);
       return { docs: docs.map((doc) => this.present(doc)), ...next };
     }
-    const hits = await this.snap.rangeJoin(range, (h) => (left-- > 0 ? rowKey(h) : undefined), decodeDoc);
+    const hits = await this.snap.rangeJoin(range, (h) => (left-- > 0 ? rowOf(h) : undefined), decodeDoc);
     const next = trimPage(hits, (h) => h.entry.key, limit);
     return { docs: hits.map(({ joined }) => this.present(joined)), ...next };
   }

@@ -35,6 +35,7 @@ describe("values a read hands out", () => {
     const mark = (r: number, i: number) => ((r * n + i) % 251) + 1;
     reads.forEach((values, r) => {
       expect(values.map((v) => v!.length)).toEqual(keys.map((_, i) => value(i).length));
+      expect(values.filter((v) => v!.byteOffset % 8 !== 0)).toEqual([]);
       values.forEach((v, i) => v!.fill(mark(r, i)));
     });
     reads.forEach((values, r) => values.forEach((v, i) => expect(v!.every((b) => b === mark(r, i))).toBe(true)));

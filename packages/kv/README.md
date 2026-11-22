@@ -76,8 +76,9 @@ await db.get(key);                    // => undefined
 
 // Every value a read returns is a copy you may change. A copy of
 // 65 bytes to 1 KiB shares its ArrayBuffer with other copies, as
-// Node's Buffer pool does: read it through byteOffset and
-// byteLength, and slice() it before you post or store its buffer.
+// Node's Buffer pool does: read it through byteOffset, a multiple
+// of 8, and byteLength, and slice() it before you post or store its
+// buffer.
 
 await db.put(new Uint8Array(9 * 1024), value);
 // throws ConstraintError. Keys are at most 8 KiB.

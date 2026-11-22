@@ -128,7 +128,7 @@ const scans: [string, Scan][] = [
 ];
 
 describe.each(scans)("%s as an async iterator", (_what, scan) => {
-  it("yields every entry in key order, each a fresh entry whose arrays own their buffers", async () => {
+  it("yields every entry in key order, each a fresh entry whose arrays own their buffers, as values of at most 64 bytes do", async () => {
     const { db } = await seeded();
     const { it: iter, finish } = await scan(db);
     const got: Entry[] = [];
