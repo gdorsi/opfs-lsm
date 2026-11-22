@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
 
@@ -16,6 +17,10 @@ function file(failAt?: number) {
 }
 
 const bytesAt = (offset: number, length: number) => Uint8Array.from({ length }, (_, i) => (offset + i) % 251);
+
+/** Whether `bytes` are the `length` bytes of the file at `offset`, without building them. */
+const isAt = (bytes: Uint8Array, offset: number, length: number) =>
+  bytes.byteLength === length && bytes.every((b, i) => b === (offset + i) % 251);
 
 describe("coalesceReads", () => {
   it("serves neighbouring reads of one task with one span", async () => {
@@ -90,6 +95,22 @@ describe("coalesceReads", () => {
     expect(a!.buffer).toBe(b!.buffer);
     expect(a!.buffer.byteLength).toBe(200);
     expect([a!.byteOffset, b!.byteOffset]).toEqual([0, 100]);
+  });
+
+  it("gives every read of a batch the bytes it gets alone, however the ranges overlap or nest", async () => {
+    const want = fc.record({
+      offset: fc.oneof(fc.integer({ min: 0, max: 512 }), fc.integer({ min: 0, max: 3 * MiB / 2 })),
+      length: fc.oneof(fc.integer({ min: 0, max: 512 }), fc.integer({ min: 0, max: 160 * KiB })),
+    });
+    await fc.assert(
+      fc.asyncProperty(fc.array(want, { minLength: 1, maxLength: 8 }), async (wants) => {
+        const f = file();
+        const got = await Promise.all(wants.map((w) => f.read(w.offset, w.length)));
+        const wrong = wants.findIndex((w, i) => !isAt(got[i]!, w.offset, w.length));
+        expect(wrong).toBe(-1);
+      }),
+      { numRuns: 100 },
+    );
   });
 
   it("rejects the reads of a failed span and no others", async () => {
