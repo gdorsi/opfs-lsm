@@ -147,6 +147,12 @@ export class JsonBatch<V extends Record<string, unknown> = StoredDoc> {
 
   private flush(): void {
     if (this.pending === 0) return;
+    if (this.pending === 1) {
+      this.out.push(this.object(JSON.parse(fromUtf8.decode(this.buf!.subarray(1, this.length)))));
+      this.length = 0;
+      this.pending = 0;
+      return;
+    }
     this.buf![this.length] = 0x5d;
     const values: unknown = JSON.parse(fromUtf8.decode(this.buf!.subarray(0, this.length + 1)));
     // A value that is not one JSON document could shift the others into its slot.
