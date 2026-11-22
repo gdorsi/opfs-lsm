@@ -116,22 +116,6 @@ function orderOf(clause: IR.OrderByClause | undefined): Order | undefined {
  */
 const usable = (info: IndexInfo) => info.kind !== "multi";
 
-/**
- * How many paths of a partial index's condition the `where` pins to exactly the listed values, past the first `k`
- * components of `by`, which the ranges already pin. Such a path narrows like a pinned component read in one range.
- * A path pinned to fewer values counts for nothing, since the index then holds rows the `where` rejects. Undefined
- * when the `where` accepts a row the index does not hold.
- */
-function exactPins(info: IndexInfo, facts: Facts, k: number): number | undefined {
-  let exact = 0;
-  for (const [path, listed] of info.where ?? []) {
-    const pinned = facts.pins.get(path);
-    if (!pinned || !pinned.every((v) => listed.includes(v))) return undefined;
-    if (pinned.length === listed.length && !info.by.slice(0, k).includes(path)) exact++;
-  }
-  return exact;
-}
-
 function matchOf(info: IndexInfo, facts: Facts): string | undefined {
   const words = info.text === undefined ? undefined : facts.words.get(info.text);
   return words && words.length > 0 ? words.join(" ") : undefined;
@@ -185,9 +169,8 @@ function boundsOn(path: string, facts: Facts): Pick<DocstoreQuery, "gt" | "gte" 
 
 /**
  * An index whose `by` is [pinned fields..., order field, ...], with the
- * longest pinned prefix, counting the paths of its condition the `where`
- * pins to exactly the listed values. One range per combination of pinned
- * values (the order path's own pins included), read in order and merged.
+ * longest pinned prefix. One range per combination of pinned values (the
+ * order path's own pins included), read in order and merged.
  *
  * The index puts null before every value. When TanStack wants nulls on the
  * other side, each range splits into its null rows and the rest, and the
@@ -200,12 +183,10 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
     if (!usable(info)) continue;
     const at = info.by.indexOf(order.path);
     if (at < 0 || pinnedPrefix(info.by, facts, at) < at) continue;
-    const served = exactPins(info, facts, at);
-    if (served === undefined) continue;
     const own = facts.pins.get(order.path)?.length ?? 1;
     if (combos(info.by, at, facts).length * own > MAX_RANGES) continue;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
-    choices.push({ name, info, k: at, score: [at + served, served, match, info.kind === "sorted" ? 1 : 0, -info.by.length] });
+    choices.push({ name, info, k: at, score: [at, match, info.kind === "sorted" ? 1 : 0, -info.by.length] });
   }
   const choice = best(choices);
   if (!choice) return undefined;
@@ -230,23 +211,19 @@ function orderedRanges(facts: Facts, order: Order, indexes: ReadonlyMap<string, 
 }
 
 /**
- * The index with the longest pinned prefix, counting the paths of its condition the `where` pins to exactly the
- * listed values, then the most such paths, then a bound on the next component, then a text match, then the fewest
- * components left unpinned: an index the `where` pins whole reads only the rows it matches. A partial index with
- * such a path serves a `where` that pins none of its components, by reading all of it.
+ * The index with the longest pinned prefix, then a bound on the next component, then a text match, then the fewest
+ * components left unpinned: an index the `where` pins whole reads only the rows it matches.
  */
 function unorderedRanges(facts: Facts, indexes: ReadonlyMap<string, IndexInfo>): Plan | undefined {
   const choices: Choice[] = [];
   for (const [name, info] of indexes) {
     if (!usable(info)) continue;
     const k = pinnedPrefix(info.by, facts, info.by.length);
-    const served = exactPins(info, facts, k);
-    if (served === undefined) continue;
     const next = info.by[k];
     const bounded = next !== undefined && (facts.lower.has(next) || facts.upper.has(next)) ? 1 : 0;
     const match = matchOf(info, facts) === undefined ? 0 : 1;
-    if (k + served === 0 && !bounded && !match) continue;
-    choices.push({ name, info, k, score: [k + served, served, bounded, match, -info.by.length, info.kind === "sorted" ? 1 : 0] });
+    if (k === 0 && !bounded && !match) continue;
+    choices.push({ name, info, k, score: [k, bounded, match, -info.by.length, info.kind === "sorted" ? 1 : 0] });
   }
   const choice = best(choices);
   if (!choice) return undefined;

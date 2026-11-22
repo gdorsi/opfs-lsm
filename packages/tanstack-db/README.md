@@ -58,7 +58,7 @@ const status1 = createLiveQueryCollection((q) =>
 // reads byStatus [1]
 ```
 
-**Note.** A document without an indexed field has no entry in that index, so a load through it misses the document. Store `null` instead. A [partial index](../docstore/README.md#partial-indexes) is read only by a query that pins each field of its `where` to values the index lists, since the index holds no other document. `isNull` pins nothing, so an index whose `where` lists only `null` is never read.
+**Note.** A document without an indexed field has no entry in that index, so a load through it misses the document. Store `null` instead.
 
 ## Transact
 

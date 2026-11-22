@@ -19,7 +19,6 @@ const schema = defineSchema({
     issues: collection<Issue>()
       .index("byModified", ["deleted", "modified"])
       .index("byStatus", ["deleted", "status", "modified"])
-      .index("openByModified", "modified", { where: { status: [0, 1, 2] } })
       .text("search", ["deleted", "modified"], "title"),
   },
 });
@@ -148,45 +147,6 @@ test("a search reads the text index with the pattern's words", async () => {
   assert.equal(rows.length, 10);
   assert.ok(log.every((r) => r.index === "search"), JSON.stringify(log));
   assert.ok(read < 40, `read ${read} documents of ${N}`);
-});
-
-test("a window of a list that pins a status of a partial index reads that index only", async () => {
-  const { log, rows, read } = await serve((c) =>
-    createLiveQueryCollection((q) =>
-      q
-        .from({ i: c })
-        .where(({ i }) => inArray(i.status, [1, 2]))
-        .orderBy(({ i }) => i.modified, { direction: "desc", nulls: "last" })
-        .limit(10),
-    ),
-  );
-  const want = expected((i) => i.status === 1 || i.status === 2).sort((a, b) => b.modified - a.modified).slice(0, 10);
-  assert.deepEqual(rows.map((r) => r.modified), want.map((i) => i.modified));
-  assert.ok(rows.every((r) => r.status === 1 || r.status === 2));
-  assert.ok(log.length > 0 && log.every((r) => r.index === "openByModified"), JSON.stringify(log));
-  assert.ok(read < 60, `read ${read} documents of ${N}`);
-});
-
-test("a where that pins a status the partial index lacks reads the rows it holds and the rows it does not", async () => {
-  const { log, rows } = await serve((c) =>
-    createLiveQueryCollection((q) =>
-      q
-        .from({ i: c })
-        .where(({ i }) => inArray(i.status, [2, 3]))
-        .orderBy(({ i }) => i.modified, { direction: "desc", nulls: "last" })
-        .limit(10),
-    ),
-  );
-  const want = expected((i) => i.status === 2 || i.status === 3).sort((a, b) => b.modified - a.modified).slice(0, 10);
-  assert.deepEqual(rows.map((r) => r.modified), want.map((i) => i.modified));
-  assert.ok(rows.some((r) => r.status === 3));
-  assert.ok(log.every((r) => r.index !== "openByModified"), JSON.stringify(log));
-});
-
-test("a where that pins no status still returns every matching row when a partial index exists", async () => {
-  const { rows } = await serve((c) => createLiveQueryCollection((q) => q.from({ i: c }).where(({ i }) => eq(i.deleted, false))));
-  assert.equal(rows.length, expected((i) => !i.deleted).length);
-  assert.ok(rows.some((r) => r.status === 3 || r.status === 4));
 });
 
 test("a string order without stringSort lexical reads every matching document", async () => {

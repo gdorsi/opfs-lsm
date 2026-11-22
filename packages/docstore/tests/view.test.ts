@@ -26,12 +26,6 @@ describe("indexes", () => {
         ["uniq", { kind: "sorted", by: ["u"], unique: true }],
         ["search", { kind: "text", by: ["a"], unique: false, text: "t" }],
         ["covered", { kind: "sorted", by: ["b", "a"], unique: false, include: ["t", "tags", "u"] }],
-        [
-          "partial",
-          { kind: "sorted", by: ["b"], unique: false, include: ["t", "u"], where: [["a", [0, 1, false, null, true]]] },
-        ],
-        ["partialUniq", { kind: "sorted", by: ["p"], unique: true, where: [["a", ["a", 0, 1, false, true]]] }],
-        ["partialSearch", { kind: "text", by: ["b"], unique: false, text: "t", where: [["a", [0, 1, false, null]]] }],
       ]),
     );
   });
