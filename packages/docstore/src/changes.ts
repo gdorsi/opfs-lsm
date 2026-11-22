@@ -1,11 +1,11 @@
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp, type Db } from "@opfs-lsm/kv";
 import { parseCatalog } from "./catalog.js";
-import { decodeDoc } from "./derive.js";
+import { decodeDocs, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, bytesEqual, compareBytes, hasPrefix, idOf, rowPrefix, type CollectionId } from "./keys.js";
 import type { JsonDoc } from "./schema.js";
 
-/** `doc` is parsed on first access, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
+/** The documents of an event are parsed together on the first access to any `doc`, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
 export type DocChange<T extends JsonDoc> = {
   readonly id: string;
   readonly deleted: boolean;
@@ -20,15 +20,24 @@ export type CollectionChange<T extends JsonDoc> =
   /** The last event. `reason` is kv's: "close" for the kv handle's `close()`, "destroyed" when its database was removed. */
   | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
 
-function docChange<T extends JsonDoc>(id: string, bytes: Uint8Array | undefined): DocChange<T> {
-  let parsed: T | undefined;
+/** `slot` is the change's place in `docs`, the documents of its kv record. */
+function docChange<T extends JsonDoc>(id: string, slot: number | undefined, docs: (slot: number) => StoredDoc): DocChange<T> {
   return {
     id,
-    deleted: bytes === undefined,
+    deleted: slot === undefined,
     get doc() {
-      return bytes && (parsed ??= decodeDoc(bytes) as unknown as T);
+      return slot === undefined ? undefined : (docs(slot) as unknown as T);
     },
   };
+}
+
+/**
+ * The documents of `puts`, all parsed on the first access to any. A listener
+ * reads every document of an event or none, so one batch is the cheapest.
+ */
+function lazyDocs(puts: readonly Uint8Array[]): (slot: number) => StoredDoc {
+  let docs: (StoredDoc | undefined)[] | undefined;
+  return (slot) => (docs ??= decodeDocs(puts))[slot]!;
 }
 
 /** Whether a key starting with `prefix` falls in the range of `op`. */
@@ -88,17 +97,22 @@ export function followCollection<T extends JsonDoc>(
 
   const append = (seq: number, ops: readonly ChangeOp[]) => {
     let changes: DocChange<T>[] = [];
+    let puts: Uint8Array[] = [];
+    let docs = lazyDocs(puts);
     for (const op of ops) {
       switch (op.type) {
         case "put":
         case "del":
           if (prefix && hasPrefix(op.key, prefix)) {
-            changes.push(docChange<T>(idOf(op.key, prefix.length), op.type === "put" ? op.value : undefined));
+            const slot = op.type === "put" ? puts.push(op.value) - 1 : undefined;
+            changes.push(docChange<T>(idOf(op.key, prefix.length), slot, docs));
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
             const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
             if (next === id) continue;
             if (changes.length > 0) emit({ kind: "append", seq, changes });
             changes = [];
+            puts = [];
+            docs = lazyDocs(puts);
             follow(next);
             emit({ kind: "gap" });
           }

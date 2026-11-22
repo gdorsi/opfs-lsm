@@ -1,6 +1,6 @@
 import { CorruptDatabaseError, type Decode, type Entry, type Range, type ViewSnapshot } from "@opfs-lsm/kv";
 import { readableTarget, type BoundCollection } from "./catalog.js";
-import { decodeDoc, decodeFields } from "./derive.js";
+import { JsonBatch, decodeDoc, fieldsBatch } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { compareBytes, decodeEntries, encodeCursor, entryRowKey, idOf, keyId, parseId, rowKey, scanPlan, type ScanPlan, type ScanTarget } from "./keys.js";
 import type { Cursor, EntryPageOf, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
@@ -49,13 +49,12 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
 
 const nothing = () => undefined;
 
-/** What `queryEntries` needs of an entry's value, decoded from the bytes where kv holds them. */
-const ENTRY_VALUE: { readonly [K in ScanTarget["kind"]]: Decode<unknown> } = {
+/** What `queryEntries` needs of an entry's value, decoded from the bytes where kv holds them. A covering entry's fields are parsed in a batch. */
+const ENTRY_VALUE: { readonly [K in Exclude<ScanTarget["kind"], "covering">]: Decode<unknown> } = {
   rows: nothing,
   sorted: nothing,
   text: nothing,
   unique: idOf,
-  covering: decodeFields,
 };
 
 type Merge = ScanPlan & { readonly reverse: boolean; readonly offset: number; readonly want: number | undefined };
@@ -130,10 +129,13 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     return (await this.getMany([id]))[0];
   }
 
-  /** One kv read for every row, parsed from the stored bytes with no copy between. */
+  /** One kv read for every row. A batch would only add a copy to the read of one. */
   async getMany(ids: readonly string[]): Promise<(T | undefined)[]> {
     const keys = ids.map((id) => rowKey(this.coll.rows.prefix, parseId(id)));
-    return (await this.snap.getMany(keys, decodeDoc)) as unknown as (T | undefined)[];
+    if (keys.length === 1) return (await this.snap.getMany(keys, decodeDoc)) as unknown as (T | undefined)[];
+    const batch = new JsonBatch();
+    const slots = await this.snap.getMany(keys, batch.add);
+    return slots.map(batch.done()) as unknown as (T | undefined)[];
   }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
@@ -141,21 +143,25 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     const { target, limit, range } = plan;
     // The entry past `limit` only says a next page exists, so its document is not read or parsed.
     let left = limit ?? Number.POSITIVE_INFINITY;
+    const batch = new JsonBatch();
     if (target.kind === "rows") {
-      const page = await this.snap.rangeValues(range!, (bytes) => (left-- > 0 ? decodeDoc(bytes) : undefined));
+      const page = await this.snap.rangeValues(range!, (bytes) => (left-- > 0 ? batch.add(bytes) : undefined));
       const next = trimPage(page, (h) => h.key, limit);
-      return { docs: page.map((h) => h.value as unknown as T), ...next };
+      const doc = batch.done();
+      return { docs: page.map((h) => doc(h.value) as unknown as T), ...next };
     }
     const rowOf = (h: Entry) => entryRowKey(target, h.key, h.value);
     if (!range) {
       const page = await mergeEntries(this.snap, plan, (bytes) => bytes);
       const next = trimPage(page, (h) => h.key, limit);
-      const docs = await this.snap.getMany(page.map(rowOf), decodeDoc);
-      return { docs: docs.map((doc) => this.present(doc)), ...next };
+      const slots = await this.snap.getMany(page.map(rowOf), batch.add);
+      const doc = batch.done();
+      return { docs: slots.map((slot) => this.present(doc(slot))), ...next };
     }
-    const hits = await this.snap.rangeJoin(range, (h) => (left-- > 0 ? rowOf(h) : undefined), decodeDoc);
+    const hits = await this.snap.rangeJoin(range, (h) => (left-- > 0 ? rowOf(h) : undefined), batch.add);
     const next = trimPage(hits, (h) => h.entry.key, limit);
-    return { docs: hits.map(({ joined }) => this.present(joined)), ...next };
+    const doc = batch.done();
+    return { docs: hits.map(({ joined }) => this.present(doc(joined))), ...next };
   }
 
   private present(doc: unknown): T {
@@ -179,9 +185,14 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     const { target, limit, range } = plan;
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
-    const decode = ENTRY_VALUE[target.kind];
+    const fields = target.kind === "covering" ? fieldsBatch() : undefined;
+    const decode = fields ? fields.add : ENTRY_VALUE[target.kind as keyof typeof ENTRY_VALUE];
     const page = await this.scan(plan, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
     const next = trimPage(page, (h) => h.key, limit);
+    if (fields) {
+      const value = fields.done();
+      for (const h of page) h.value = value(h.value as number | undefined);
+    }
     // One range shares its `eq` values. A merge holds entries of several combinations, each decoded whole.
     const entries = decodeEntries(target, page, range ? ((q as QueryInput).eq?.length ?? 0) : 0);
     return { entries, ...next } as EntryPageOf<T, Ix, I>;

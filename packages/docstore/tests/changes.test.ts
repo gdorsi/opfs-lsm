@@ -2,9 +2,10 @@ import { ingest } from "@opfs-lsm/kv/testing";
 import { ClosedError, type Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collection, defineSchema, openDocStore, type CollectionChange } from "../src/index.js";
-import { concat } from "../src/keys.js";
+import { encodeCatalog } from "../src/catalog.js";
+import { CATALOG_KEY, concat, rowPrefix, utf8, type CollectionId } from "../src/keys.js";
 import { schema, type Doc, type Docs } from "./docs.js";
-import { freshName, openKv, openKvWithoutBus, storedPrefix, wrap } from "./harness.js";
+import { freshName, openKv, openKvWithoutBus, storedCatalog, storedPrefix, wrap } from "./harness.js";
 
 const open: Db[] = [];
 afterEach(async () => {
@@ -133,6 +134,35 @@ describe("changes", () => {
     await writer.c.put({ id: "x", a: 1 });
     await reader.kv.sync();
     await settled(() => expect(summary(events)).toEqual(["+x"]));
+  });
+
+  it("gives the documents of one write, puts and deletes mixed, past 64 KiB and not ASCII", async () => {
+    const { c } = await handle();
+    const ids = Array.from({ length: 800 }, (_, i) => `d${i}`);
+    await c.putMany(ids.map((id) => ({ id, a: 0 })));
+    const { events } = listen(c);
+    const next = (id: string, i: number) => (i % 3 === 0 ? null : { id, a: i, t: `ünï ${"x".repeat(100)} \ud800 ${i}` });
+    await c.modifyMany(ids, () => ids.map(next));
+    await settled(() => expect(events).toHaveLength(1));
+    const [event] = events;
+    expect(event!.kind === "append" && event!.changes.map((ch) => ch.doc)).toEqual(ids.map((id, i) => next(id, i) ?? undefined));
+  });
+
+  it("gives each document of a kv record that a catalog change splits in two events, read as each arrives", async () => {
+    const { kv, c } = await handle();
+    await c.put({ id: "seed", a: 0 });
+    const catalog = await storedCatalog(kv);
+    const from = catalog.collections["docs"]!;
+    const to = catalog.nextCollectionId;
+    const seen: unknown[] = [];
+    c.changes((e) => e.kind === "append" && seen.push(...e.changes.map((ch) => ch.doc)));
+    const row = (id: number, doc: Doc) => [concat(rowPrefix(id as CollectionId), utf8.encode(doc.id)), utf8.encode(JSON.stringify(doc))] as const;
+    await kv.batch((tx) => {
+      tx.put(...row(from.id, { id: "before", a: 1 }));
+      tx.put(CATALOG_KEY, encodeCatalog({ ...catalog, nextCollectionId: to + 1, collections: { docs: { ...from, id: to } } }));
+      tx.put(...row(to, { id: "after", a: 2 }));
+    });
+    await settled(() => expect(seen).toEqual([{ id: "before", a: 1 }, { id: "after", a: 2 }]));
   });
 
   it("sends a gap for clear(), then reports the writes made after it, and nothing of the sweep", async () => {
