@@ -58,21 +58,28 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
     async run(ctx) {
       const store = await storeOf(ctx);
       live = { history: d.history(ctx.size, ctx.params.seed), oracle: d.oracle() };
+      const { oracle } = live;
       const { during, every, read } = d.duringLoad;
-      let n = 0;
+      // The history is generated lazily, so it is drawn whole, with each batch's timing inputs, before the first timed call.
+      const batches = [...live.history.load].map((tx) => ({ tx, op: d.txOp(tx), bytes: d.txBytes(tx), count: d.txCount(tx) }));
+      // Answers are kept and compared after the last timed call: oracle work between calls would lengthen the span and give
+      // background-working stores idle time that a store committing in the call does not get.
+      const answers: { readonly batch: number; readonly got: Json }[] = [];
       let matched = 0;
-      for (const tx of live.history.load) {
-        live.oracle.apply(tx);
-        const op = d.txOp(tx);
-        await ctx.time(op, d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
-        n++;
+      for (const [i, { tx, op, bytes, count }] of batches.entries()) {
+        await ctx.time(op, bytes, () => store.apply(tx), count);
         if (op === during && ++matched % every === 0) {
-          const got = await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0);
-          check(ctx, `${read.goal} after batch ${n}`, got, live.oracle.goals[read.goal]!(read.params));
+          answers.push({ batch: i + 1, got: await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0) });
         }
-        if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
+        if ((i + 1) % 500 === 0) ctx.progress(`replay: ${i + 1} batches`);
       }
-      ctx.carry.liveLogicalBytes = live.oracle.liveBytes();
+      let applied = 0;
+      for (const { batch, got } of answers) {
+        for (; applied < batch; applied++) oracle.apply(batches[applied]!.tx);
+        check(ctx, `${read.goal} after batch ${batch}`, got, oracle.goals[read.goal]!(read.params));
+      }
+      for (; applied < batches.length; applied++) oracle.apply(batches[applied]!.tx);
+      ctx.carry.liveLogicalBytes = oracle.liveBytes();
     },
   };
 
