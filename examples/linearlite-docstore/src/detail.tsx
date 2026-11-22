@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, For, onSettled, Show } from "solid-js";
 import type { App } from "./app.ts";
 import { shortDate, shortId } from "./issues.tsx";
 import { CodeLabel, codeItems, MenuButton } from "./menu.tsx";
@@ -12,7 +12,12 @@ export function Detail(props: { app: App; issue: Issue; detail: Details | undefi
   // A write from elsewhere shows at once, unless the title is being edited.
   const [draft, setDraft] = createSignal<string>((editing) => (editing !== undefined && document.activeElement === title ? editing : props.issue.title));
 
+  // Removing the page blurs a focused title after its issue is gone, and that blur saves nothing.
+  let open = true;
+  onSettled(() => () => (open = false));
+
   const save = () => {
+    if (!open) return;
     const next = draft().trim();
     if (next === "") setDraft(props.issue.title);
     else if (next !== props.issue.title) props.app.edit(props.issue.id, { title: next });

@@ -76,16 +76,12 @@ function Menu(props: { anchor: HTMLElement; items: Item[]; keepOpen: boolean; cl
 }
 
 function Entry(props: { item: Item; pick(choice: Choice): void }) {
-  return (
-    <>
-      {props.item === "separator" ? (
-        <div class="menu-sep" />
-      ) : "head" in props.item ? (
-        <div class="menu-head">{props.item.head}</div>
-      ) : (
-        <ChoiceItem choice={props.item} pick={props.pick} />
-      )}
-    </>
+  return props.item === "separator" ? (
+    <div class="menu-sep" />
+  ) : "head" in props.item ? (
+    <div class="menu-head">{props.item.head}</div>
+  ) : (
+    <ChoiceItem choice={props.item} pick={props.pick} />
   );
 }
 

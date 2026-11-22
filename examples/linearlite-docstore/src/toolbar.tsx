@@ -32,9 +32,10 @@ function Total(props: { total: number | undefined }) {
       show(to);
       return;
     }
-    const start = performance.now();
+    let start: number | undefined;
     let frame = 0;
     const step = (now: number) => {
+      start ??= now;
       const t = Math.min((now - start) / TWEEN_MS, 1);
       show(t === 1 ? to : Math.round(from + (to - from) * easeOut(t)));
       if (t < 1) frame = requestAnimationFrame(step);
