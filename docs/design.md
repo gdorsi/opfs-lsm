@@ -344,9 +344,9 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
 folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
-host flushes. The limit is the smallest any open tab asked for, and each tab asks for at most
-7/8 of its `memtableBytes`. The host also flushes after 2 s with no `rows` message when an
-eighth of the limit waits, so a tab that opens a quiet database replays a short tail.
+host flushes. The limit is the smallest any tab asked for until the last one closes, and each tab
+asks for at most 7/8 of its `memtableBytes`. The host also flushes after 2 s with no `rows` message
+when an eighth of the limit waits, so a tab that opens a quiet database replays a short tail.
 
 `openDb` registers the tab with the host. The host then measures the uningested records, so a
 database left over the limit catches up on open. The count only decides when to flush. Every
@@ -450,8 +450,8 @@ read or write fails, the host deletes every output and installs nothing.
 
 `openDb({ compactionMemoryBytes })`, 32 MiB by default and at least 8 MiB, is the memory the
 host may spend on flushing and compacting one database. It covers the wasm heap and the run
-data in flight. The host uses the smallest value any open tab passed. The other figures follow
-from it:
+data in flight. The host uses the smallest value any tab passed, until the last tab closes the
+database. The other figures follow from it:
 
 | Budget | `flushRunBytes` | `maxSources` | `l0StopRuns` | Read window | Recycle at |
 |---|---:|---:|---:|---:|---:|

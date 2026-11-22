@@ -189,7 +189,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port1.close();
   });
 
-  it("stops holding the host to a tab's maxWalBytes once that tab closes", async () => {
+  it("stops holding the host to a tab's maxWalBytes once the last tab closes", async () => {
     const fs = new MemoryFs();
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, new EngineHost(() => fs));
