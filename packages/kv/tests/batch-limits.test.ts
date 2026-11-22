@@ -95,6 +95,20 @@ describe("batch limits", () => {
     await db.close();
   });
 
+  it("stores a batch of exactly 8 MiB, counting 256 bytes per op, and rejects one byte more", async () => {
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
+    const limit = 8 * 1024 * 1024;
+    const [a, b] = [enc.encode("a"), enc.encode("b")];
+    await db.batch((tx) => {
+      tx.put(a, new Uint8Array(1000));
+      tx.put(b, new Uint8Array(limit - 2 * 256 - a.byteLength - b.byteLength - 1000));
+    });
+    expect((await db.get(b))?.byteLength).toBe(limit - 2 * 256 - 2 - 1000);
+    await expect(db.put(key(1), new Uint8Array(limit - 256 - key(1).byteLength + 1))).rejects.toBeInstanceOf(ConstraintError);
+    expect(await db.get(key(1))).toBeUndefined();
+    await db.close();
+  });
+
   it("rejects a batch over 8 MiB of keys and values and writes none of it", async () => {
     const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1" });
     const value = new Uint8Array(1024 * 1024);

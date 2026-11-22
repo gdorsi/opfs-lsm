@@ -118,6 +118,28 @@ describe("the seam that refuses WAL appends", () => {
     budget.limit += KiB;
     expect(await db.put(utf("k"), utf("v"))).toBe(1);
   });
+
+  it("reverts the key generator that an explicit key moved, as IndexedDB does when it aborts a transaction", async () => {
+    const db = await open(0);
+    fillOrigin();
+    const error = await new Promise<DOMException | null>((resolve, reject) => {
+      const req = indexedDB.open(`opfs-lsm-wal/${name}`);
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const tx = req.result.transaction("wal", "readwrite");
+        tx.objectStore("wal").add(new ArrayBuffer(8), 5);
+        tx.onabort = () => {
+          req.result.close();
+          resolve(tx.error);
+        };
+        tx.commit();
+      };
+    });
+    expect(error?.name).toBe("QuotaExceededError");
+
+    budget.limit += KiB;
+    expect(await db.put(utf("k"), utf("v"))).toBe(1);
+  });
 });
 
 describe("a WAL append the browser refuses", () => {
@@ -247,6 +269,36 @@ describe("a WAL append the browser refuses", () => {
     expect(makeRoom).toHaveBeenCalledTimes(1);
     expect(await walSeqs()).toEqual([1, 2, 3, 4]);
     expect([await read(db, "a"), await read(db, "b"), await read(db, "c")]).toEqual(["1", "2", "3"]);
+  });
+
+  it("holds the writes issued while an update's own transaction recovers, and lands them", async () => {
+    const a = await openFlushed();
+    const b = await open();
+    // b's put takes the seq a's update row names, so a's updates run in a transaction of their own from here.
+    await a.update([utf("first")], (_, tx) => {
+      void b.put(utf("b"), utf("2"));
+      tx.put(utf("a"), utf("1"));
+    });
+    const release = host.makeRoom.bind(host);
+    let asked!: () => void;
+    const recovering = new Promise<void>((resolve) => (asked = resolve));
+    let go!: () => void;
+    const held = new Promise<void>((resolve) => (go = resolve));
+    const makeRoom = vi.spyOn(host, "makeRoom").mockImplementation(async (n) => {
+      asked();
+      await held;
+      await release(n);
+    });
+    fillOrigin();
+
+    const refused = a.update([utf("first")], (_, tx) => tx.put(utf("c"), utf("3")));
+    await recovering;
+    const put = a.put(utf("d"), utf("4"));
+    go();
+
+    await Promise.all([refused, put]);
+    expect(makeRoom).toHaveBeenCalledTimes(1);
+    expect([await read(a, "a"), await read(a, "c"), await read(a, "d")]).toEqual(["1", "3", "4"]);
   });
 
   it("lands in two handles refused in the same turn, with one release", async () => {
