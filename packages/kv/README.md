@@ -74,6 +74,13 @@ await db.get(key);                    // => undefined
 // get and getMany read memory and SST files. They never touch
 // IndexedDB.
 
+// Every value a read returns is a copy you may change. A copy of
+// 65 bytes to 1 KiB shares its ArrayBuffer with other copies, as
+// Node's Buffer pool does: read it through byteOffset, a multiple
+// of 8, and byteLength. Posting or storing it clones the whole
+// shared buffer, and transferring that buffer detaches the other
+// copies, so slice() it before you post, store, transfer or keep it.
+
 await db.put(new Uint8Array(9 * 1024), value);
 // throws ConstraintError. Keys are at most 8 KiB.
 await db.put(key, new Uint8Array(9 << 20));

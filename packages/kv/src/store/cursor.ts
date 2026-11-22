@@ -1,4 +1,4 @@
-import { compareFrom, containsAll } from "../bytes.js";
+import { compareFrom, containsAll, copyOut } from "../bytes.js";
 import type { Entry } from "../db.js";
 import { asSeq, type Seq } from "../seq.js";
 
@@ -8,6 +8,13 @@ type Version = {
   /** The WAL seq that wrote the entry. */
   readonly seq: Seq;
 };
+
+/** The u64 seq at `block[o]`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
+export function seqIn(block: Uint8Array, o: number): Seq {
+  const low = (block[o]! | (block[o + 1]! << 8) | (block[o + 2]! << 16)) + block[o + 3]! * 2 ** 24;
+  const high = (block[o + 4]! | (block[o + 5]! << 8) | (block[o + 6]! << 16)) + block[o + 7]! * 2 ** 24;
+  return asSeq(low + high * 2 ** 32);
+}
 
 /** The prefix of a record whose block shares none. */
 export const NO_PREFIX = new Uint8Array(0);
@@ -39,15 +46,9 @@ export class BlockEntry {
     private readonly suffixLength: number,
   ) {}
 
-  /**
-   * The WAL seq that wrote the entry, read as two u32 halves, which is exact
-   * below 2^53. Read when asked: a scan needs it only under a range delete.
-   */
+  /** The WAL seq that wrote the entry. Read when asked: a scan needs it only under a range delete. */
   get seq(): Seq {
-    const { block, seqAt: o } = this;
-    const low = (block[o]! | (block[o + 1]! << 8) | (block[o + 2]! << 16)) + block[o + 3]! * 2 ** 24;
-    const high = (block[o + 4]! | (block[o + 5]! << 8) | (block[o + 6]! << 16)) + block[o + 7]! * 2 ** 24;
-    return asSeq(low + high * 2 ** 32);
+    return seqIn(this.block, this.seqAt);
   }
 
   /** A copy that owns its buffer, made once. */
@@ -159,11 +160,9 @@ export function valueOf(e: LayerEntry): Uint8Array {
   return e.block ? e.block.subarray(e.valueAt, e.valueAt + e.valueLength) : e.value!;
 }
 
-/** A put as a read hands it out: a key and a value that own their buffers. */
+/** A put as a read hands it out: a key that owns its buffer and a value `copyOut` made. */
 export function entryOf(e: LayerEntry): Entry {
-  return e.block
-    ? { key: e.key, value: e.block.slice(e.valueAt, e.valueAt + e.valueLength) }
-    : { key: new Uint8Array(e.key), value: new Uint8Array(e.value!) };
+  return { key: e.block ? e.key : new Uint8Array(e.key), value: copyOut(valueOf(e)) };
 }
 
 export type ScanBounds = {

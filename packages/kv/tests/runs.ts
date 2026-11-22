@@ -26,7 +26,7 @@ export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstRead
 /** What a run's `get` found, as an entry that owns its value. A Miss passes through. */
 export function ownedEntry(at: Maybe<RecordWalker | undefined>, key: Uint8Array): Maybe<SstEntry | undefined> {
   if (at === undefined || at instanceof Miss) return at;
-  return at.isPut() ? { kind: "put", key, value: at.value(), seq: at.seq() } : { kind: "del", key, seq: at.seq() };
+  return at.isPut() ? { kind: "put", key, value: at.valueInPlace().slice(), seq: at.seq() } : { kind: "del", key, seq: at.seq() };
 }
 
 /** `reader.get(key)` once its bytes are loaded, as `ownedEntry` gives it. */

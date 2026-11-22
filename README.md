@@ -1,6 +1,6 @@
 # opfs-lsm
 
-opfs-lsm stores your web app's data in the browser, in place of IndexedDB or SQLite. Every tab of your site shares one database and sees the writes of the other tabs as they happen. In batches of 1,000, it writes 17× faster than IndexedDB, and it reads a key 30× faster.
+opfs-lsm stores your web app's data in the browser, in place of IndexedDB or SQLite. Every tab of your site shares one database and sees the writes of the other tabs as they happen. In batches of 1,000, it writes 14× faster than IndexedDB, and it reads a key 31× faster.
 
 > [!WARNING]
 > opfs-lsm is still under heavy development.
