@@ -242,7 +242,7 @@ type Slot = EncodedDoc | null | undefined;
  */
 function planModify<T extends JsonDoc, In>(
   coll: BoundCollection,
-  encode: (doc: unknown) => EncodedDoc,
+  encode: (docs: readonly unknown[]) => EncodedDoc[],
   docIds: readonly DocId[],
   idbs: readonly Uint8Array[],
   olds: readonly (Uint8Array | undefined)[],
@@ -256,13 +256,15 @@ function planModify<T extends JsonDoc, In>(
   if (!Array.isArray(out) || out.length !== docIds.length) {
     throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
   }
+  const encoded = encode(out.filter((d) => d !== undefined && d !== null));
+  let k = 0;
   const next = out.map((d, i): Slot => {
     if (d === undefined || d === null) return d;
-    const encoded = encode(d);
-    if (encoded.id !== docIds[i]) {
-      throw new DocStoreError("document", `fn returned a document with id "${encoded.id}" for "${docIds[i]}"`);
+    const doc = encoded[k++]!;
+    if (doc.id !== docIds[i]) {
+      throw new DocStoreError("document", `fn returned a document with id "${doc.id}" for "${docIds[i]}"`);
     }
-    return encoded;
+    return doc;
   });
 
   const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
@@ -280,7 +282,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     private readonly store: StoreCore,
     readonly name: string,
     readonly indexes: ReadonlyMap<string, IndexInfo>,
-    private readonly encode: (doc: unknown) => EncodedDoc,
+    private readonly encode: (docs: readonly unknown[]) => EncodedDoc[],
   ) {}
 
   get(id: string): Promise<T | undefined> {
@@ -296,7 +298,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
   }
 
   async putMany(docs: readonly In[]): Promise<void> {
-    const encoded = docs.map(this.encode);
+    const encoded = this.encode(docs);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
     await this.store.write<unknown>(this.name, (coll) =>

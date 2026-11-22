@@ -22,29 +22,81 @@ export type EncodedDoc = {
   readonly doc: StoredDoc;
 };
 
-/** Parsing the text, not the bytes, skips a decode. The two agree because `JSON.stringify` escapes lone surrogates. */
-export function encodeDoc(doc: JsonDoc): EncodedDoc {
-  const text = JSON.stringify(doc) as string | undefined;
-  const parsed: unknown = text === undefined ? undefined : JSON.parse(text);
-  if (text === undefined || !isObject(parsed)) throw new DocStoreError("document", "a document must be a JSON object");
-  return { id: parseId(parsed["id"]), bytes: utf8.encode(text), doc: parsed as StoredDoc };
+/** Up to about this many characters of JSON go to one JSON.parse and one TextEncoder or TextDecoder call. */
+const CHUNK = 64 * 1024;
+
+/**
+ * The stored form of each value, `prepare(value)` when given. A chunk of
+ * texts is parsed as one JSON array and encoded as one buffer, each `bytes` a
+ * view of it: for a small document the cost of a call dominates. Parsing the
+ * text, not the bytes, skips a decode. The two agree because
+ * `JSON.stringify` escapes lone surrogates.
+ */
+function encodeDocs(values: readonly unknown[], prepare?: (value: unknown) => unknown): EncodedDoc[] {
+  const out: EncodedDoc[] = [];
+  let texts: string[] = [];
+  let length = 0;
+  for (const value of values) {
+    const text = JSON.stringify(prepare ? prepare(value) : value) as string | undefined;
+    // The JSON of an object, and only of an object, starts with "{".
+    if (text?.charCodeAt(0) !== 0x7b) throw new DocStoreError("document", "a document must be a JSON object");
+    texts.push(text);
+    length += text.length + 1;
+    if (length < CHUNK) continue;
+    encodeChunk(texts, out);
+    texts = [];
+    length = 0;
+  }
+  if (texts.length > 0) encodeChunk(texts, out);
+  return out;
 }
 
-/** What a write of collection `name` encodes for `value`: the output of `validator`, or `value` itself. */
-export function docEncoder(name: string, validator: StandardSchemaV1 | undefined): (value: unknown) => EncodedDoc {
-  if (!validator) return encodeDoc as (value: unknown) => EncodedDoc;
-  return (value) => {
+function encodeChunk(texts: readonly string[], out: EncodedDoc[]): void {
+  if (texts.length === 1) {
+    const doc = JSON.parse(texts[0]!) as StoredDoc;
+    out.push({ id: parseId(doc["id"]), bytes: utf8.encode(texts[0]), doc });
+    return;
+  }
+  const joined = `[${texts.join(",")}]`;
+  const docs = JSON.parse(joined) as StoredDoc[];
+  const all = utf8.encode(joined);
+  // Only ASCII has one byte per UTF-16 unit, so the offsets in `joined` are those in `all`.
+  const ascii = all.length === joined.length;
+  let at = 1;
+  for (let i = 0; i < texts.length; i++) {
+    const units = texts[i]!.length;
+    const end = ascii ? at + units : utf8End(all, at, units);
+    out.push({ id: parseId(docs[i]!["id"]), bytes: all.subarray(at, end), doc: docs[i]! });
+    at = end + 1;
+  }
+}
+
+/** Where the `units` UTF-16 units of well-formed UTF-8 starting at `at` end: a four-byte character is two units. */
+function utf8End(bytes: Uint8Array, at: number, units: number): number {
+  while (units > 0) {
+    const b = bytes[at]!;
+    at += b < 0x80 ? 1 : b < 0xe0 ? 2 : b < 0xf0 ? 3 : 4;
+    units -= b < 0xf0 ? 1 : 2;
+  }
+  return at;
+}
+
+/** What a write of collection `name` encodes for `values`: the output of `validator` for each, or the values themselves. */
+export function docEncoder(name: string, validator: StandardSchemaV1 | undefined): (values: readonly unknown[]) => EncodedDoc[] {
+  if (!validator) return (values) => encodeDocs(values);
+  const validate = (value: unknown) => {
     const result = validator["~standard"].validate(value);
     if (result instanceof Promise) {
       // The write fails here, so a rejection of the Promise would reach nobody.
       result.catch(() => {});
       throw new DocStoreError("invalid", `"${name}": the validator is async`);
     }
-    if (!result.issues) return encodeDoc(result.value as JsonDoc);
+    if (!result.issues) return result.value;
     const id = isObject(value) ? value["id"] : undefined;
     const ids = typeof id === "string" ? [id] : undefined;
     throw new DocStoreError("invalid", `"${name}": ${result.issues[0]?.message}`, ids, result.issues);
   };
+  return (values) => encodeDocs(values, validate);
 }
 
 export function decodeDoc(bytes: Uint8Array): StoredDoc {

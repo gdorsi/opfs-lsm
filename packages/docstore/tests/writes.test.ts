@@ -1,7 +1,8 @@
-import type { Db } from "@opfs-lsm/kv";
+import { prefixBound, type Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore, type Query } from "../src/index.js";
-import { codeOf, freshName, openKv, recording, wrap } from "./harness.js";
+import { idOf, rowPrefix, type CollectionId } from "../src/keys.js";
+import { codeOf, freshName, openKv, recording, storedCatalog, wrap } from "./harness.js";
 
 type Note = {
   id: string;
@@ -81,6 +82,50 @@ describe("index entries come from the stored form", () => {
       await c.put({ id: "1", createdAt });
       expect(await c.count({ index: "byCreated" })).toBe(1);
     }
+  });
+});
+
+describe("stored bytes", () => {
+  /** Each row's value as text, by id, checked to be the UTF-8 of `JSON.stringify` of `expected[id]`. */
+  async function expectStored(kv: Db, expected: ReadonlyMap<string, unknown>) {
+    const prefix = rowPrefix((await storedCatalog(kv)).collections["notes"]!.id as CollectionId);
+    const rows = new Map<string, Uint8Array>();
+    for await (const e of kv.range(prefixBound(prefix))) rows.set(idOf(e.key, prefix.length), e.value);
+    expect([...rows.keys()].sort()).toEqual([...expected.keys()].sort());
+    for (const [id, doc] of expected) expect(rows.get(id)).toEqual(new TextEncoder().encode(JSON.stringify(doc)));
+  }
+
+  it("are the UTF-8 of each document's JSON across batches past 64 KiB, ASCII or not, and reads return its parse", async () => {
+    const { kv, notes: c } = await notes();
+    const docs: Note[] = Array.from({ length: 1_500 }, (_, i) => ({
+      id: `n${String(i).padStart(4, "0")}`,
+      title: i < 600 || i % 3 ? `title ${i}` : `tïtle 😀 ${i}`,
+      body: i % 50 === 7 ? "lone \ud800 and \udc00 surrogates" : "x".repeat(i % 120),
+      createdAt: i,
+    }));
+    const fromToJSON = { toJSON: () => ({ id: "j", title: "日本 from toJSON" }) } as unknown as Note;
+    await c.putMany([...docs, fromToJSON]);
+    const expected = new Map<string, unknown>([...docs.map((d) => [d.id, d] as const), ["j", fromToJSON]]);
+    await expectStored(kv, expected);
+    const parsed = (d: unknown) => JSON.parse(JSON.stringify(d)) as Note;
+    expect((await c.getMany([...expected.keys()])).map((d) => d!.id)).toEqual([...expected.keys()]);
+    expect(await c.getMany([...expected.keys()])).toEqual([...expected.values()].map(parsed));
+    expect((await c.query({ index: "byTitle", eq: ["日本 from toJSON"] })).docs).toEqual([{ id: "j", title: "日本 from toJSON" }]);
+
+    await c.modifyMany(["n0001", "n0002", "n0003"], () => [{ id: "n0001", title: "ünï", body: "\udbff" }, null, undefined]);
+    expected.set("n0001", { id: "n0001", title: "ünï", body: "\udbff" });
+    expected.delete("n0002");
+    await expectStored(kv, expected);
+    expect(await c.get("n0001")).toEqual({ id: "n0001", title: "ünï", body: "\udbff" });
+  });
+
+  it("rejects a batch holding a value whose JSON is not an object, and writes nothing", async () => {
+    const { notes: c } = await notes();
+    const asArray = { toJSON: () => [{ id: "a" }] } as unknown as Note;
+    expect(await codeOf(c.putMany([{ id: "ok" }, asArray]))).toBe("document");
+    expect(await codeOf(c.putMany([{ id: "ok" }, undefined as unknown as Note]))).toBe("document");
+    expect(await codeOf(c.putMany([{ id: "ok" }, null as unknown as Note]))).toBe("document");
+    expect(await c.count({})).toBe(0);
   });
 });
 
