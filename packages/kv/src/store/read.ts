@@ -113,18 +113,21 @@ export function keysReader<T = Uint8Array>(
 
 /**
  * The newest entry for `key`, tombstone included. Each level asks at most
- * one run. A newer level must answer before an older one can, so this
- * stops at the first level that misses.
+ * one run. A newer level must answer before an older one can, so a level
+ * that misses makes the read miss. The walk still goes on to the first level
+ * that holds the key, so a cold read loads every level it needs in one round.
  */
 export function latestSstEntry(
   levels: readonly RunLevel[],
   key: Uint8Array,
 ): Maybe<RecordWalker | undefined> {
+  let misses: Miss[] | undefined;
   for (const level of levels) {
     const hit = level.get(key);
-    if (hit) return hit;
+    if (hit instanceof Miss) (misses ??= []).push(hit);
+    else if (hit) return misses ? allMissed(misses) : hit;
   }
-  return undefined;
+  return misses ? allMissed(misses) : undefined;
 }
 
 type Ranged = SstReader & { readonly range: NonNullable<SstReader["range"]> };

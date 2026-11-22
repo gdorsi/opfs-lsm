@@ -219,10 +219,10 @@ recorded generation and `meta.topGeneration`. Numbers can skip.
 
 ## Reads
 
-`get` reads the memtable first. On a miss, it asks the levels of the installed generation,
-newest first, and stops at the first that holds the key. Each L0 run is a level of its own. A
-deeper level binary-searches the key ranges of its runs and asks one run. A get touches neither
-IndexedDB nor the host. `getMany` reads a list of keys at once, and with `decode` copies no value.
+`get` reads the memtable, then the installed levels newest first, up to the first that holds the
+key. Each L0 run is a level; a deeper one searches its runs' key ranges and asks one run. A level
+not cached does not end the walk: its loads start in the same turn, and the walk runs again once
+they land. A get touches neither IndexedDB nor the host. `getMany` with `decode` copies no value.
 
 `range` merges one cursor per source: the memtable, each L0 run, and each deeper level as a
 whole. For each key the newest source wins, and tombstones are dropped. The waiting sources sit

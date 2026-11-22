@@ -96,6 +96,16 @@ describe("runLevels", () => {
     }
   });
 
+  it("a cold get waits on at most two rounds of reads, layouts then pages, however many levels it passes", async () => {
+    for (let i = -2; i < 125; i++) {
+      const { paths, readers } = layout();
+      const levels = runLevels(paths, readers);
+      let attempts = 0;
+      await untilHit(() => (attempts++, latestSstEntry(levels, key(i))));
+      expect(attempts - 1, `key ${i}`).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("keeps runs in key order inside a level", async () => {
     const { paths, readers } = layout();
     const rows = await scan(runLevels(paths, readers).map((l) => l.cursor()));
