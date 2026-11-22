@@ -97,12 +97,6 @@ jobs:
       - run: pnpm check:docs
       - run: pnpm deadcode
 
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo test -p engine-core
-
   wasm-fresh:
     runs-on: ubuntu-latest
     steps:

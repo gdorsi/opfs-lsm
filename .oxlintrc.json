@@ -15,7 +15,6 @@
     "**/dist/**",
     "**/wasm/**",
     "packages/kv/engine/**",
-    "target/**",
     ".scratch/**",
     ".claude/**",
     ".agents/**",

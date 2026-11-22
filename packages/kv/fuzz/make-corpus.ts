@@ -7,8 +7,7 @@
  *   pnpm --filter @opfs-lsm/kv fuzz:corpus
  *
  * Output (only `seed-*` files are tracked; a fuzzing run adds the rest):
- *   packages/kv/fuzz/corpus/<target>/seed-*          Jazzer.js targets (fuzz/jazzer/)
- *   crates/engine-core/fuzz/corpus/<target>/seed-*   cargo fuzz targets
+ *   packages/kv/fuzz/corpus/<target>/seed-*   Jazzer.js targets (fuzz/jazzer/)
  */
 import "fake-indexeddb/auto";
 import "../src/testing.js";
@@ -27,11 +26,9 @@ import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
-import { blocksOf } from "./targets.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const tsCorpus = join(here, "corpus");
-const rustCorpus = join(here, "../../../crates/engine-core/fuzz/corpus");
 const utf = (s: string) => new TextEncoder().encode(s);
 
 async function seeds(dir: string, files: readonly Uint8Array[]): Promise<void> {
@@ -53,8 +50,8 @@ const cat = (...parts: (Uint8Array | number[])[]) => {
 /**
  * A database through four flushes (one L0 -> L1 compaction) and a reopen, as
  * the engine writes it. The range deletes cover no key their own flush
- * writes, so the runs, and the Rust seeds made from them, do not change with
- * them: one reaches the manifests' marks, one stays in the WAL. The last
+ * writes, so the runs do not change with them: one reaches the manifests'
+ * marks, one stays in the WAL. The last
  * WAL row is an `update`'s, so it starts with a header.
  */
 async function realDatabase(): Promise<{ runs: Uint8Array[]; manifests: Uint8Array[]; walRows: Uint8Array[] }> {
@@ -111,33 +108,13 @@ async function main(): Promise<void> {
     encodeSstRef([...todoEntries(30), { kind: "del", key: utf("todo/zz"), seq: 99 }], 256),
   ];
   const runs = [...db.runs, ...merged, ...edgeRuns].filter((r) => r.byteLength < 60_000);
-  const blocks = [...merged, ...db.runs, ...edgeRuns].flatMap((r) => blocksOf(r)).slice(0, 12);
 
   // Jazzer.js targets: byte 0 is the flags byte each target documents.
   await seeds(join(tsCorpus, "sst-read"), runs.flatMap((r) => [cat([0], r), cat([4], r)]));
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
   await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
   await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));
-
-  // cargo fuzz targets (crates/engine-core/fuzz/fuzz_targets/).
-  await seeds(join(rustCorpus, "decode_sst"), runs.flatMap((r) => [cat([0], r), cat([1], r)]));
-  await seeds(
-    join(rustCorpus, "scan_block_contains"),
-    blocks.map((b, i) => (i % 2 === 0 ? cat([0], b) : cat([4], utf("milk"), b))),
-  );
-  const small = runs.filter((r) => r.byteLength < 30_000);
-  await seeds(join(rustCorpus, "decode_block"), blocks);
-  // Header: flags, target, group (bit i: run i + 1 joins run i's source), window sizes, feed seed.
-  const session = (header: number[], ...runList: Uint8Array[]) =>
-    cat(header, ...runList.flatMap((r) => [[r.byteLength & 0xff, r.byteLength >> 8], r]));
-  await seeds(join(rustCorpus, "merge_session"), [
-    session([0, 0, 0, 0x00, 0], small[1]!, small[0]!),
-    session([1, 4, 0, 0x12, 1], small[1]!, small[0]!),
-    session([4, 0, 0, 0x34, 2], merged[0]!, small[0]!),
-    session([1, 1, 0b1, 0x51, 3], encodeSstRef(todoEntries(30)), encodeSstRef(todoEntries(30, 30)), edgeRuns[2]!),
-    session([0, 0, 0, 0x60, 4], edgeRuns[0]!, edgeRuns[1]!),
-  ]);
-  console.log(`seeds: ${runs.length} runs, ${db.manifests.length} manifests, ${db.walRows.length} WAL rows, ${blocks.length} blocks`);
+  console.log(`seeds: ${runs.length} runs, ${db.manifests.length} manifests, ${db.walRows.length} WAL rows`);
 }
 
 await main();

@@ -14,8 +14,7 @@ import { NO_MARKS } from "../src/store/marks.js";
 
 /**
  * Bugs the decoder fuzzing found, each reduced to one input and kept as a
- * regression test that states the rule. The Rust side keeps KB2 in
- * crates/engine-core/tests/corrupt_inputs.rs, and R1 and R2 are in
+ * regression test that states the rule. R1 and R2 are in
  * tests/sim/corruption.test.ts.
  */
 
