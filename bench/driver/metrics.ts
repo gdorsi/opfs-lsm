@@ -168,7 +168,7 @@ function amplification(s: Sample): Record<AmpField, number> | undefined {
     walBytes: wal,
     flushBytes: flush,
     compactionBytes: compaction,
-    diskBytes: fp.opfsBytes,
+    diskBytes: fp.opfsBytes + fp.idbEstimateBytes,
     userBytes: userIn,
     liveBytes: fp.liveLogicalBytes,
   };
@@ -185,7 +185,7 @@ type KindSpec = {
   readonly ids: (samples: readonly Sample[]) => readonly string[];
   /** NaN when this run has no value; such values are dropped. */
   readonly value: (s: Sample, id: string) => number;
-  readonly approx?: (s: Sample) => boolean;
+  readonly approx?: (s: Sample, id: string) => boolean;
   readonly unit: (id: string) => string;
   readonly format: (x: number, id: string) => string;
 };
@@ -252,7 +252,8 @@ const KINDS: { [K in Kind]: KindSpec } = {
       return fps.length === 0 ? [] : fps.some((fp) => fp.kv) ? AMP_FIELDS : APPROX_AMP_FIELDS;
     },
     value: (s, f) => amplification(s)?.[f as AmpField] ?? NaN,
-    approx: (s) => phaseOf(s)?.footprint?.kv === undefined,
+    // kv's WAL lives in IndexedDB, so its disk bytes add the estimate too.
+    approx: (s, f) => f === "diskBytes" || phaseOf(s)?.footprint?.kv === undefined,
     unit: (f) => (f.endsWith("Bytes") ? " MB" : f === "readAmp" ? "" : "×"),
     format: (x, f) => (f.endsWith("Bytes") ? fmtMB(x) : f === "readAmp" ? fmtN(x) : fmtX(x)),
   },
@@ -377,7 +378,7 @@ export function measure(records: readonly RunRecord[]): Measures {
         const values = used.map((x) => x.v);
         const at: At = phase === undefined ? { ...base, metric } : { ...base, phase, metric };
         entries.push({
-          series: { at, values, summary: summarize(values), approx: used.some((x) => spec.approx?.(x.s) ?? false) },
+          series: { at, values, summary: summarize(values), approx: used.some((x) => spec.approx?.(x.s, id) ?? false) },
           order,
         });
       }

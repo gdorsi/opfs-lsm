@@ -241,6 +241,17 @@ suite("footprints", () => {
     assert.equal(series(m, "amp:walBytes", "settle")!.approx, false);
   });
 
+  test("kv's disk bytes add its IndexedDB WAL, marked approximate; its Space-Amp stays on the exact file sizes", () => {
+    const kv = { tab: { walBytes: 0 }, host: { fs: { written: {} }, layout: [] } } as unknown as Footprint["kv"];
+    const m = measure([run([phase("settle", { timed: false, ops: 0, userBytes: 10, footprint: { ...base, idbEstimateBytes: 300, kv } })])]);
+    const disk = series(m, "amp:diskBytes", "settle")!;
+    assert.deepEqual(disk.values, [1300]);
+    assert.equal(disk.approx, true);
+    const space = series(m, "amp:spaceAmp", "settle")!;
+    assert.deepEqual(space.values, [2]);
+    assert.equal(space.approx, false);
+  });
+
   test("user bytes stop at the last fresh page", () => {
     const m = measure([
       run([

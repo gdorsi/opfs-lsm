@@ -133,13 +133,13 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
         "|---|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|",
       );
       for (const row of ampRows) {
-        const approx = get(row, "amp:spaceAmp")?.approx ? "~" : "";
+        const approx = (metric: Metric) => (get(row, metric)?.approx ? "~" : "");
         const med = (metric: Metric) => median(get(row, metric));
         out.push(
-          `| ${row.name} | ${row.contender} | ${med("amp:wampEngine")} | ${med("amp:wampTotal")} | ${med("amp:compaction")} | ${med("amp:readAmp")} | ${layoutCell(row)} | ${approx}${med("amp:spaceAmp")} | ${med("amp:userBytes")} | ${med("amp:walBytes")} | ${med("amp:flushBytes")} | ${med("amp:compactionBytes")} | ${approx}${med("amp:diskBytes")} | ${med("amp:liveBytes")} |`,
+          `| ${row.name} | ${row.contender} | ${med("amp:wampEngine")} | ${med("amp:wampTotal")} | ${med("amp:compaction")} | ${med("amp:readAmp")} | ${layoutCell(row)} | ${approx("amp:spaceAmp")}${med("amp:spaceAmp")} | ${med("amp:userBytes")} | ${med("amp:walBytes")} | ${med("amp:flushBytes")} | ${med("amp:compactionBytes")} | ${approx("amp:diskBytes")}${med("amp:diskBytes")} | ${med("amp:liveBytes")} |`,
         );
       }
-      out.push("", "`~`: from navigator.storage.estimate(), approximate. kv disk bytes are exact OPFS file sizes.");
+      out.push("", "`~`: from navigator.storage.estimate(), approximate. kv's Space-Amp is exact OPFS file sizes; its disk bytes add its WAL's IndexedDB estimate.");
     }
     const blockRows = rows.filter((row) => row.runs[0]!.phases[row.phase]!.mainThread);
     if (blockRows.length > 0) {

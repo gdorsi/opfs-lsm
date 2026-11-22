@@ -151,7 +151,7 @@ kv counts the bytes it writes in the configuration apps run: the tab and the Sha
 - **W-Amp total**: (WAL + flush + compaction + manifest bytes) / user bytes in. It counts the WAL, as Lim et al. (FAST '16) do. WAL bytes are the records handed to IndexedDB; what IndexedDB itself writes is not visible.
 - **Compaction**: compaction bytes / flush bytes.
 - **Read-Amp**: L0 runs + non-empty deeper levels. After open, kv reads are in memory, so there is no per-read disk count.
-- **Space-Amp**: OPFS bytes / live key and value bytes.
+- **Space-Amp**: OPFS bytes / live key and value bytes. Disk bytes add kv's IndexedDB WAL, from `navigator.storage.estimate()`, so they compare with the IndexedDB baselines.
 
 kv counts WAL bytes per tab and file bytes per host. Once a second tab has written (`page: "other"`), the two have no common denominator, so a footprint after it reports the bytes on disk and Space-Amp but no W-Amp.
 
