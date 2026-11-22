@@ -15,30 +15,14 @@ var ready = false;
 
 fn fill() void {
     @branchHint(.cold);
-    for (&table[0], 0..) |*slot, i| {
-        var c: u32 = @intCast(i);
-        for (0..8) |_| c = if (c & 1 != 0) 0xedb88320 ^ (c >> 1) else c >> 1;
-        slot.* = c;
-    }
+    // A byte's entry is the byte times x^8.
+    for (&table[0], 0..) |*slot, i| slot.* = multModP(1 << (31 - 8), @intCast(i));
     for (1..8) |s| {
         for (&table[s], table[s - 1]) |*slot, prev| slot.* = (prev >> 8) ^ table[0][prev & 0xff];
     }
-    // Appending zeros is linear, so its effect on a register is the XOR of
-    // its effect on each bit.
-    var bit: [32]u32 = undefined;
-    for (&bit, 0..) |*out, i| {
-        var r = @as(u32, 1) << @intCast(i);
-        for (0..lane) |_| r = (r >> 8) ^ table[0][r & 0xff];
-        out.* = r;
-    }
+    const by = zeros(lane);
     for (&shift_table, 0..) |*row, k| {
-        for (row, 0..) |*slot, b| {
-            var acc: u32 = 0;
-            for (0..8) |j| {
-                if (b >> @intCast(j) & 1 != 0) acc ^= bit[8 * k + j];
-            }
-            slot.* = acc;
-        }
+        for (row, 0..) |*slot, b| slot.* = multModP(by, @as(u32, @intCast(b)) << @intCast(8 * k));
     }
     ready = true;
 }
@@ -112,7 +96,9 @@ pub fn crc32(data: []const u8) u32 {
 
 /// `a * b` modulo the CRC-32 polynomial, in its reflected bit order, where
 /// bit 31 is x^0.
-fn multModP(a: u32, b0: u32) u32 {
+/// Out of line: inlined, the compiler unrolls it into each caller and folds
+/// the first table of `fill` into a 1 KiB constant in the module.
+noinline fn multModP(a: u32, b0: u32) u32 {
     var b = b0;
     var p: u32 = 0;
     for (0..32) |i| {
@@ -122,19 +108,25 @@ fn multModP(a: u32, b0: u32) u32 {
     return p;
 }
 
-/// The CRC of `a` followed by `b`, from `crc32(a)`, `crc32(b)` and the length
-/// of `b` (zlib's `crc32_combine`). A run read in pieces checks its stored
-/// CRC with this: the tail's bytes arrive before the data they follow.
-pub fn combine(crc_a: u32, crc_b: u32, len_b: usize) u32 {
-    // x^(8 * len_b) by squaring x^8.
+/// x^(8 * n) modulo the polynomial: what `n` zero bytes multiply a CRC
+/// register by.
+fn zeros(n0: usize) u32 {
+    // By squaring x^8.
     var by: u32 = 1 << 31;
     var square: u32 = 1 << (31 - 8);
-    var n = len_b;
+    var n = n0;
     while (n != 0) : (n >>= 1) {
         if (n & 1 != 0) by = multModP(square, by);
         square = multModP(square, square);
     }
-    return multModP(by, crc_a) ^ crc_b;
+    return by;
+}
+
+/// The CRC of `a` followed by `b`, from `crc32(a)`, `crc32(b)` and the length
+/// of `b` (zlib's `crc32_combine`). A run read in pieces checks its stored
+/// CRC with this: the tail's bytes arrive before the data they follow.
+pub fn combine(crc_a: u32, crc_b: u32, len_b: usize) u32 {
+    return multModP(zeros(len_b), crc_a) ^ crc_b;
 }
 
 fn bytewise(data: []const u8) u32 {

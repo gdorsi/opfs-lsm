@@ -204,7 +204,9 @@ pub const Session = struct {
         return s;
     }
 
-    pub fn deinit(s: *Session) void {
+    /// Out of line: the error path of `open` and `merge_close` would each
+    /// inline a copy.
+    pub noinline fn deinit(s: *Session) void {
         for (s.sources) |*source| source.deinit();
         gpa.*.free(s.sources);
         inline for (.{ &s.heap, &s.pending, &s.demands, &s.out, &s.marks }) |list| list.deinit(gpa.*);
