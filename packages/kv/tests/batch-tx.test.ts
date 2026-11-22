@@ -41,6 +41,21 @@ describe("batch tx", () => {
     await db.close();
   });
 
+  it("stores what a reused Buffer value held at each put, at every size", async () => {
+    const db = await open();
+    const sizes = [10, 64, 65, 200, 1024, 1025, 3000];
+    await db.batch((tx) => {
+      for (const [i, n] of sizes.entries()) {
+        const value = Buffer.alloc(n, i + 1);
+        tx.put(b(i), value);
+        value.fill(0xee);
+      }
+    });
+    const got = await db.getMany(sizes.map((_, i) => b(i)));
+    expect(got.map((v) => [v?.length, new Set(v)])).toEqual(sizes.map((n, i) => [n, new Set([i + 1])]));
+    await db.close();
+  });
+
   it("an update stores what a reused buffer held at each put", async () => {
     const db = await open();
     const key = new Uint8Array(1);
