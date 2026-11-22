@@ -1,6 +1,6 @@
 import { CorruptDatabaseError } from "../errors.js";
-import { asSeq, type Seq } from "../seq.js";
-import { BlockEntry, NO_PREFIX } from "./cursor.js";
+import type { Seq } from "../seq.js";
+import { BlockEntry, NO_PREFIX, seqIn } from "./cursor.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
@@ -31,11 +31,6 @@ const OFFSET_STRIDE = 4;
  */
 function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
-}
-
-/** The u64 seq at `o`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
-function seqAt(view: DataView, o: number): Seq {
-  return asSeq(view.getUint32(o, true) + view.getUint32(o + 4, true) * 2 ** 32);
 }
 
 /** `seq` is the WAL seq that wrote the entry. Seqs start at 1. */
@@ -162,7 +157,7 @@ export class RecordWalker {
   }
 
   seq(): Seq {
-    return seqAt(this.view, this.seqAt);
+    return seqIn(this.buf, this.seqAt);
   }
 
   /** The block's prefix as one view, made once for all its records. */
@@ -175,12 +170,7 @@ export class RecordWalker {
     return this.tag === TAG_PUT;
   }
 
-  /** A copy of the value that owns its buffer. */
-  value(): Uint8Array {
-    return this.buf.slice(this.valAt, this.valAt + this.valLen);
-  }
-
-  /** The value where it is in the block, for a reader that keeps none of it. */
+  /** The value where it is in the block. */
   valueInPlace(): Uint8Array {
     return this.buf.subarray(this.valAt, this.valAt + this.valLen);
   }

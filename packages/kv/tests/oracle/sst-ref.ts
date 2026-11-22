@@ -350,7 +350,7 @@ function walkBlock(b: BlockBytes): SstEntry[] {
     w.next();
     const key = w.inPlace().key;
     const seq = w.seq();
-    out[i] = w.tag === TAG_PUT ? { kind: "put", key, value: w.value(), seq } : { kind: "del", key, seq };
+    out[i] = w.tag === TAG_PUT ? { kind: "put", key, value: w.valueInPlace().slice(), seq } : { kind: "del", key, seq };
   }
   if (w.o !== w.end) throw new CorruptDatabaseError("sst block trailing");
   return out;

@@ -26,6 +26,29 @@ export function sharedPrefix(a: Uint8Array, b: Uint8Array): number {
   return i;
 }
 
+/**
+ * A read hands out each value as a copy. Chrome and Node keep an array of at
+ * most 64 bytes on the JS heap and give a longer one its own buffer, which
+ * costs several times the copy, so a copy of up to `POOLED` bytes is a view
+ * of a shared `POOL_BYTES` buffer, as Node's Buffer pool does.
+ */
+const POOLED = 1024;
+const POOL_BYTES = 8192;
+let pool = new Uint8Array(0);
+let used = 0;
+
+/** A copy of `src`. Its buffer may hold other copies: it starts at `byteOffset`. */
+export function copyOut(src: Uint8Array): Uint8Array {
+  const n = src.length;
+  if (n <= 64 || n > POOLED) return src.slice();
+  if (used + n > pool.length) {
+    pool = new Uint8Array(POOL_BYTES);
+    used = 0;
+  }
+  pool.set(src, used);
+  return pool.subarray(used, (used += n));
+}
+
 /** Smallest key strictly after every key that starts with `prefix`. */
 export function successor(prefix: Uint8Array): Uint8Array | undefined {
   const out = new Uint8Array(prefix);

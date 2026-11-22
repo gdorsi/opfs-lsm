@@ -1,4 +1,4 @@
-import { compareBytes, sharedPrefix } from "../bytes.js";
+import { compareBytes, copyOut, sharedPrefix } from "../bytes.js";
 import type { MemRow } from "./memtable.js";
 import {
   allMissed,
@@ -49,17 +49,13 @@ function isLive(at: RecordWalker, through: Seq): boolean {
   return at.isPut() && at.seq() > through;
 }
 
-/** A found put's value: a copy that owns its buffer, or what `decode` makes of the bytes where they are stored. */
+/** A found put's value: a copy `copyOut` made, or what `decode` makes of the bytes where they are stored. */
 function valueOfPut<T>(put: MemRow | RecordWalker, decode: ((value: Uint8Array) => T) | undefined): T {
-  if (put instanceof RecordWalker) return runValue(put, decode);
-  return decode ? decode(put.value!) : (new Uint8Array(put.value!) as T);
+  const bytes = put instanceof RecordWalker ? put.valueInPlace() : put.value!;
+  return decode ? decode(bytes) : (copyOut(bytes) as T);
 }
 
-function runValue<T>(at: RecordWalker, decode: ((value: Uint8Array) => T) | undefined): T {
-  return decode ? decode(at.valueInPlace()) : (at.value() as T);
-}
-
-/** The value of `key` as a fresh Uint8Array, or undefined. See `livePut`. */
+/** A copy of the value of `key`, or undefined. See `livePut`. */
 export function pointGet(
   mem: MemRow | undefined,
   levels: readonly RunLevel[],
