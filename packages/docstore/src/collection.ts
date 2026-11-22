@@ -3,7 +3,7 @@ import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
 import { decodeDoc, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { bytesEqual, concat, idBytes, idOf, keyString, parseId, type DocId } from "./keys.js";
+import { bytesEqual, concat, idBytes, idOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
 import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
@@ -225,7 +225,7 @@ function blindPut(coll: BoundCollection, docs: readonly EncodedDoc[]): WritePlan
   return {
     keys: [],
     apply: (_values, tx) => {
-      for (const d of docs) tx.put(concat(coll.rows.prefix, idBytes(d.id)), d.bytes);
+      for (const d of docs) tx.put(rowKey(coll.rows.prefix, d.id), d.bytes);
     },
   };
 }

@@ -81,15 +81,21 @@ export function idBytes(id: DocId): Uint8Array {
   return utf8Bytes(id);
 }
 
+/** `concat(prefix, idBytes(id))`, encoded into `scratch` and copied once. */
+export function rowKey(prefix: Uint8Array, id: DocId): Uint8Array {
+  return id.length > SCRATCH_UNITS ? concat(prefix, utf8.encode(id)) : concat(prefix, scratch, 0, utf8.encodeInto(id, scratch).written);
+}
+
 /** The id whose UTF-8 is `bytes` from `from` on. */
 export function idOf(bytes: Uint8Array, from = 0): string {
   return asciiAt(bytes, from, bytes.length) ?? fromUtf8.decode(from ? bytes.subarray(from) : bytes);
 }
 
-export function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
-  const out = new Uint8Array(a.length + b.length);
+/** `a` then `b[from, to)`, copied byte by byte: the keys are short, and `subarray` costs more than the loop. */
+export function concat(a: Uint8Array, b: Uint8Array, from = 0, to = b.length): Uint8Array {
+  const out = new Uint8Array(a.length + to - from);
   out.set(a);
-  out.set(b, a.length);
+  for (let i = a.length; i < out.length; ) out[i++] = b[from++]!;
   return out;
 }
 
@@ -184,6 +190,8 @@ export type ScanTarget =
       /** The first component is an array field: one document holds several entries. */
       readonly multi?: boolean;
     };
+
+export type IndexTarget = Exclude<ScanTarget, { readonly kind: "rows" }>;
 
 /** The most combinations of listed values one query reads. */
 const MAX_RANGES = 64;
@@ -299,8 +307,9 @@ function idStart(target: ScanTarget, key: Uint8Array): number {
   return target.kind === "rows" ? target.prefix.length : skipTuple(key, target.arity, target.prefix.length);
 }
 
-export function entryId(target: ScanTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
-  return target.kind === "unique" ? value : key.subarray(idStart(target, key));
+/** The key of the row an index entry points at. */
+export function entryRowKey(target: IndexTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
+  return target.kind === "unique" ? concat(target.rowPrefix, value) : concat(target.rowPrefix, key, idStart(target, key));
 }
 
 /** The id an entry's key ends in. A unique entry's key holds none. */
