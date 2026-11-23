@@ -140,6 +140,7 @@ The phases:
 5. `sync` (timed): the first half of the sync batches, with no screen open.
 6. `screens` (untimed): every screen opens again.
 7. `sync-live` (timed): the second half, with every screen open. A batch is timed until it is persisted and every open screen shows it: no live query and no collection waits for rows, since a join loads the rows it lacks through its source collection. Answers are checked every 10 batches. `close` (untimed) closes the screens.
+8. `reopen` (fresh page, untimed): the history and oracle again, then every screen opens from storage and its answer is compared with the one after the last batch, so a batch that was acknowledged but never stored fails the run.
 
 `open`, `sync` and `sync-live` record the main thread, and the sync phases yield a macrotask between batches. The difference per batch between `sync` and `sync-live` is the screens' upkeep. The two halves are different batches of one history, alike in shape but not identical.
 
