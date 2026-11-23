@@ -236,6 +236,20 @@ describe("the engine on its checked twin", () => {
     expect(takeCheckedReports()).toEqual([]);
   });
 
+  it("fails a merge that memory cannot hold, and never changes its output", () => {
+    const capped = new WebAssembly.Module(readFileSync(checkedFile("capped.wasm")));
+    const outcomes = new Set<string>();
+    const found: string[] = [];
+    for (let size = 50_000; size <= 700_000; size += 10_000) {
+      const c = merge(encoded(shipped, [{ del: false, key: Uint8Array.of(107), value: new Uint8Array(size).fill(9), seq: 1n }]));
+      const got = driveMerge(new WebAssembly.Instance(capped, {}).exports as unknown as EngineExports, c);
+      const outcome = got.some((line) => line.startsWith("TRAP")) ? "trap" : got.includes("-10:") ? "-10" : "done";
+      outcomes.add(outcome);
+      if (outcome === "done" && got.join("\n") !== driveMerge(shipped, c).join("\n")) found.push(`a value of ${size} bytes: other output under the cap`);
+    }
+    expect({ found, outcomes: [...outcomes].sort() }).toEqual({ found: [], outcomes: ["-10", "done", "trap"] });
+  });
+
   it("returns -10, never a trap, when memory cannot hold a session", () => {
     const capped = new WebAssembly.Module(readFileSync(checkedFile("capped.wasm")));
     const run = encoded(shipped, randomEntries(xorshift(1), 50, 1));
