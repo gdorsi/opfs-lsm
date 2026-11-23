@@ -1,6 +1,6 @@
 ---
 name: verify-opfs-lsm
-description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, docstore vs Dexie, Automerge and Yjs adapters, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, docstore put/get/query, the Automerge or Yjs adapters, or any claim that MemoryFs unit tests alone cannot prove."
+description: "Drive real Chrome proofs for @opfs-lsm/kv and @opfs-lsm/docstore — SharedWorker two-tab visibility and the bench/ suite (kv vs IndexedDB, docstore vs Dexie, Automerge and Yjs adapters, TanStack Query persistence, every read checked). Use when changing openDb, SharedWorker ingest, WAL/SST visibility across tabs, docstore put/get/query, the Automerge, Yjs or TanStack Query adapters, or any claim that MemoryFs unit tests alone cannot prove."
 ---
 
 # Verify @opfs-lsm (real Chrome)
@@ -72,7 +72,7 @@ Harness mapping (repo-native; do not invent a second browser stack):
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `destroy` | `TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
-| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
+| `bench <args…>` | `pnpm bench <args…>`: a selector (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `tanstack-query/`, or one workload such as `kv/fillrandom`) plus optional `--size`, `--reps`, `--contenders` |
 | `bench-smoke` | `pnpm bench:smoke` |
 
 Stable proof strings (from harness stdout, not DOM coordinates):

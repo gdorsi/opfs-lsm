@@ -51,6 +51,7 @@ export const PATTERNS = {
   "yjs-many-docs": "Yjs: many small documents written, then each loaded cold",
   "automerge-trace": "Automerge: an editing trace persisted, typed at one key per frame, reopened before and after a settle",
   "automerge-many-docs": "Automerge: many small documents written, then each loaded cold",
+  "tanstack-query-cache": "TanStack Query: restoring a cache of one entry per query cold, and persisting refetch bursts",
 } as const;
 
 export type Pattern = keyof typeof PATTERNS;

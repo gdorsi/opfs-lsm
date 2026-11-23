@@ -10,6 +10,7 @@ import type { Table } from "./driver/docs.ts";
 const FRAMEWORKS = {
   yjs: { "IndexedDB option": "yjs/y-indexeddb", "opfs-lsm": "yjs/kv" },
   automerge: { "IndexedDB option": "automerge/idb", "opfs-lsm": "automerge/kv" },
+  "tanstack-query": { "IndexedDB option": "tanstack-query/indexeddb", "opfs-lsm": "tanstack-query/kv" },
 };
 
 const GOALS = [
@@ -87,6 +88,9 @@ export const TABLES: readonly Table[] = [
       { label: ["Yjs", "One keystroke typed at 60 Hz, main-thread time"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
       { label: ["Automerge", "Cold load of 500 notes, store open and check included"], workload: "automerge/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.automerge },
       { label: ["Automerge", "Write 500 notes"], workload: "automerge/many-docs", phase: "persist", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
+      // TanStack Query's rows, for the first run of this table that holds tanstack-query/cache (bench/README.md, "Publishing a run"):
+      // { label: ["TanStack Query", "Cold restore of 644 queries, open / restore"], workload: "tanstack-query/cache", phase: "restore", metric: ["mean:open", "mean:restore"], at: FRAMEWORKS["tanstack-query"] },
+      // { label: ["TanStack Query", "Refetch of 10 queries, each persisted"], workload: "tanstack-query/cache", phase: "refetch", metric: "mean:refetch", at: FRAMEWORKS["tanstack-query"] },
     ],
   },
   {
