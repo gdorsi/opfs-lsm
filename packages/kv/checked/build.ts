@@ -58,8 +58,8 @@ function readText(path: string): string | null {
  */
 export async function buildChecked(root = KV, outDir = CHECKED_DIR): Promise<void> {
   const twin = await compile(root, "engine/index.ts", ["--debug"], [Instrument]);
-  // The engine's static data always takes a page, and the allocator counts on one.
-  const alloc = await compile(root, "alloc-harness.ts", ["--noAssert", "--initialMemory", "1"]);
+  // The engine's static data always takes a page, and the allocator counts on one. The cap lets the model fill memory.
+  const alloc = await compile(root, "alloc-harness.ts", ["--noAssert", "--initialMemory", "1", "--maximumMemory", "64"]);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, "engine.wasm"), twin);
   writeFileSync(join(outDir, "alloc.wasm"), alloc);

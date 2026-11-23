@@ -108,4 +108,17 @@ describe("the engine's allocator", () => {
     }
     expect(broken).toEqual([]);
   }, 10_000 + SEEDS * 500);
+
+  it("moves a block it cannot grow in place into free space when memory is full", () => {
+    const a = new WebAssembly.Instance(module, {}).exports as unknown as Allocator;
+    const blocks: number[] = [];
+    for (let ptr = a.alloc(1 << 16); ptr; ptr = a.alloc(1 << 16)) blocks.push(ptr);
+    const last = blocks.at(-1)!;
+    new Uint8Array(a.memory.buffer).fill(7, last, last + (1 << 16));
+    for (const ptr of blocks.slice(0, 3)) a.release(ptr);
+    const moved = a.realloc(last, 150_000);
+    expect(moved).toBe(blocks[0]);
+    expect(new Uint8Array(a.memory.buffer).subarray(moved, moved + (1 << 16)).every((b) => b === 7)).toBe(true);
+    expect(walk(a)).toBeUndefined();
+  });
 });
