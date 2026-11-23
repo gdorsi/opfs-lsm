@@ -49,7 +49,8 @@ const schema = defineSchema({
 });
 
 const IDS = Array.from({ length: 30 }, (_, i) => `d${String(i).padStart(2, "0")}`);
-const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b"];
+// An astral string and a U+E000..U+FFFF one compare apart by code point and by UTF-16 unit.
+const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b", "é", "\u{1F600}", "\uFF21"];
 const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE"];
 
 const fieldsArb = fc.record({

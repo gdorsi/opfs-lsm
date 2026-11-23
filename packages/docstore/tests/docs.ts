@@ -11,7 +11,7 @@ export type Doc = {
   b?: Scalar | undefined;
   tags?: Scalar[] | undefined;
   u?: Scalar | undefined;
-  t?: string | undefined;
+  t?: string | null | undefined;
   ut?: Scalar[] | undefined;
 };
 
@@ -68,7 +68,7 @@ export const datasetArb = fc
           a: fc.option(denseScalarArb, { nil: undefined }),
           b: fc.option(denseScalarArb, { nil: undefined }),
           tags: fc.option(fc.array(denseScalarArb, { maxLength: 4 }), { nil: undefined }),
-          t: fc.option(textArb, { nil: undefined }),
+          t: fc.option(fc.option(textArb, { nil: null, freq: 6 }), { nil: undefined }),
         },
         { requiredKeys: ["id"] },
       ),

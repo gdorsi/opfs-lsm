@@ -1,0 +1,5 @@
+---
+"@opfs-lsm/docstore": patch
+---
+
+A collection or index named like an `Object.prototype` member, such as `toString` or `__proto__`, throws `"schema"`. Before, such a name could break the open or lose the index. `drop` still takes one, and drops it only when the catalog stores it. A text index's text field may hold `null`, which gives an entry with no words. Every tab must run this version before an app stores `null` text: an older tab derives no entry for it, so its delete leaves one behind.

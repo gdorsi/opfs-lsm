@@ -33,7 +33,10 @@ function wordsOf(text: string): string[] {
 function entries(doc: Doc, ix: ModelIndex): Scalar[][] {
   const values = ix.on.map((p) => at(doc, p));
   if (values.some((v) => v === undefined)) return [];
-  if (ix.kind === "text" && typeof at(doc, ix.text) !== "string") return [];
+  if (ix.kind === "text") {
+    const text = at(doc, ix.text);
+    if (text !== null && typeof text !== "string") return [];
+  }
   const rest = values.slice(1) as Scalar[];
   if (ix.kind === "multi") {
     const first = Array.isArray(values[0]) ? (values[0] as Scalar[]) : [values[0] as Scalar];
@@ -75,7 +78,7 @@ export function expected(docs: readonly Doc[], ix: ModelIndex | undefined, q: Qu
     if (eq.some((slot, i) => !(Array.isArray(slot) ? slot : [slot]).some((v) => compareScalar(h.values[i]!, v) === 0))) return false;
     if (eq.length < h.values.length && !inBound(h.values[eq.length]!, q)) return false;
     if (ix?.kind !== "text" || words.length === 0) return true;
-    const have = wordsOf(at(h.doc, ix.text) as string);
+    const have = wordsOf((at(h.doc, ix.text) as string | null) ?? "");
     return words.every((w) => have.some((word) => word.includes(w)));
   });
   const tail = (h: Hit) => h.values.slice(eq.length);

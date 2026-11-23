@@ -1,5 +1,5 @@
 import type { Cursor, JsonDoc } from "@opfs-lsm/docstore";
-import type { DocstoreQuery, Order, Plan } from "./plan.js";
+import { comparesAsUtf16, type DocstoreQuery, type Order, type Plan } from "./plan.js";
 
 /** What a read needs of a docstore snapshot. */
 export interface Snapshot {
@@ -33,7 +33,7 @@ export async function read(snap: Snapshot, plan: Plan, match: (doc: JsonDoc) => 
       const { order, limit } = first;
       const parts = await Promise.all(plan.ranges.map((q) => firstMatches(snap, q, match, limit)));
       const docs = parts.flat().sort((a, b) => compareRows(a, b, order)).slice(0, limit);
-      if (!order.lexical && docs.some((d) => typeof valueAt(d, order.path) === "string")) {
+      if (!inOrder(docs, order)) {
         return read(snap, { kind: "ranges", ranges: plan.ranges }, match);
       }
       if (docs.length < limit) return { docs };
@@ -63,9 +63,17 @@ async function firstMatches(snap: Snapshot, q: DocstoreQuery, match: (doc: JsonD
 /** The boundary a limited read would set if `docs` were every row that passes its `where`. */
 export function boundaryOf(docs: readonly JsonDoc[], { order, limit }: { readonly order: Order; readonly limit: number }): Boundary | undefined {
   if (docs.length < limit) return undefined;
-  if (!order.lexical && docs.some((d) => typeof valueAt(d, order.path) === "string")) return undefined;
+  if (!inOrder(docs, order)) return undefined;
   const sorted = docs.toSorted((a, b) => compareRows(a, b, order));
   return { order, value: valueAt(sorted[limit - 1]!, order.path) };
+}
+
+/** Whether index order sorts `docs` as TanStack does: no collated strings, and lexical ones that compare alike in both orders. */
+function inOrder(docs: readonly JsonDoc[], order: Order): boolean {
+  return docs.every((d) => {
+    const v = valueAt(d, order.path);
+    return typeof v !== "string" || (order.lexical && comparesAsUtf16(v));
+  });
 }
 
 export function atOrBefore(doc: JsonDoc, boundary: Boundary): boolean {

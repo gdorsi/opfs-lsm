@@ -59,7 +59,7 @@ const fields = {
   b: fc.option(denseScalarArb, { nil: undefined }),
   tags: fc.option(fc.array(denseScalarArb, { maxLength: 4 }), { nil: undefined }),
   u: uArb,
-  t: fc.option(textArb, { nil: undefined }),
+  t: fc.option(fc.option(textArb, { nil: null, freq: 6 }), { nil: undefined }),
   ut: fc.option(fc.array(tagArb, { maxLength: 3 }), { nil: undefined }),
 };
 const docArb: fc.Arbitrary<Doc> = fc.record({ id: ids, ...fields }, { requiredKeys: ["id"] });

@@ -19,6 +19,8 @@ const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
 const MAX_INCLUDE = 16;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** The catalog keeps names as object keys, so a declared name `Object.prototype` holds, such as `toString`, is refused. A drop may still name one, which an older version could store. */
+const isName = (name: string) => NAME.test(name) && !(name in Object.prototype);
 /** Ends the first field of `by` when it holds an array. */
 const ARRAY_MARK = "[]";
 const OPTIONS = ["by", "unique", "text", "include"];
@@ -110,15 +112,18 @@ function checkInclude(include: unknown, where: string): readonly string[] {
 export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isObject(decl.collections)) badSchema("collections must be an object");
+  // A literal `__proto__` key sets the prototype instead of declaring a collection.
+  const proto: unknown = Object.getPrototypeOf(decl.collections);
+  if (proto !== Object.prototype && proto !== null) badSchema("collections must be a plain object; a __proto__ key is not a collection name");
   const collections = new Map<string, Map<string, IndexSpec>>();
   for (const [name, coll] of Object.entries(decl.collections)) {
-    if (!NAME.test(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME}`);
+    if (!isName(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
     const indexes: unknown = coll?.indexes;
     if (!isObject(indexes)) badSchema(`collection "${name}" was not made by collection()`);
     const specs = new Map<string, IndexSpec>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;
-      if (!NAME.test(index)) badSchema(`${where}: the name must match ${NAME}`);
+      if (!isName(index)) badSchema(`${where}: the name must match ${NAME} and not name an Object.prototype member`);
       if (!isObject(d)) badSchema(`${where} must be an object`);
       for (const key of Object.keys(d)) {
         if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
@@ -292,7 +297,7 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
     }
   }
   for (const name of declared.drop) {
-    if (stored.collections[name]) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
+    if (Object.hasOwn(stored.collections, name)) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
   }
   return undefined;
 }
@@ -307,8 +312,8 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
   const collections = { ...stored.collections };
   let dropped = [...stored.dropped];
   for (const name of declared.drop) {
-    const old = collections[name];
-    if (!old) continue;
+    if (!Object.hasOwn(collections, name)) continue;
+    const old = collections[name]!;
     delete collections[name];
     // The collection prefix covers its index prefixes.
     dropped = [...dropped.filter((p) => p.collection !== old.id), { collection: old.id }];
