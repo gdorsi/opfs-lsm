@@ -7,7 +7,6 @@
  * `putMany` is one kv batch and one IndexedDB readwrite transaction.
  */
 import type { StorageAdapterInterface } from "@automerge/react";
-import type { PersistenceStorage } from "@nkzw/fate/persistence";
 import type { KvStats } from "@opfs-lsm/kv/testing";
 import type { GoalStore } from "./goals.ts";
 import type { TrackerSpec, Tx as TrackerTx } from "../datasets/tracker/types.ts";
@@ -103,11 +102,6 @@ export type YjsBinding = {
   clear(): Promise<void>;
 };
 
-/** fate's persistence: both contenders are `PersistenceStorage` implementations; workloads build the fate client over `storage`, so both run the same client code. */
-export type FateStore = Common & {
-  readonly storage: PersistenceStorage;
-};
-
 /** The task-tracker dataset's goals: each contender replays the history through its write API and answers every goal with its own query API. */
 export type TrackerStore = Common & GoalStore<TrackerSpec, TrackerTx>;
 
@@ -136,9 +130,8 @@ export type FamilyStores = {
   "tanstack-ondemand": OnDemandStore;
   automerge: AutomergeStore;
   yjs: YjsStore;
-  fate: FateStore;
   tracker: TrackerStore;
   "tanstack-live": LiveStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "tanstack", "tanstack-ondemand", "automerge", "yjs", "fate", "tracker", "tanstack-live"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "tanstack", "tanstack-ondemand", "automerge", "yjs", "tracker", "tanstack-live"];

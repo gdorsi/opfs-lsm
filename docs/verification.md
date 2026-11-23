@@ -25,7 +25,6 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
 | `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/yjs/src/index.ts`, or a kv change claimed to speed up Yjs | `drive bench yjs/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
-| `packages/fate/src/index.ts`, or a kv change claimed to speed up fate's persistence | `pnpm --filter @opfs-lsm/fate test` and `drive bench fate/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-query/src/index.ts` | `pnpm --filter @opfs-lsm/tanstack-query test` |
 | BroadcastChannel wiring | `drive two-tab` and `drive two-tab-nobc`. |
 | In-page `EngineHost` | `drive two-tab-local`. |
@@ -33,7 +32,6 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench tracker/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/ tanstack-ondemand/ tanstack-live/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, drive the app in a browser against a server seeded with 100k issues, in two tabs and offline. |
-| `examples/linearlite-fate` | `pnpm --filter @opfs-lsm/example-linearlite-fate test`, `check` and `build`. For a change to its requests, commands or server, drive the app in a browser against a seeded database (`examples/linearlite-fate/DESIGN.md`). |
 | `examples/notes-manager-automerge` | `pnpm --filter @opfs-lsm/example-notes-manager-automerge test`, `check` and `build`. For a change to the editor, the tree, the bodies or the UI, run the browser proof (`examples/notes-manager-automerge/DESIGN.md`, "Browser proof") with `agent-browser`. |
 | `examples/whiteboard-yjs` | `pnpm --filter @opfs-lsm/example-whiteboard-yjs test`, `check` and `build`. For a change to `src/app`, drive the app in a browser (`dev`, port 4183): draw every shape kind, undo and redo, reload and compare `whiteboard.digest()`, Escape and blur mid-drag leave no undo step, two tabs converge, and `?fault=1` shows the error and recovers. For the render path, drag a shape on the 5,000 and 20,000 sample boards and read the frame intervals. |
 | A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, `sst.rs`, and the merge session that reads runs, `merge.rs`), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test` and `cargo test -p engine-core`, then each cargo fuzz and Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
@@ -54,7 +52,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `fate/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -237,7 +235,7 @@ The Sync commit in `verify-kv` is the commit where those models were last confir
 pnpm test
 ```
 
-Exit 0. The root script checks that `README.md` still contains its required phrases and builds the seven packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/tanstack-query` and `@opfs-lsm/fate` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
+Exit 0. The root script checks that `README.md` still contains its required phrases and builds the six packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, `@opfs-lsm/tanstack-db` and `@opfs-lsm/tanstack-query` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
 
 The kv suite includes a model-based test (`packages/kv/tests/sim/model.test.ts`): random histories of writes, reads, views, ingests, compactions and reopens on one handle, checked against a log-prefix oracle, with `checkDatabase` (`tests/sim/check-database.ts`) walking the WAL, manifest and runs after every run. It runs 100 + 25 histories by default. For a longer sweep, or to replay a failure from the seed, path and `replayPath` it prints:
 

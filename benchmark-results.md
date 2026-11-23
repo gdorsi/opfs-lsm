@@ -28,7 +28,7 @@ Apple M5 Max, Chrome 157, medians of 10 runs (21 for the `kv/fillrandom` rows), 
 
 ## 2. Framework adapters vs each framework's IndexedDB option
 
-Apple M5 Max, size `small`, medians of 5 runs, load average 1.9 to 4.5. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`. IndexedDB options: TanStack DB `indexedDBCollectionOptions`, y-indexeddb, automerge-repo `IndexedDBStorageAdapter`, `@nkzw/fate-indexeddb`.
+Apple M5 Max, size `small`, medians of 5 runs, load average 1.9 to 4.5. Run: `docs/results/2026-11-17T19-45-25-apple-m5-max.md`. IndexedDB options: TanStack DB `indexedDBCollectionOptions`, y-indexeddb, automerge-repo `IndexedDBStorageAdapter`.
 
 | Framework | Measure | IndexedDB option | opfs-lsm | Ratio | Headline |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -39,7 +39,6 @@ Apple M5 Max, size `small`, medians of 5 runs, load average 1.9 to 4.5. Run: `do
 | Yjs | Editing trace, one update per keystroke | 2.1k edits/s | 36.0k edits/s | 17× | yes |
 | Automerge | Cold load of 500 notes | 2.0k notes/s | 2.8k notes/s | 1.4× | yes |
 | Automerge | Write 500 notes | 875 notes/s | 922 notes/s | 1.1× | caveat (about even) |
-| fate | Cold load of 100 lists of 100 records | 2.1k records/s | 4.1k records/s | 2.0× | yes |
 
 ## 3. TanStack DB on demand vs SQLite
 

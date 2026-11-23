@@ -2,7 +2,7 @@
 
 Gold: `ruled-bento` (tiles on one ground, 1px rules between them, a lead tile two columns wide and two rows tall, pictures that run off a tile's edge). Kept: the ruled grid, the lead tile, the bleeds, a chip collection, a one-glyph statement tile. Changed: each title sits at the tile's foot at 16px, the brief's order, with no sentence after it. The lead tile shows two chromeless tab cards, not a window. No numbers anywhere, so the statement tile is its title and a bolt.
 
-Beats: tiles start 100ms apart in reading order, each doing its own thing once. 1 Live: "Offline mode" is checked in Tab 1, the arrow draws, and it shows checked in Tab 2 … Lightweight: the bolt strikes … Adapters: the four chips open one after another … API: the batch writes in … Quota: the meter fills up and the badge reads "Storage full" … Crash: "Writing" turns to "Crashed" with one write in flight … 2 Quota: "Oldest evicted", the meter falls back … Crash: "Reopened" with the four acked writes, the in-flight one gone … Live: "Dark mode" is checked in Tab 2 and shows in Tab 1, the arrow pointing back. Plays once, about 4.2s. The poster is the end, with every result on screen.
+Beats: tiles start 100ms apart in reading order, each doing its own thing once. 1 Live: "Offline mode" is checked in Tab 1, the arrow draws, and it shows checked in Tab 2 … Lightweight: the bolt strikes … Adapters: the three chips open one after another, two on the first line and one on the second … API: the batch writes in … Quota: the meter fills up and the badge reads "Storage full" … Crash: "Writing" turns to "Crashed" with one write in flight … 2 Quota: "Oldest evicted", the meter falls back … Crash: "Reopened" with the four acked writes, the in-flight one gone … Live: "Dark mode" is checked in Tab 2 and shows in Tab 1, the arrow pointing back. Plays once, about 4.2s. The poster is the end, with every result on screen.
 
 Captured: wide (600, on the real home page at 1280) and compact (358, at 390), light and dark, 24 frames every 250ms at each. `--states` at 1280. The reduced-motion poster at 1280 and 390, and at 1280 dark. `.VPHero` stills at 1280, 1100 and 390, light and dark, at the end state.
 
@@ -20,12 +20,12 @@ Film:
 Review: no separate fresh-eye reviewer ran. Judged against `ruled-bento` and `bento`:
 - The eye lands on the lead tile's two checked rows and the arrows between them, then on the large statement title. That order matches the feature order.
 - The one difference from the gold: titles at the foot, with no line of copy after them.
-- The adapter chips leave about 26px of ground above their title at 1280. It reads as the tile's inset, not a void.
+- The adapter chips leave about 26px of ground above their title at 1280, and the lone chip on the second line sits at the same left edge as the first. It reads as the tile's inset, not a void.
 
 One Stage, against bento rule 12: the whole grid is a single Stage, not one per tile. The hero column shows it at its design size (600 wide, 358 on a phone), so no title is ever drawn below its design size, which is what the rule protects.
 
-Assumptions: the issue titles and assignees are examples. The four adapters are the packages this repo ships, drawn as names, never logos. The crash tile claims only that acked writes survive, never that nothing is lost.
+Assumptions: the issue titles and assignees are examples. The three adapters are the packages this repo ships that the home page cards list, drawn as names, never logos. The crash tile claims only that acked writes survive, never that nothing is lost.
 
 Unresolved:
 
-Not checked: a real phone, Safari and Firefox, motion inside the film's sampling gaps (every run was inconclusive on coverage, largest gap 34 to 58ms), reduced motion toggled during playback, the Replay button. No second fresh eye. The dev server's file watcher missed edits made in this worktree, so every filmed run followed a restart of the server on port 5321.
+Last edit (the fourth adapter chip removed, three left): gate passed again at 1280 wide, at 390 and with `--states`, light only; the dark theme was not re-filmed. The scene is not mounted on any page today, so it was filmed through a temporary figure line in a docs page, which is reverted. Not checked: a real phone, Safari and Firefox, motion inside the film's sampling gaps (every run was inconclusive on coverage, largest gap 34 to 58ms), reduced motion toggled during playback, the Replay button. No second fresh eye. The dev server's file watcher missed edits made in this worktree, so every filmed run followed a restart of the server on port 5321.

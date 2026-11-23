@@ -40,16 +40,15 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | Yjs | One keystroke typed at 60 Hz, main-thread time | 0.130 ms † | 0.156 ms † | 0.83× ‡ |
 | Automerge | Cold load of 500 notes, store open and check included | 377 ms | 249 ms | 1.5× |
 | Automerge | Write 500 notes | 627 notes/s | 668 notes/s | 1.1× |
-| fate | Cold load of 100 lists of 100 records | 1.18k records/s | 3.14k records/s | 2.7× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 2.8 to 18.5, commit 694d5abe. Full results: [2026-11-21T13-51-06-apple-m2-pro](results/2026-11-21T13-51-06-apple-m2-pro.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 2.8 to 17.3, commit 694d5abe. Full results: [2026-11-21T13-51-06-apple-m2-pro](results/2026-11-21T13-51-06-apple-m2-pro.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
 
 † The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and `@nkzw/fate-indexeddb`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode. Opening a collection loads its 91,000 rows, so that row is a time and the others are rates. The Yjs editing trace is a burst: 25,700 updates written with no yield between keystrokes, so kv's group commit folds them into few writes while y-indexeddb commits one transaction per update. The paced row below it is one keystroke typed at 60 Hz, which is what an editor feels.
+The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb and automerge-repo's `IndexedDBStorageAdapter`. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode. Opening a collection loads its 91,000 rows, so that row is a time and the others are rates. The Yjs editing trace is a burst: 25,700 updates written with no yield between keystrokes, so kv's group commit folds them into few writes while y-indexeddb commits one transaction per update. The paced row below it is one keystroke typed at 60 Hz, which is what an editor feels.
 
 ### Typing, then reopening
 

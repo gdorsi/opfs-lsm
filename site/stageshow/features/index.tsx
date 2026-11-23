@@ -155,7 +155,7 @@ function Quota({ n }: PictureProps) {
 
 const ADAPTERS = [
   ["TanStack DB", "Yjs"],
-  ["Automerge", "fate"],
+  ["Automerge"],
 ] as const;
 
 function Adapters({ n }: PictureProps) {
