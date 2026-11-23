@@ -31,7 +31,7 @@ export default defineContender({
       projects: "id, &key",
       labels: "id",
       issues:
-        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt], [projectId+updatedAt+title]",
+        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt+title]",
       comments: "id, [issueId+createdAt]",
     });
     await db.open();
@@ -152,8 +152,8 @@ export default defineContender({
           read(async () =>
             cards(
               await issues
-                .where("[projectId+updatedAt]")
-                .between([projectId, minKey], [projectId, maxKey])
+                .where("[projectId+updatedAt+title]")
+                .between([projectId, minKey, minKey], [projectId, maxKey, maxKey])
                 .reverse()
                 .filter((i) => i.labelIds.includes(labelId) && (OPEN as readonly string[]).includes(i.status))
                 .limit(LIMITS.page)
