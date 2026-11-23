@@ -11,13 +11,13 @@ const schema = defineSchema({
     labels: collection<Label>(),
     projects: collection<Project>().unique("byKey", "key"),
     issues: collection<Issue>()
-      .index("byProjectStatus", ["projectId", "status", "updatedAt"])
+      .index("byProjectStatus", ["projectId", "status", "updatedAt"], { include: ["number", "title", "priority", "assigneeId", "labelIds"] })
       .unique("byNumber", ["projectId", "number"])
       .index("byTriage", ["projectId", "status", "priority", "createdAt"])
       .index("byLabel", ["labelIds[]", "projectId", "status", "updatedAt"])
-      .index("byAssignee", ["assigneeId", "status", "updatedAt"])
+      .index("byAssignee", ["assigneeId", "status", "updatedAt"], { include: ["projectId", "number", "title", "priority", "labelIds"] })
       .index("byProjectAssignee", ["projectId", "assigneeId", "status"])
-      .index("byUpdated", "updatedAt")
+      .index("byUpdated", "updatedAt", { include: ["projectId", "number", "title", "status", "priority", "assigneeId", "labelIds"] })
       .text("byTitle", ["projectId", "updatedAt"], "title"),
     comments: collection<Comment>().index("byIssue", ["issueId", "createdAt"]),
   },
@@ -25,10 +25,13 @@ const schema = defineSchema({
 
 /**
  * A docstore write is one kv batch of at most 8 MiB, and each index entry it
- * changes counts 256 bytes. With the indexes above, one write holds 1,249
- * status patches of issues with three labels, and about 1,900 of average ones.
+ * changes counts 256 bytes plus its key and included fields. With the indexes
+ * above, one write holds 1,153 status patches of issues with three labels.
  */
-const WRITE_EVENTS = 1_200;
+const WRITE_EVENTS = 1_000;
+
+/** What a card shows of an issue: the fields the three card indexes hold, so a card list reads no document. */
+type CardSource = Pick<Issue, "id" | "projectId" | "number" | "title" | "status" | "priority" | "updatedAt" | "assigneeId" | "labelIds">;
 
 const distinct = <T>(xs: Iterable<T>) => [...new Set(xs)];
 const isOpen = (s: Status) => (OPEN as readonly Status[]).includes(s);
@@ -37,7 +40,7 @@ export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = query with a list of statuses in eq; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,200 events when it has more",
+    "openDocStore on openDb; a collection per entity, issues indexed 8 ways; a card list = queryEntries on an index that includes the card's fields; count on index entries; a deep window = query with offset; joins = getMany of distinct foreign keys; IN = query with a list of statuses in eq; group-by = one queryEntries scan; a batch = putMany or modifyMany per collection, split into writes of 1,000 events when it has more",
   engine: true,
   async open(name) {
     const kv = await openKv(name);
@@ -49,13 +52,13 @@ export default defineContender({
     const comments = store.collection("comments");
     const collections = { users, projects, labels, issues, comments };
 
-    async function keysOf(list: readonly Issue[]): Promise<Map<string, string>> {
+    async function keysOf(list: readonly Pick<Issue, "projectId">[]): Promise<Map<string, string>> {
       const found = await projects.getMany(distinct(list.map((i) => i.projectId)));
       return new Map(found.map((p) => [p!.id, p!.key]));
     }
 
-    /** Issues -> cards: one getMany per joined collection, on distinct ids, in parallel. */
-    async function cards(list: readonly Issue[]): Promise<IssueCard[]> {
+    /** One getMany per joined collection, on distinct ids, in parallel. */
+    async function cards(list: readonly CardSource[]): Promise<IssueCard[]> {
       const [people, tags, keys] = await Promise.all([
         users.getMany(distinct(list.flatMap((i) => (i.assigneeId === null ? [] : [i.assigneeId])))),
         labels.getMany(distinct(list.flatMap((i) => i.labelIds))),
@@ -80,8 +83,10 @@ export default defineContender({
       return list.map((i) => ({ id: i.id, key: `${keys.get(i.projectId)}-${i.number}`, title: i.title }));
     }
 
-    const statusPage = async ({ projectId, status }: { projectId: string; status: Issue["status"] }) =>
-      cards((await issues.query({ index: "byProjectStatus", eq: [projectId, status], reverse: true, limit: LIMITS.page })).docs);
+    const statusPage = async ({ projectId, status }: { projectId: string; status: Issue["status"] }) => {
+      const { entries } = await issues.queryEntries({ index: "byProjectStatus", eq: [projectId, status], reverse: true, limit: LIMITS.page });
+      return cards(entries.map(({ id, values: [projectId, status, updatedAt], fields }) => ({ id, projectId, status, updatedAt, ...fields })));
+    };
 
     return {
       ...kvCommon(kv),
@@ -124,9 +129,13 @@ export default defineContender({
           return cards((await issues.query({ index: "byLabel", eq: [labelId, projectId, OPEN], reverse: true, limit: LIMITS.page })).docs);
         },
         async myIssues({ userId }) {
-          return cards((await issues.query({ index: "byAssignee", eq: [userId, OPEN], reverse: true, limit: LIMITS.page })).docs);
+          const { entries } = await issues.queryEntries({ index: "byAssignee", eq: [userId, OPEN], reverse: true, limit: LIMITS.page });
+          return cards(entries.map(({ id, values: [assigneeId, status, updatedAt], fields }) => ({ id, assigneeId, status, updatedAt, ...fields })));
         },
-        recentActivity: async () => cards((await issues.query({ index: "byUpdated", reverse: true, limit: LIMITS.page })).docs),
+        async recentActivity() {
+          const { entries } = await issues.queryEntries({ index: "byUpdated", reverse: true, limit: LIMITS.page });
+          return cards(entries.map(({ id, values: [updatedAt], fields }) => ({ id, updatedAt, ...fields })));
+        },
         async assigneeLoad({ projectId }) {
           const { entries } = await issues.queryEntries({ index: "byProjectAssignee", eq: [projectId] });
           const open = new Map<string, number>();
