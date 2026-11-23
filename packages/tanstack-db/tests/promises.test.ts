@@ -78,7 +78,6 @@ test("closing kv stops every collection on it, eager and on-demand, and later wr
   await Promise.all([eagerC.cleanup(), lazyC.cleanup()]);
 });
 
-
 test("an update stores the whole row as this tab holds it, so the last of two tabs' updates wins", async () => {
   const name = `promises${randomUUID().slice(0, 8)}`;
   const g = globalThis as { BroadcastChannel?: unknown };

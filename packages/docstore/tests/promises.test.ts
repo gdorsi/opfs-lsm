@@ -99,17 +99,18 @@ describe("documented errors and drops", () => {
 });
 
 describe("names that Object.prototype also has", () => {
-  it.each(["constructor", "toString", "__proto__"])("refuses %s as a collection, index or drop name with schema, and stores nothing", async (name) => {
+  it.each(["constructor", "toString", "__proto__"])("refuses %s as a collection or index name with schema, and ignores it in drop", async (name) => {
     const kv = await kvOf();
     const docs = collection<Doc>();
-    const schemas = [
+    for (const s of [
       defineSchema({ version: 1, collections: { [name]: docs } }),
       defineSchema({ version: 1, collections: { docs: docs.index(name, "a") } }),
-      defineSchema({ version: 1, collections: { docs }, drop: [name] }),
-    ];
-    for (const s of schemas) expect(await codeOf(openDocStore(kv, s))).toBe("schema");
-    const c = (await openDocStore(kv, defineSchema({ version: 1, collections: { docs: docs.index("byA", "a") } }))).collection("docs");
-    await c.put({ id: "x", a: 1 });
+    ]) {
+      expect(await codeOf(openDocStore(kv, s))).toBe("schema");
+    }
+    const v1 = defineSchema({ version: 1, collections: { docs: docs.index("byA", "a") }, drop: [name] });
+    await (await openDocStore(kv, v1)).collection("docs").put({ id: "x", a: 1 });
+    const c = (await openDocStore(kv, { ...v1, version: 2 })).collection("docs");
     expect((await c.queryIds({ index: "byA" })).ids).toEqual(["x"]);
   });
 });

@@ -19,7 +19,7 @@ const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
 const MAX_INCLUDE = 16;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** The catalog keeps names as object keys, so a name `Object.prototype` holds, such as `toString`, is refused. */
+/** The catalog keeps names as object keys, so a declared name `Object.prototype` holds, such as `toString`, is refused. A drop may still name one, which an older version could store. */
 const isName = (name: string) => NAME.test(name) && !(name in Object.prototype);
 /** Ends the first field of `by` when it holds an array. */
 const ARRAY_MARK = "[]";
@@ -150,7 +150,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
   const drop = new Set<string>();
   if (decl.drop !== undefined && !Array.isArray(decl.drop)) badSchema("drop must be an array of collection names");
   for (const name of decl.drop ?? []) {
-    if (typeof name !== "string" || !isName(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
+    if (typeof name !== "string" || !NAME.test(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME}`);
     if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
     drop.add(name);
   }
@@ -294,7 +294,7 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
     }
   }
   for (const name of declared.drop) {
-    if (stored.collections[name]) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
+    if (Object.hasOwn(stored.collections, name)) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
   }
   return undefined;
 }
@@ -309,8 +309,8 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
   const collections = { ...stored.collections };
   let dropped = [...stored.dropped];
   for (const name of declared.drop) {
-    const old = collections[name];
-    if (!old) continue;
+    if (!Object.hasOwn(collections, name)) continue;
+    const old = collections[name]!;
     delete collections[name];
     // The collection prefix covers its index prefixes.
     dropped = [...dropped.filter((p) => p.collection !== old.id), { collection: old.id }];

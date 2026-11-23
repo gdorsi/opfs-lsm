@@ -111,7 +111,7 @@ function orderOf(clause: IR.OrderByClause | undefined): Order | undefined {
 }
 
 /**
- * Sorted and text indexes may be read. A text index holds only documents with a string at `text`, so reading one
+ * Sorted and text indexes may be read. A text index holds only documents with a string or null at `text`, so reading one
  * assumes every document has one, as reading any index assumes every document has its `by` fields.
  */
 const usable = (info: IndexInfo) => info.kind !== "multi";
