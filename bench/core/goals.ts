@@ -62,6 +62,15 @@ export type GoalMetas<S extends GoalSpecMap, O> = { readonly [K in keyof S]: Goa
 
 export type Call<S extends GoalSpecMap> = { [K in keyof S & string]: { readonly goal: K; readonly params: S[K]["params"] } }[keyof S & string];
 
+/** The reads one screen fires in the same task as it opens, timed together and one after the other. */
+export type Burst<S extends GoalSpecMap, O> = {
+  /** The name of the phase that fires them together. The one that awaits each in turn is `${name}-serial`. */
+  readonly name: string;
+  readonly owns: Pattern;
+  /** 1 to 5 bursts from the oracle's state after the history, each asking the same goals. The first is the cold one. */
+  curate(oracle: O, pick: Picker): readonly (readonly Call<S>[])[];
+};
+
 /** One write and the goal reads that must show it at once. */
 export type Reread<S extends GoalSpecMap, Tx> = { readonly tx: Tx; readonly reads: readonly Call<S>[] };
 
@@ -93,6 +102,7 @@ export type Dataset<S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>> = {
    * op "read" and not counted in the replay's ops.
    */
   readonly duringLoad: { readonly during: string; readonly every: number; readonly read: Call<S> };
+  readonly burst: Burst<S, O>;
   /** A write after the goals ran, and the reads that must show it. */
   reread(oracle: O): Reread<S, Tx>;
 };
