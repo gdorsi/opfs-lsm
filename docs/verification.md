@@ -35,7 +35,9 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `examples/linearlite-fate` | `pnpm --filter @opfs-lsm/example-linearlite-fate test`, `check` and `build`. For a change to its requests, commands or server, drive the app in a browser against a seeded database (`examples/linearlite-fate/DESIGN.md`). |
 | `examples/notes-manager-automerge` | `pnpm --filter @opfs-lsm/example-notes-manager-automerge test`, `check` and `build`. For a change to the editor, the tree, the bodies or the UI, run the browser proof (`examples/notes-manager-automerge/DESIGN.md`, "Browser proof") with `agent-browser`. |
 | `examples/whiteboard-yjs` | `pnpm --filter @opfs-lsm/example-whiteboard-yjs test`, `check` and `build`. For a change to `src/app`, drive the app in a browser (`dev`, port 4183): draw every shape kind, undo and redo, reload and compare `whiteboard.digest()`, Escape and blur mid-drag leave no undo step, two tabs converge, and `?fault=1` shows the error and recovers. For the render path, drag a shape on the 5,000 and 20,000 sample boards and read the frame intervals. |
-| A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, and the wasm engine in `packages/kv/engine`, whose merge session reads runs), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test`, then `KV_REFERENCE_CASES=30000` on `fuzz/rust-reference.test.ts` and each Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
+| A decoder or the on-disk format: SST (`sst.ts`, `sst-reader.ts`, and the wasm engine in `packages/kv/engine`, whose merge session reads runs), manifest (`generation.ts`), WAL rows (`decodeOps`), or `recover.ts` | `pnpm test`, then each Jazzer.js target for 10 minutes (see [Fuzz the decoders](#fuzz-the-decoders)) |
+| The wasm engine (`packages/kv/engine`) | `KV_ENGINE=checked pnpm --filter @opfs-lsm/kv test`, `pnpm --filter @opfs-lsm/kv engine:gate`, then `KV_ENGINE_CASES=3000` on `fuzz/engine-checked.test.ts` and each engine Jazzer.js target for 10 minutes (see [Check the engine](#check-the-engine)) |
+| The engine's checks (`packages/kv/checked`) | `pnpm --filter @opfs-lsm/kv mutant-canary` |
 | The ingest trigger (`pendingBytes`, the idle flush, the limit the tabs ask for) | `tests/ingest-policy.test.ts`, `tests/backpressure.test.ts` and `tests/port-ingest.test.ts`. No formal model covers it. |
 | Any TypeScript behavior | `pnpm test` |
 | Any TypeScript or JavaScript source, including a removed export | `pnpm static` (oxlint, then `fallow dead-code`) |
@@ -273,11 +275,11 @@ Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the 
 
 | Layer | Command | Runs in | Covers |
 | --- | --- | --- | --- |
-| Engine against the Rust build | `pnpm test` (`packages/kv/fuzz/rust-reference.test.ts`) | CI (`test` job) | every export of the wasm engine against `tests/oracle/engine-rust.wasm`, the Rust build it was ported from, frozen: the same status and bytes for entry lists, blocks and pattern lists, and merge sessions over valid and corrupt runs, fed in any order, with early pumps and wrong-length feeds. The engine never traps and stays under 64 MiB. The Rust build passed its own corrupt-input properties, cargo fuzz, and a writer and a merge frozen before it |
+| Engine on its checked twin | `pnpm test` (`packages/kv/fuzz/engine-checked.test.ts`) | CI (`test` job) | every export of the wasm engine on entry lists, blocks and pattern lists, and merge sessions over valid and corrupt runs, fed in any order, with early pumps and wrong-length feeds: no memory error on the checked twin, the shipped build's transcript, no trap, and no block or memory past 64 MiB (see [Check the engine](#check-the-engine)) |
 | TypeScript properties | `pnpm test` (`packages/kv/fuzz/decoders.test.ts`) | CI (`test` job) | `SstReader` (tab reads, with and without the wasm block scan), `decodeSst`, `decodeGeneration`, `decodeOps` |
 | Differential | `pnpm test` (`packages/kv/fuzz/differential.test.ts`, `packages/kv/tests/merge-session.test.ts`) | CI (`test` job) | wasm against TypeScript: the reference writer and decoder in `tests/oracle/sst-ref.ts` against the runs wasm encodes, block scan, and the merge session against its oracle (`tests/oracle/merge-ts.ts`) |
 | End to end | `pnpm test` (`packages/kv/tests/sim/corruption.test.ts`) | CI (`test` job) | one corrupt file or IndexedDB row, then open, get, scan, write, flush, compact, reopen |
-| Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand | `sst-read`, `sst-decode`, `manifest`, `wal-row` (the TypeScript decoders) |
+| Jazzer.js | `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> [seconds]` | by hand; the engine targets also in CI (`engine` job, 60 s each) and nightly (30 minutes each) | `sst-read`, `sst-decode`, `manifest`, `wal-row` (the TypeScript decoders); `engine-encode`, `engine-scan`, `engine-merge` (the wasm engine, on its checked twin) |
 
 The checks are shared: `packages/kv/fuzz/targets.ts` for the TypeScript properties, the differential test and Jazzer.js. Mutations are bit flips, truncation, extension, length fields inflated or nudged by a few, varints near 2^32, runs of 0x00 or 0xff, and splices of two valid files. Each case may rewrite the CRC (and the SST version and magic) so the decoder reaches the structure behind it.
 
@@ -288,14 +290,14 @@ cd packages/kv
 KV_FUZZ_RUNS=50000 KV_FUZZ_REPORT=1 pnpm exec vitest run fuzz/
 KV_FUZZ_SEED=<seed> KV_FUZZ_PATH=<path> pnpm exec vitest run fuzz/decoders.test.ts
 KV_CORRUPT_REPORT=1 pnpm exec vitest run tests/sim/corruption.test.ts   # prints the table below
-KV_REFERENCE_CASES=30000 pnpm exec vitest run fuzz/rust-reference.test.ts
+KV_ENGINE_CASES=3000 pnpm exec vitest run fuzz/engine-checked.test.ts
 ```
 
-`pnpm test` runs 1,000 cases per mutation property, 300 per differential property, and a tenth of those for the slower ones. With the end-to-end file they take about 1 s. `KV_FUZZ_RUNS` scales them, and `KV_REFERENCE_CASES` the 300 cases of the engine against the Rust build. `KV_FUZZ_REPORT=1` prints how often each target ran.
+`pnpm test` runs 1,000 cases per mutation property, 300 per differential property, and a tenth of those for the slower ones. With the end-to-end file they take about 1 s. `KV_FUZZ_RUNS` scales them, and `KV_ENGINE_CASES` the 100 cases of the engine on its checked twin. `KV_FUZZ_REPORT=1` prints how often each target ran.
 
-Jazzer.js is a dev dependency of `@opfs-lsm/kv`, with prebuilt binaries for macOS, Linux and Windows. Before a change to a decoder or the on-disk format, run each target for 10 minutes or more. A pass prints `Done N runs` and leaves no `crash-*` file.
+Jazzer.js is a dev dependency of `@opfs-lsm/kv`, with prebuilt binaries for macOS, Linux and Windows. Before a change to a decoder or the on-disk format, run each target for 10 minutes or more. A pass prints `Done N runs` and leaves no `crash-*` file. Jazzer instruments the decoder targets' JavaScript. The engine targets instrument none: their coverage is the checked twin's own counters, one per function entry, `if` arm and loop head, and they read their input as the choices of a drive case, so mutations reach the merge session behind valid runs.
 
-Corpora: the seeds are files the engine wrote (a database through ingest and compaction on MemoryFs, plus a compaction's output run). `pnpm --filter @opfs-lsm/kv fuzz:corpus` writes them again after a format change. Only `seed-*` files are tracked. A run adds its new inputs next to them, and git ignores those.
+Corpora: the decoder seeds are files the engine wrote (a database through ingest and compaction on MemoryFs, plus a compaction's output run), and the engine seeds random bytes. `pnpm --filter @opfs-lsm/kv fuzz:corpus` writes them again after a format change. Only `seed-*` files are tracked. A run adds its new inputs next to them, and git ignores those.
 
 - `packages/kv/fuzz/corpus/<target>/` for Jazzer.js. A finding lands in `packages/kv/fuzz/.build/crash-*`. Replay it with `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> 0 <file>`.
 
@@ -314,32 +316,58 @@ Each bug the fuzzers found is kept as a regression test reduced to one input: `p
 
 Over the SharedWorker port, a host error keeps its class: the port carries the `OpfsLsmError` code, and the tab rethrows `CorruptDatabaseError`, `CommitError` and the others (`errorOfCode`). A `QuotaExceededError` from a host write arrives as `StorageFullError`. Any other error arrives as a plain `Error` with the host's message.
 
+## Check the engine
+
+The wasm engine is AssemblyScript over raw linear memory. A wrong `load`, `store` or `memory.copy` inside the heap does not trap, and compaction would store the bytes it wrote under a valid CRC. These checks catch that class of bug in tests and fuzzing, without a byte of change to the shipped `engine.wasm`.
+
+The checked twin is the same source compiled with an asc transform (`pnpm --filter @opfs-lsm/kv build:wasm-checked`, into `packages/kv/checked/.build/`, not committed; the suites build it when the source changed). Outside the allocator, every load, store, copy and fill first calls a JavaScript hook that keeps one state byte per byte of memory: unallocated, static, uninitialized, initialized, freed, or redzone. Each block gets a 16-byte redzone, and a freed block waits in a 256-block quarantine before the allocator may reuse it. An access to a byte in the wrong state throws `SanitizerError` at the access: an out-of-bounds read or write, a use after free, a double or invalid free, or a read of a byte nothing wrote. At the host boundary the bytes JS writes count as written, a result JS reads must be written in full, and a call made with no merge session open must leave as many blocks live as it found (`merge_close` as many as `merge_open` found). The twin also records the largest block asked for, so a block sized by a corrupt length field shows even when it is refused. It does not see an overflow that stays inside one block, and it does not check the allocator's own accesses.
+
+| Check | Command | Runs in | Covers |
+| --- | --- | --- | --- |
+| The kv suite on the twin | `KV_ENGINE=checked pnpm --filter @opfs-lsm/kv test` | CI (`engine` job) | every kv test with the twin behind the engine bridge. A memory error fails the test it happens in, even when the code under test caught it. Memory figures differ on the twin: they come from the gate. |
+| Allocator model | `pnpm test` (`packages/kv/tests/alloc-model.test.ts`) | CI (`test` job), nightly with 1,000 seeds | random allocs, reallocs and frees on the allocator alone: aligned blocks that never overlap, bytes kept across a realloc and while live, and a heap walk that finds blocks tiling the heap with no two free blocks side by side |
+| Gate | `pnpm --filter @opfs-lsm/kv engine:gate [--base <rev>]` | CI (`engine` job) | the committed `engine.wasm` against the one at the merge-base with origin/main, below |
+| Mutant canary | `pnpm --filter @opfs-lsm/kv mutant-canary [name…]` | nightly | plants each bug of a committed list in a copy of the source and runs the kv suite on its twin: every bug must fail it, and the clean source must pass |
+
+The gate prints a line per axis and fails on any line but speed:
+
+- Output: the same status and bytes on 300 encode, 300 scan and 100 merge drive cases.
+- Memory: no page more on three `probe:wasm-memory` workloads (a flush, a merge, a merge with flushes).
+- Work: at most 2% more instrumented loads, stores, copies, fills and edges on an encode, a scan and a merge workload, counted on the twins of both builds. The count is the same on every run, so it judges a few percent that shared runners cannot. It is skipped when the base has no AssemblyScript source.
+- Speed: the same workloads timed interleaved on both shipped builds. Printed, never judged. Published speed comes from `bench/`.
+- Size: no byte more, and the shipped module imports nothing.
+
+A change on purpose takes a trailer on one of the branch's commits: `Engine-Output: changed` lets the output differ, which then rests on the differential tests against the TypeScript oracles, and `Engine-Regression: <memory|work|size> <workload>, <reason>` lets one line regress.
+
 ## Run the static checks
 
 ```sh
 pnpm static
 ```
 
-Exit 0. It runs `oxlint`, then `fallow dead-code`. Both fail on a new finding.
+Exit 0. It runs `oxlint`, `lint:engine`, `check:docs`, then `fallow dead-code`. Each fails on a new finding. oxlint and fallow cannot parse the AssemblyScript engine, so `lint:engine` runs asc with `--pedantic` over it and fails on any diagnostic and on any function or method asc never compiled, which is dead code. `@inline` declarations escape the second check.
 
 ## What CI runs
 
-[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs seven jobs on pull requests and on pushes to `main`:
+[`.github/workflows/m1-smoke.yml`](../.github/workflows/m1-smoke.yml) runs eight jobs on pull requests and on pushes to `main`:
 
 - `bench`: `pnpm bench:smoke --check`, which applies the bundle-size budgets of `pnpm bench:size --check`, checks that every access pattern in `bench/core/patterns.ts` has exactly one owner, and then runs the smoke, from one build
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute), then `pnpm --filter @opfs-lsm/kv power-loss-chrome`
-- `test`: `pnpm test`
-- `static`: `pnpm lint` and `pnpm deadcode` (oxlint, then fallow; the same two steps as `pnpm static`)
+- `test`: `pnpm test`, stopped after 30 minutes, since an engine that corrupts its heap tends to hang
+- `engine`: `KV_ENGINE=checked pnpm --filter @opfs-lsm/kv test`, then `engine:gate`, then each engine Jazzer.js target for 60 s from its committed seeds. A finding is uploaded as `engine-findings`.
+- `static`: `pnpm lint`, `pnpm lint:engine`, `pnpm check:docs` and `pnpm deadcode` (the steps of `pnpm static`)
 - `wasm-fresh`: `pnpm --filter @opfs-lsm/kv build:wasm`, then fails when `packages/kv/wasm/engine.wasm` differs from the committed binary
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
 
 [`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs every night and on demand (`workflow_dispatch`, with `minutes` and `seed` inputs):
 
 - `kill-chrome`: 30 minutes of the kill loop with `--keep-going` and a random seed. The evidence of a failure is uploaded as `kill-chrome-evidence`.
-- `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, and `KV_FUZZ_RUNS=50000` on `fuzz/`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
+- `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, `KV_FUZZ_RUNS=50000` on `fuzz/`, `KV_ENGINE_CASES=3000` on `fuzz/engine-checked.test.ts`, and `KV_ALLOC_SEEDS=1000` on `tests/alloc-model.test.ts`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
+- `engine-fuzz`: each engine Jazzer.js target for 30 minutes. The corpus a target grows is cached between nights. A finding is uploaded as `engine-fuzz-<target>`.
+- `mutant-canary`: `pnpm --filter @opfs-lsm/kv mutant-canary`.
 
-The pull request workflow leaves out Jazzer.js, `two-tab-nobc`, `two-tab-local`, and the full `pnpm bench` families. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
+The pull request workflow leaves out the decoder Jazzer.js targets, `two-tab-nobc`, `two-tab-local`, and the full `pnpm bench` families. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
 
 ## Refresh a skill
 

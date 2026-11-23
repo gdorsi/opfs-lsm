@@ -30,7 +30,6 @@
     "cloudflared"
   ],
   "ignoreDependencies": [
-    "assemblyscript",
     "lucide-react",
     "vue",
     "@automerge/automerge-repo-storage-indexeddb"

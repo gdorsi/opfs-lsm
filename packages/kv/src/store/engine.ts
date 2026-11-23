@@ -143,7 +143,7 @@ const TAG_PUT = 1;
 const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
-export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
+export function flatEngine(instance: { readonly exports: WebAssembly.Exports }): FlatEngine {
   const ex = instance.exports as unknown as EngineExports;
 
   function call(
@@ -362,7 +362,7 @@ function setEngine(next: FlatEngine | undefined): void {
 async function loadWasm(): Promise<FlatEngine> {
   // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
   const module = await WebAssembly.compile(await readEngine(new URL("../../wasm/engine.wasm", import.meta.url)));
-  const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
+  const loaded = flatEngine(await WebAssembly.instantiate(module, engineImports()));
   wasmModule = module;
   return loaded;
 }
@@ -381,6 +381,13 @@ let readEngine: (url: URL) => Promise<BufferSource> = fetchWasm;
  */
 export function readEngineWith(read: (url: URL) => Promise<BufferSource>): void {
   readEngine = read;
+}
+
+let engineImports = (): WebAssembly.Imports => ({});
+
+/** Test seam: what each new instance imports. The module this context loads imports nothing, its checked twin a shadow memory. */
+export function importEngineWith(imports: () => WebAssembly.Imports): void {
+  engineImports = imports;
 }
 
 /**
@@ -456,7 +463,7 @@ function corrupt(err: unknown, what: string): unknown {
 function restartEngine(): void {
   if (!wasmModule) return;
   try {
-    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
   } catch {
     // No memory for a second instance: the old one stays.
   }
@@ -495,7 +502,7 @@ export function engineMemory(): EngineMemory {
 export function recycleEngine(maxBytes: number): boolean {
   if (!engine || !wasmModule || engine.sessionOpen || engine.memoryBytes() <= maxBytes) return false;
   try {
-    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
   } catch {
     // No memory for a second instance: the old one still works.
     return false;
