@@ -264,11 +264,11 @@ function factsOf(where: BasicExpression<boolean> | undefined): Facts {
         break;
       case "gt":
       case "gte":
-        if (isScalar(value) && !facts.lower.has(path)) facts.lower.set(path, { value, inclusive: name === "gte" });
+        if (isBound(value) && !facts.lower.has(path)) facts.lower.set(path, { value, inclusive: name === "gte" });
         break;
       case "lt":
       case "lte":
-        if (isScalar(value) && !facts.upper.has(path)) facts.upper.set(path, { value, inclusive: name === "lte" });
+        if (isBound(value) && !facts.upper.has(path)) facts.upper.set(path, { value, inclusive: name === "lte" });
         break;
       case "like":
       case "ilike":
@@ -315,6 +315,16 @@ function isScalar(v: unknown): v is Scalar {
   if (typeof v === "number") return Number.isFinite(v);
   return typeof v === "string" && v.isWellFormed();
 }
+
+/**
+ * The index orders strings by code point, TanStack by UTF-16 unit. The two
+ * orders agree on any pair where one string has no unit from U+D800 up, so
+ * such a string is a safe bound, and a window of such strings is in order.
+ */
+export const comparesAsUtf16 = (s: string): boolean => !/[\uD800-\uFFFF]/.test(s);
+
+/** A scalar a range bound may hold: strings must compare in both orders alike. */
+const isBound = (v: unknown): v is Scalar => isScalar(v) && (typeof v !== "string" || comparesAsUtf16(v));
 
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
 

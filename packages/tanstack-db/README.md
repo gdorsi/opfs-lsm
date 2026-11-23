@@ -58,7 +58,11 @@ const status1 = createLiveQueryCollection((q) =>
 // reads byStatus [1]
 ```
 
-**Note.** A document without an indexed field has no entry in that index, so a load through it misses the document. Store `null` instead.
+**Note.** A load through an index assumes each document fits it, or it misses documents the query matches:
+
+- A document without an indexed field, or without a text index's text field, has no entry in that index. Store `null` instead.
+- A range reads one type, so `gt(i.status, 0)` misses a `status` stored as `true` or `"7"`. Keep one type, plus `null`, in an indexed field.
+- A text index holds text in NFC, so `ilike` through it misses text stored decomposed (NFD). Store `text.normalize("NFC")`.
 
 ## Transact
 
