@@ -11,7 +11,6 @@ export type Doc = {
   b?: Scalar | undefined;
   tags?: Scalar[] | undefined;
   u?: Scalar | undefined;
-  p?: Scalar | undefined;
   t?: string | undefined;
   ut?: Scalar[] | undefined;
 };
@@ -25,10 +24,7 @@ export const schema = defineSchema({
       .index("tags", ["tags[]", "b"])
       .unique("uniq", "u")
       .text("search", "a", "t")
-      .index("covered", ["b", "a"], { include: ["t", "tags", "u"] })
-      .index("partial", "b", { include: ["t", "u"], where: { a: [null, false, true, 0, 1] } })
-      .unique("partialUniq", "p", { where: { a: [false, true, 0, 1, "a"] } })
-      .text("partialSearch", "b", "t", { where: { a: [null, false, 0, 1] } }),
+      .index("covered", ["b", "a"], { include: ["t", "tags", "u"] }),
   },
 });
 
@@ -39,17 +35,14 @@ export const MODEL: Record<string, ModelIndex> = {
   uniq: { kind: "unique", on: ["u"] },
   search: { kind: "text", on: ["a"], text: "t" },
   covered: { kind: "sorted", on: ["b", "a"], include: ["t", "tags", "u"] },
-  partial: { kind: "sorted", on: ["b"], include: ["t", "u"], where: { a: [null, false, true, 0, 1] } },
-  partialUniq: { kind: "unique", on: ["p"], where: { a: [false, true, 0, 1, "a"] } },
-  partialSearch: { kind: "text", on: ["b"], text: "t", where: { a: [null, false, 0, 1] } },
 };
-export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2, partial: 1, partialUniq: 1, partialSearch: 1 };
+export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
 
 /** A unique multi index, which gives a document one unique entry per distinct element of `ut`. */
 export const withUniqueTags = schema.collections.docs.unique("utags", "ut[]");
 export const UNIQUE_TAGS = { name: "utags", model: { kind: "multi", on: ["ut"] }, arity: 1 } as const;
 /** The unique indexes: `eq` takes no list on them. */
-const UNIQUE: ReadonlySet<string> = new Set(["uniq", "partialUniq", UNIQUE_TAGS.name]);
+const UNIQUE: ReadonlySet<string> = new Set(["uniq", UNIQUE_TAGS.name]);
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
@@ -83,7 +76,7 @@ export const datasetArb = fc
     ),
     fc.uniqueArray(denseScalarArb, { selector: (v) => JSON.stringify(v), maxLength: 25 }),
   )
-  .map(([ds, us]) => ds.map((d, i): Doc => (i < us.length ? { ...d, u: us[i], p: us[i] } : d)));
+  .map(([ds, us]) => ds.map((d, i): Doc => (i < us.length ? { ...d, u: us[i] } : d)));
 
 function boundArb(value: fc.Arbitrary<Scalar>): fc.Arbitrary<QueryInput> {
   return fc.oneof(

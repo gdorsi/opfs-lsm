@@ -44,8 +44,6 @@ const schema = defineSchema({
       .index("byGN", ["g", "n"])
       .index("byKS", ["k", "s"])
       .index("byGS", ["g", "s"])
-      .index("liveByN", "n", { where: { k: true } })
-      .index("lowByS", ["s"], { where: { g: [0, 1] } })
       .text("search", ["k", "n"], "t"),
   },
 });

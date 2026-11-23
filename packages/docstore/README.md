@@ -57,7 +57,7 @@ const schema = defineSchema({
 });
 ```
 
-`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument, and `index` can take `{ include }` ([Included fields](#included-fields)). Each can take `{ where }` ([Partial indexes](#partial-indexes)). Each call returns a new declaration, so you can share a base.
+`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument, and `index` can take `{ include }` ([Included fields](#included-fields)). Each call returns a new declaration, so you can share a base.
 
 ```ts
 const base = collection<Todo>().index("open", ["done", "createdAt"]);
@@ -303,35 +303,6 @@ await todos.queryEntries({ index: "list", eq: [false] });
 ```
 
 **Note.** Each entry stores a copy of its fields, so the index takes more space, and a write that changes an included field rewrites the document's entries in that index. Include what a list shows, not the whole document. An included field can hold any JSON value. `index` takes up to 16 of them, `unique` and `text` take none. The included fields of one document may take at most 1 MiB in one index, counted once per entry: a larger document is one the index cannot hold.
-
-### Partial indexes
-
-`where` makes an index hold only some of the documents. It maps a field to the value the field must have, or to a list of the values it may have. A document is in the index when every field of `where` holds one of its values. The other documents have no entry, so they cost no space and no write in this index.
-
-```ts
-const openOnly = collection<Todo>().index("openByCreated", "createdAt", {
-	where: { done: false },
-});
-// a store whose todos are openOnly
-await todos.queryIds({ index: "openByCreated" });
-// => { ids: ["c", "a"] }, b is done, so it has no entry
-await todos.modify("a", (t) => ({ ...t, done: true }));
-await todos.queryIds({ index: "openByCreated" });
-// => { ids: ["c"] }, a left the index with the write
-todos.indexes.get("openByCreated");
-// => { kind: "sorted", by: ["createdAt"], unique: false,
-//      where: [["done", [false]]] }
-```
-
-A tracker can list its open issues in one range with `where: { status: [0, 1, 2] }`, where a plain index needs one range per status. A field is a top-level field or a dot path to a scalar, and TypeScript checks the fields and the values against the document type.
-
-A document is outside the index when the field is missing, when it holds an array or an object, or when it holds another value. A value matches only if it is equal and of the same type, so `"0"` is not `0`. `null` is a value, so it matches only when it is listed.
-
-The check runs before any field of `by` is read. A document outside the index never fails a write because of a value the index cannot hold.
-
-`where` goes with `unique`, `text` and `include`. A unique index applies among the documents it holds, so two documents can share a value when at most one of them is in the index. A second one that enters it fails with `"unique"`.
-
-**Note.** `where` is part of the schema. Changing it needs a new `version`, and the index is rebuilt with only the documents that match. The order of the listed values does not matter, and `{ done: false }` equals `{ done: [false] }`.
 
 ### Text
 
@@ -779,7 +750,7 @@ await todos4.query({ index: "byTitle" });
 // rebuild
 ```
 
-**Note.** `todos.indexes` follows this handle's schema. A query on an index that a newer schema redefined throws `"schema"`. A changed `include` or `where` redefines its index, which is rebuilt like a new one.
+**Note.** `todos.indexes` follows this handle's schema. A query on an index that a newer schema redefined throws `"schema"`. A changed `include` redefines its index, which is rebuilt like a new one.
 
 ## Storage quota
 
