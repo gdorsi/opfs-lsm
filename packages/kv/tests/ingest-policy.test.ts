@@ -582,7 +582,7 @@ describe("ingest policy", () => {
     await db.close();
   });
 
-  it("starts no compaction pass from the due flush while the writer is still writing", async () => {
+  it("starts no compaction pass when the due time passes with too little waiting to flush", async () => {
     const fs = new MemoryFs();
     const compactions = vi.fn<() => void>();
     const request = navigator.locks.request.bind(navigator.locks);
@@ -604,6 +604,7 @@ describe("ingest policy", () => {
       await db.put(utf(`k${i}`), new Uint8Array(2));
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    expect(await loadLatestGeneration(fs), "nothing was flushed").toBeUndefined();
     expect(compactions).not.toHaveBeenCalled();
     await db.close();
   });

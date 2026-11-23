@@ -320,3 +320,22 @@ test("doc.destroy() after a failed write is not an unhandled rejection, and dest
     await db.close();
   }
 });
+
+test("clearData removes the doc after its final flush failed", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const seed = await reopen(db, "a");
+  seed.doc.getText("t").insert(0, "stored");
+  await seed.p.destroy();
+  let fail = true;
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => fail), "a", doc);
+  await p.whenSynced;
+  doc.getText("t").insert(0, "x");
+  await assert.rejects(p.destroy(), /disk full/);
+  fail = false;
+  await p.clearData();
+  const empty = await reopen(db, "a");
+  assert.equal(empty.doc.getText("t").toString(), "");
+  await empty.p.destroy();
+  await db.close();
+});

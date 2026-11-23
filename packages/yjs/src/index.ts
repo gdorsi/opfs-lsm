@@ -84,7 +84,8 @@ export class KvPersistence {
    * the doc are not stored.
    */
   async clearData(): Promise<void> {
-    await this.destroy();
+    // The final flush only stores updates this delete removes, so its failure does not stop the delete.
+    await this.destroy().catch(() => {});
     await this.db.batch((tx) => tx.deleteRange(prefixBound(this.prefix)));
   }
 

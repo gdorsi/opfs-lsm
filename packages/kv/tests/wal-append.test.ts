@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ChangeEvent } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests } from "../src/testing.js";
@@ -92,12 +93,16 @@ describe("keys and values", () => {
     const db = await open("w1");
     const stored = new Uint8Array(100).fill(1);
     await db.put(enc.encode("a"), stored);
-    for (const bad of [new ArrayBuffer(100), new DataView(new ArrayBuffer(100)), new Uint16Array(100), "text"]) {
+    for (const bad of [new ArrayBuffer(100), new DataView(new ArrayBuffer(100)), new Uint16Array(100), "text", null]) {
       const value = bad as unknown as Uint8Array;
-      await expect(db.put(enc.encode("b"), value)).rejects.toThrow("value must be a Uint8Array");
+      await expect(db.put(enc.encode("b"), value)).rejects.toThrow(bad === null ? "put requires a value" : "value must be a Uint8Array");
       await expect(db.put(value, stored)).rejects.toThrow("key must be a Uint8Array");
+      await expect(db.delete(value)).rejects.toThrow("key must be a Uint8Array");
       await expect(db.get(value)).rejects.toThrow("key must be a Uint8Array");
     }
+    const otherRealm = runInNewContext("new Uint8Array([7, 7])") as Uint8Array;
+    await db.put(otherRealm, otherRealm);
+    expect(await db.get(otherRealm)).toEqual(new Uint8Array([7, 7]));
     await db.put(enc.encode("c"), new Uint8Array(100).fill(3));
     expect(await db.get(enc.encode("a"))).toEqual(stored);
     expect(await db.get(enc.encode("b"))).toBeUndefined();
