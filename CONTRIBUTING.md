@@ -22,7 +22,7 @@ A site figure that shows a kv mechanism, such as the WAL, a flush, a broadcast o
 
 ## Add a changeset when you change a published package
 
-The repository publishes six packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, and `@opfs-lsm/fate`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
+The repository publishes seven packages to npm: `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/tanstack-db`, `@opfs-lsm/tanstack-query`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, and `@opfs-lsm/fate`. [Changesets](https://github.com/changesets/changesets) versions them and writes each package's `CHANGELOG.md`.
 
 If your pull request changes what one of these packages does, add a changeset:
 
@@ -46,7 +46,7 @@ Pick the bump type by what a user of the package sees:
 
 Changes to tests, benchmarks, examples, or docs need no changeset. The examples and `bench` are private and never publish.
 
-All six packages are fixed to one version, the `fixed` setting in `.changeset/config.json`: a bump to any one of them bumps all of them, so the packages always publish together at the same version and their published dependency ranges always match.
+All seven packages are fixed to one version, the `fixed` setting in `.changeset/config.json`: a bump to any one of them bumps all of them, so the packages always publish together at the same version and their published dependency ranges always match.
 
 ## Release
 

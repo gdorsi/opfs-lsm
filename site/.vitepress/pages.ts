@@ -36,6 +36,7 @@ const sections: Section[] = [
     title: "Integrations",
     pages: [
       { label: "TanStack DB", source: "packages/tanstack-db/README.md", route: "tanstack-db", sidebarSections: true },
+      { label: "TanStack Query", source: "packages/tanstack-query/README.md", route: "tanstack-query", sidebarSections: true },
       { label: "Yjs", source: "packages/yjs/README.md", route: "yjs", sidebarSections: true },
       { label: "Automerge", source: "packages/automerge/README.md", route: "automerge", sidebarSections: true },
       { label: "fate", source: "packages/fate/README.md", route: "fate", sidebarSections: true },
