@@ -60,10 +60,15 @@ export function checkDbName(name: string): DbName {
 }
 
 /**
- * A view of a detached buffer reads as empty, so only an empty one needs the
- * look at its buffer, which V8 has to allocate for a small array.
+ * The copies count elements, so only an array of bytes is stored right; one
+ * from another realm counts too. A view of a detached buffer reads as empty,
+ * so only an empty one needs the look at its buffer, which V8 has to allocate
+ * for a small array.
  */
 function assertBuffer(bytes: Uint8Array, label: string): void {
+  if (!ArrayBuffer.isView(bytes) || bytes.BYTES_PER_ELEMENT !== 1) {
+    throw new ConstraintError(`${label} must be a Uint8Array`);
+  }
   if (bytes.byteLength > 0) return;
   const buf = bytes.buffer as ArrayBuffer & { detached?: boolean };
   if (buf.detached === true) {
@@ -84,13 +89,13 @@ export function checkValue(bytes: Uint8Array): CheckedValue {
   return copyIn(bytes) as CheckedValue;
 }
 
-/** Key and value bytes of an op: a range delete counts its bounds. */
+/** Key and value bytes of an op: a range delete counts its bounds. A missing key counts 0, and its check throws. */
 function opBytes(op: BatchOp): number {
   switch (op.type) {
     case "put":
-      return op.key.byteLength + op.value.byteLength;
+      return (op.key?.byteLength ?? 0) + (op.value?.byteLength ?? 0);
     case "del":
-      return op.key.byteLength;
+      return op.key?.byteLength ?? 0;
     case "deleteRange":
       return (op.start?.byteLength ?? 0) + (op.endExclusive?.byteLength ?? 0);
   }
@@ -124,7 +129,7 @@ export class CheckedBatch {
   private bytes = 0;
 
   add(op: BatchOp): void {
-    if (op.type === "put" && op.value === undefined) {
+    if (op.type === "put" && op.value == null) {
       throw new ConstraintError("put requires a value");
     }
     // Counted before the copies below, so an oversized value is never copied.

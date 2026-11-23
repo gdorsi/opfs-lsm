@@ -582,6 +582,33 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("starts no compaction pass when the due time passes with too little waiting to flush", async () => {
+    const fs = new MemoryFs();
+    const compactions = vi.fn<() => void>();
+    const request = navigator.locks.request.bind(navigator.locks);
+    vi.spyOn(navigator.locks, "request").mockImplementation(((name: string, ...rest: unknown[]) => {
+      if (name === compactLock(NAME)) compactions();
+      return (request as (...args: unknown[]) => Promise<unknown>)(name, ...rest);
+    }) as typeof navigator.locks.request);
+    // The reserve is still unwritten, which is when the idle flush starts a pass.
+    const db = await openHarnessDb({
+      name: NAME,
+      writerId: "a",
+      fs,
+      maxWalBytes: 8000,
+      reserveBytes: 4096,
+      ingest: createLocalIngestClient(new EngineHost(() => fs, { idleFlushMs: 60_000, idleFlushDueMs: 30 })),
+    });
+    opened.push(db);
+    for (let i = 0; i < 20; i++) {
+      await db.put(utf(`k${i}`), new Uint8Array(2));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(await loadLatestGeneration(fs), "nothing was flushed").toBeUndefined();
+    expect(compactions).not.toHaveBeenCalled();
+    await db.close();
+  });
+
   it("leaves a quiet database alone below that share", async () => {
     const fs = new MemoryFs();
     const db = await open(new EngineHost(() => fs, { idleFlushMs: 20 }), fs, "a", 800);

@@ -300,3 +300,42 @@ test("a failed write with no flush waiting is not an unhandled rejection", async
     await db.close();
   }
 });
+
+test("doc.destroy() after a failed write is not an unhandled rejection, and destroy() still rejects", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const unhandled: unknown[] = [];
+  const record = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  try {
+    const doc = new Y.Doc();
+    const p = new KvPersistence(flaky(db, () => true), "a", doc);
+    await p.whenSynced;
+    doc.getText("t").insert(0, "x");
+    doc.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+    await assert.rejects(p.destroy(), /disk full/);
+  } finally {
+    process.off("unhandledRejection", record);
+    await db.close();
+  }
+});
+
+test("clearData removes the doc after its final flush failed", async () => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  const seed = await reopen(db, "a");
+  seed.doc.getText("t").insert(0, "stored");
+  await seed.p.destroy();
+  let fail = true;
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => fail), "a", doc);
+  await p.whenSynced;
+  doc.getText("t").insert(0, "x");
+  await assert.rejects(p.destroy(), /disk full/);
+  fail = false;
+  await p.clearData();
+  const empty = await reopen(db, "a");
+  assert.equal(empty.doc.getText("t").toString(), "");
+  await empty.p.destroy();
+  await db.close();
+});
