@@ -132,7 +132,7 @@ try {
   try {
     const [port, endpoint] = readFileSync(path.join(chrome.profile, "DevToolsActivePort"), "utf8").split("\n");
     const cdp = await connect(`ws://127.0.0.1:${port}${endpoint}`);
-    const tab = await chrome.openTab(`${server.origin}/index.html${query}`);
+    const tab = await chrome.openTab(`${server.origin}/index.html${query ? `${query}&touch` : "?touch"}`);
     const started = Date.now();
     let worker: string | undefined;
     let carry: string | undefined;

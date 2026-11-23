@@ -119,7 +119,7 @@ try {
     const [port, endpoint] = readFileSync(path.join(chrome.profile, "DevToolsActivePort"), "utf8").split("\n");
     const cdp = await connect(`ws://127.0.0.1:${port}${endpoint}`);
     const url = `${server.origin}/index.html`;
-    let tab = await chrome.openTab(url);
+    let tab = await chrome.openTab(`${url}?touch`);
     let carry: string | undefined;
     for (const [phase, { page }] of run.phases.entries()) {
       if (page === "fresh" && phase > 0) {

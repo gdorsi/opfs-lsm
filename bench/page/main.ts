@@ -78,13 +78,14 @@ async function catalog(): Promise<Catalog> {
 
 /** The open store survives "same" phases; a "fresh" phase starts on a new page with only `carry`. */
 let open: { key: string; store: FamilyStores[Family] } | undefined;
-let touched = false;
+/** Only the driver's first tab of a run touches storage (`?touch`): a touch in a later tab would open the IndexedDB backing store before the timed open. */
+let touching = new URLSearchParams(location.search).has("touch");
 
 async function runPhase(req: PhaseRequest): Promise<PhaseReply> {
   if (!crossOriginIsolated) throw new Error("page is not cross-origin isolated: timers are coarse");
-  if (!touched) {
+  if (touching) {
     await touchStorage();
-    touched = true;
+    touching = false;
   }
   const workload = await load(workloadModules, req.workload);
   const contender = await load(contenderModules, req.contender);

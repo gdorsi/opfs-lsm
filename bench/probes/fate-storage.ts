@@ -61,7 +61,7 @@ try {
     const chrome = await launchChrome({ headless: true, onProgress: () => {} });
     try {
       const url = `${server.origin}/index.html?recordStorage`;
-      let tab = await chrome.openTab(url);
+      let tab = await chrome.openTab(`${url}&touch`);
       let carry: string | undefined;
       for (const [phase, { page }] of run.phases.entries()) {
         if (page === "fresh" && phase > 0) {
