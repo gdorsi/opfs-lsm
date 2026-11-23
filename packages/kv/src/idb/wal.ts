@@ -599,8 +599,7 @@ export class TabWal extends IdBWal {
   async tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
-    const tail = await readTail(tx, since, held, started);
-    return tail;
+    return readTail(tx, since, held, started);
   }
 
   /**
