@@ -152,12 +152,12 @@ export function flatEngine(instance: { readonly exports: WebAssembly.Exports }):
     fill: (into: Uint8Array) => void,
     op: (ptr: number) => number,
   ): Uint8Array {
-    const ptr = ex.input_ptr(len);
+    const ptr = ex.input_ptr(len) >>> 0;
     if (ptr === 0 && len > 0) throw new EngineOutOfMemoryError(name, len);
     fill(new Uint8Array(ex.memory.buffer, ptr, len));
     const code = op(ptr);
     if (code < 0) throw statusError(name, code, len);
-    const at = ex.result_ptr();
+    const at = ex.result_ptr() >>> 0;
     return new Uint8Array(ex.memory.buffer).slice(at, at + ex.result_len());
   }
 
@@ -445,8 +445,8 @@ async function loaded(): Promise<FlatEngine> {
 
 /**
  * True when `err` is a wasm trap. A trap does not unwind, so the trapped
- * call's frames stay on the instance's shadow stack: a few thousand traps use
- * it up and every later call fails. A fresh instance takes over.
+ * call keeps what it allocated, and a session it trapped in stays open. A
+ * fresh instance takes over.
  */
 function afterTrap(err: unknown): boolean {
   if (!(err instanceof WebAssembly.RuntimeError)) return false;
