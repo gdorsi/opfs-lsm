@@ -148,9 +148,9 @@ operation allocates what it needs through the module's allocator. Outside
 a merge session it never returns -10; running out of memory inside an
 operation traps, which the loader sees as a `WebAssembly.RuntimeError` and
 answers by replacing the instance and throwing. A merge session reserves
-its working set in `merge_open` and grows its input buffers (for a block,
-a run's bloom and index, or an entry larger than any before) without
-trapping, so it returns -10 instead. The output writer's per-run state
-(one bloom hash per key and one index row per block of the open run)
-still grows with the run, bounded by `target_bytes`, and running out of
-memory there traps as it does outside a session.
+its working set in `merge_open`, and its reader grows its buffers (for a
+block, a run's bloom and index, or an entry larger than any before)
+without trapping, so it returns -10 instead. Its writer grows with the
+open output run, bounded by `target_bytes`: the staged block, the output
+buffer, one bloom hash per key and one index row per block. Running out of
+memory in the writer traps as it does outside a session.

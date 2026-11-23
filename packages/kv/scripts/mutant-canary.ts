@@ -2,8 +2,11 @@
  * Proves the checked suites have not gone blind: plants each bug below in a
  * copy of the engine source, builds that copy's checked twin, and runs the
  * kv suite on it (`KV_ENGINE=checked`). Each planted bug must fail the suite
- * within the time limit, and the clean source must pass it. Prints a table
- * and exits 1 on any other outcome.
+ * within the time limit, through the check that owns it: a shadow report,
+ * or for the allocator, which the twin does not check, its model test. A
+ * failure that only compares output with the clean shipped build would
+ * pass a blind check. The clean source must pass. Prints a table and exits
+ * 1 on any other outcome.
  *
  *   pnpm --filter @opfs-lsm/kv mutant-canary [name…]
  */
@@ -18,6 +21,11 @@ const KV = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LIMIT_MS = 10 * 60_000;
 
 type Mutant = { readonly name: string; readonly file: string; readonly from: string; readonly to: string };
+
+const SHADOW = /SanitizerError|^(bad-access|leak|double-free|invalid-free|invalid-realloc):/;
+const ALLOC_MODEL = /alloc-model\.test\.ts/;
+/** The output that shows the check owning `mutant` caught it. */
+const owner = (mutant: Mutant) => (mutant.file === "alloc.ts" ? ALLOC_MODEL : SHADOW);
 
 /** Each `from` occurs once in its file. */
 const MUTANTS: readonly Mutant[] = [
@@ -39,7 +47,7 @@ const MUTANTS: readonly Mutant[] = [
   { name: "free merges a block with the wrong neighbour", file: "alloc.ts", from: "if (next && block + size == next) {", to: "if (next && block + size == next + 8) {" },
 ];
 
-type Outcome = { readonly code: number | null; readonly ms: number; readonly first: string };
+type Outcome = { readonly code: number | null; readonly ms: number; readonly first: string; readonly lines: readonly string[] };
 
 /** The kv suite on the checked build in `dir`, stopping at the first failure. */
 function suite(dir: string): Promise<Outcome> {
@@ -57,8 +65,8 @@ function suite(dir: string): Promise<Outcome> {
     child.on("close", (code) => {
       clearTimeout(timer);
       const lines = out.split("\n").map((l) => l.trim());
-      const first = lines.find((l) => /SanitizerError|^(bad-access|leak|double-free|invalid-free|invalid-realloc):|AssertionError|RuntimeError/.test(l)) ?? lines.find((l) => l.startsWith("FAIL")) ?? "";
-      resolve({ code, ms: Date.now() - started, first: first.slice(0, 160) });
+      const first = lines.find((l) => SHADOW.test(l)) ?? lines.find((l) => /AssertionError|RuntimeError/.test(l)) ?? lines.find((l) => l.startsWith("FAIL")) ?? "";
+      resolve({ code, ms: Date.now() - started, first: first.slice(0, 160), lines });
     });
   });
 }
@@ -87,8 +95,10 @@ const only = process.argv.slice(2);
 const rows: string[] = [];
 let wrong = 0;
 for (const mutant of [undefined, ...MUTANTS.filter((m) => !only.length || only.some((o) => m.name.includes(o)))]) {
-  const { code, ms, first } = await plant(mutant);
-  const verdict = mutant ? (code !== 0 && code !== null ? "caught" : code === null ? "TIMED OUT" : "MISSED") : code === 0 ? "passes" : "FAILS";
+  const { code, ms, first, lines } = await plant(mutant);
+  const failed = code !== 0 && code !== null;
+  const owned = mutant !== undefined && lines.some((l) => owner(mutant).test(l));
+  const verdict = mutant ? (failed ? (owned ? "caught" : "NOT BY ITS CHECK") : code === null ? "TIMED OUT" : "MISSED") : code === 0 ? "passes" : "FAILS";
   if (verdict !== "caught" && verdict !== "passes") wrong++;
   rows.push(`| ${mutant?.name ?? "clean source"} | ${verdict} | ${(ms / 1000).toFixed(0)} s | ${first.replaceAll("|", "\\|")} |`);
   console.log(rows.at(-1));
