@@ -1,4 +1,4 @@
-import { prefixBound, type Db } from "@opfs-lsm/kv";
+import { ConstraintError, prefixBound, type Db } from "@opfs-lsm/kv";
 import * as Y from "yjs";
 
 /**
@@ -99,6 +99,7 @@ export class KvPersistence {
   };
 
   private async load(): Promise<this> {
+    if (this.prefix.byteLength + 8 > MAX_KEY_BYTES) throw new ConstraintError("document name too long for a kv key");
     const { updates, through } = await this.readStored();
     this.loadedUpdates = updates.length;
     this.stored = updates.length;
@@ -195,13 +196,13 @@ export class KvPersistence {
 }
 
 const DEFAULT_TRIM_SIZE = 500;
+const MAX_KEY_BYTES = 8 * 1024;
 
 const textEncoder = new TextEncoder();
 
 /** `y` + u16 name length + UTF-8 name. The length keeps "a" from prefixing "a/b". */
 function docPrefix(name: string): Uint8Array {
   const bytes = textEncoder.encode(name);
-  if (bytes.byteLength > 0xffff) throw new Error("document name longer than 65535 bytes");
   const out = new Uint8Array(3 + bytes.byteLength);
   out[0] = 0x79;
   out[1] = bytes.byteLength >> 8;
