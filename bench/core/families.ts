@@ -8,6 +8,7 @@
  */
 import type { StorageAdapterInterface } from "@automerge/react";
 import type { KvStats } from "@opfs-lsm/kv/testing";
+import type { experimental_createQueryPersister, StoragePersisterOptions } from "@tanstack/query-persist-client-core";
 import type { GoalStore } from "./goals.ts";
 import type { TrackerSpec, Tx as TrackerTx } from "../datasets/tracker/types.ts";
 import type * as Y from "yjs";
@@ -102,6 +103,14 @@ export type YjsBinding = {
   clear(): Promise<void>;
 };
 
+/**
+ * TanStack Query persistence: a contender builds `experimental_createQueryPersister` over its storage with the
+ * workload's options. Workloads build the QueryClient, so both run the same client code.
+ */
+export type QueryStore = Common & {
+  persister(options: Omit<StoragePersisterOptions<string>, "storage">): ReturnType<typeof experimental_createQueryPersister<string>>;
+};
+
 /** The task-tracker dataset's goals: each contender replays the history through its write API and answers every goal with its own query API. */
 export type TrackerStore = Common & GoalStore<TrackerSpec, TrackerTx>;
 
@@ -130,8 +139,9 @@ export type FamilyStores = {
   "tanstack-ondemand": OnDemandStore;
   automerge: AutomergeStore;
   yjs: YjsStore;
+  "tanstack-query": QueryStore;
   tracker: TrackerStore;
   "tanstack-live": LiveStore;
 };
 
-export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "tanstack", "tanstack-ondemand", "automerge", "yjs", "tracker", "tanstack-live"];
+export const FAMILIES: readonly (keyof FamilyStores)[] = ["kv", "tanstack", "tanstack-ondemand", "automerge", "yjs", "tanstack-query", "tracker", "tanstack-live"];

@@ -58,4 +58,20 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     source: `export { IndexedDBStorageAdapter } from "@automerge/automerge-repo-storage-indexeddb";`,
     note: "automerge-repo IndexedDBStorageAdapter",
   },
+  {
+    id: "tanstack-query",
+    source: `export { QueryClient } from "@tanstack/query-core"; export { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";`,
+    note: "TanStack Query client and the per-query persister alone, to subtract from the two rows below",
+  },
+  {
+    id: "tanstack-query+kv",
+    kv: true,
+    source: `export { createQueryPersister } from "@opfs-lsm/tanstack-query"; export { openDb } from "@opfs-lsm/kv"; export { QueryClient } from "@tanstack/query-core";`,
+    note: "TanStack Query client + createQueryPersister + kv",
+  },
+  {
+    id: "tanstack-query+idb-keyval",
+    source: `export { createStore, del, entries, get, set } from "idb-keyval"; export { QueryClient } from "@tanstack/query-core"; export { experimental_createQueryPersister } from "@tanstack/query-persist-client-core";`,
+    note: "TanStack Query client + the per-query persister + idb-keyval",
+  },
 ];
