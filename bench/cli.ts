@@ -145,6 +145,7 @@ async function run(o: {
       resultsFile,
       phaseTimeoutMs: o.timeoutMs,
       kv: o.kv,
+      coldTabs: !o.smoke,
       log: (line) => console.log(line),
     });
     const text = report(records, new Map(catalog.map((w) => [w.workload, w.title])));

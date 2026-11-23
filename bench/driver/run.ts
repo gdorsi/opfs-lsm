@@ -28,6 +28,8 @@ export type RunOptions = {
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
   readonly kv: KvOptions;
+  /** Wait out the backing store's grace before each fresh tab. Only timings need it, so the smoke skips it. */
+  readonly coldTabs: boolean;
   readonly log: (line: string) => void;
 };
 
@@ -73,7 +75,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
       for (const tab of tabs) await tab?.close();
       tabs = [undefined, undefined];
       await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
-      await waitBackingStoreCold();
+      if (opts.coldTabs) await waitBackingStoreCold();
     };
     for (const { phase, round, fresh, slot } of tabPlan(run.phases)) {
       if (fresh) await freshTabs();
