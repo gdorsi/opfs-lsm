@@ -47,13 +47,30 @@ beforeAll(() => {
 });
 
 /**
- * How the twin broke a rule on `c`: a transcript other than the shipped
- * build's, a trap, or a block or memory past the limit. Only a malformed
- * marks block, which the host encodes, may trap.
+ * How the twin broke a rule on `c`: a memory error, a transcript other than
+ * the shipped build's, a trap, or a block or memory past the limit. Only a
+ * malformed marks block, which the host encodes, may trap.
  */
 function differences<C>(what: string, c: C, drive: (ex: EngineExports, c: C) => Transcript, mayTrap = false): string[] {
-  const want = drive(shipped, c);
-  const got = drive(twin.exports, c);
+  let found: string[];
+  let trapped = true;
+  try {
+    const want = drive(shipped, c);
+    const got = drive(twin.exports, c);
+    trapped = [...want, ...got].some((line) => line.startsWith("TRAP"));
+    found = disagreements(what, want, got, mayTrap);
+  } catch (err) {
+    found = [`${what}: ${String(err)}`];
+  }
+  // A trapped or failed call keeps what it allocated, so the next case starts on fresh instances, as the host restarts its engine.
+  if (trapped) {
+    twin = openChecked();
+    shipped = openShipped();
+  }
+  return found;
+}
+
+function disagreements(what: string, want: Transcript, got: Transcript, mayTrap: boolean): string[] {
   const trap = want.find((line) => line.startsWith("TRAP"));
   if (trap && !mayTrap) return [`${what}: ${trap}`];
   const at = got.findIndex((line, i) => line !== want[i]);

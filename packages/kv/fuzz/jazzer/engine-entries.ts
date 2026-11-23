@@ -15,9 +15,12 @@ declare const Fuzzer: { coverageTracker: { createModuleCounters(size: number): U
 
 const LIMIT = 64 << 20;
 
+let counters: Uint8Array | undefined;
+/** Every twin bumps the counters libFuzzer registered for the first. */
+const coverage = (edges: number) => (counters ??= Fuzzer.coverageTracker.createModuleCounters(edges));
 // Opened as the module loads, so libFuzzer registers the twin's counters when it starts.
-const twin = openChecked({ coverage: (edges) => Fuzzer.coverageTracker.createModuleCounters(edges) });
-const shipped = openShipped();
+let twin = openChecked({ coverage });
+let shipped = openShipped();
 
 function agree(what: string, got: Transcript, want: Transcript, mayTrap = false): void {
   const trap = want.find((line) => line.startsWith("TRAP"));
@@ -25,6 +28,11 @@ function agree(what: string, got: Transcript, want: Transcript, mayTrap = false)
   if (got.join("\n") !== want.join("\n")) throw new Error(`${what}: the twin and the shipped build disagree`);
   if (shipped.memory.buffer.byteLength > LIMIT) throw new Error(`${what}: memory reached ${shipped.memory.buffer.byteLength} bytes`);
   if (twin.largestAllocation() > LIMIT) throw new Error(`${what}: asked for a block of ${twin.largestAllocation()} bytes`);
+  // A trapped call keeps what it allocated, so the next input starts on fresh instances, as the host restarts its engine, and replays alone.
+  if (trap) {
+    twin = openChecked({ coverage });
+    shipped = openShipped();
+  }
 }
 
 export function engineEncode(data: Uint8Array): void {
