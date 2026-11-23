@@ -4,7 +4,7 @@ These tables compare opfs-lsm with the storage a web app would otherwise use: In
 
 ## Storage calls
 
-Each workload holds 100,000 entries with 16-byte keys and 100-byte values, except the two 8 KiB rows, which hold 6,000 values of 8 KiB under 40-byte keys. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. A rate is the operations over the time from the first storage call to the last, opening the store included. The bench builds its inputs before the first call and checks the results after the last, so the calls run back to back. A read of a missing key looks up a key that falls between two stored keys. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
+Each workload holds 100,000 entries with 16-byte keys and 100-byte values, except the two 8 KiB rows, which hold 6,000 values of 8 KiB under 40-byte keys. The IndexedDB baseline is one object store with one transaction per batch of 1,000, and it calls `commit()` on each one. A rate is the operations over the time from the first storage call to the last, with the store open left out: the opens have their own rows. kv runs with `reserveBytes: 0`, not its default of 24 MiB, since the reserve file holds no data and would count in the disk bytes and its write would land in a timed phase. The bench builds its inputs before the first call and checks the results after the last, so the calls run back to back. A read of a missing key looks up a key that falls between two stored keys. Numbers depend on the machine. To run them yourself, see [bench/README.md](../bench/README.md).
 
 <!-- bench:table storage-calls -->
 | Workload | IndexedDB | kv | |
@@ -35,7 +35,7 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | TanStack DB | Open and load 91,000 rows | 1.02 s † | 299 ms † | 3.4× |
 | TanStack DB | Bulk insert, 100,000 rows in transactions of 1,000 | 9.80k rows/s † | 105k rows/s | 11× |
 | TanStack DB | Serial insert, one row per transaction | 3.30k rows/s † | 5.04k rows/s | 1.5× ‡ |
-| Yjs | Cold load of 500 notes | 1.90k notes/s † | 8.78k notes/s † | 4.6× |
+| Yjs | Cold load of 500 notes, store open and check included | 276 ms † | 71.9 ms † | 3.8× |
 | Yjs | Editing trace written in one burst, 25,700 updates with no yield between keystrokes | 2.13k edits/s † | 18.5k edits/s | 8.7× |
 | Yjs | One keystroke typed at 60 Hz, main-thread time | 0.130 ms † | 0.156 ms † | 0.83× ‡ |
 | Automerge | Cold load of 500 notes | 1.33k notes/s | 2.02k notes/s | 1.5× |

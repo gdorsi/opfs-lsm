@@ -76,7 +76,7 @@ export const TABLES: readonly Table[] = [
         metric: "rate",
         unit: "rows/s",
       },
-      { label: ["Yjs", "Cold load of 500 notes"], workload: "yjs/many-docs", phase: "load", metric: "rate", unit: "notes/s", at: FRAMEWORKS.yjs },
+      { label: ["Yjs", "Cold load of 500 notes, store open and check included"], workload: "yjs/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.yjs },
       {
         label: ["Yjs", "Editing trace written in one burst, 25,700 updates with no yield between keystrokes"],
         workload: "yjs/trace",
