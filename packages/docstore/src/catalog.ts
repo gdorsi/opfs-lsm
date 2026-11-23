@@ -19,6 +19,8 @@ const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
 const MAX_INCLUDE = 16;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** The catalog keeps names as object keys, so a name `Object.prototype` holds, such as `toString`, is refused. */
+const isName = (name: string) => NAME.test(name) && !(name in Object.prototype);
 /** Ends the first field of `by` when it holds an array. */
 const ARRAY_MARK = "[]";
 const OPTIONS = ["by", "unique", "text", "include"];
@@ -112,13 +114,13 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!isObject(decl.collections)) badSchema("collections must be an object");
   const collections = new Map<string, Map<string, IndexSpec>>();
   for (const [name, coll] of Object.entries(decl.collections)) {
-    if (!NAME.test(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME}`);
+    if (!isName(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
     const indexes: unknown = coll?.indexes;
     if (!isObject(indexes)) badSchema(`collection "${name}" was not made by collection()`);
     const specs = new Map<string, IndexSpec>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;
-      if (!NAME.test(index)) badSchema(`${where}: the name must match ${NAME}`);
+      if (!isName(index)) badSchema(`${where}: the name must match ${NAME} and not name an Object.prototype member`);
       if (!isObject(d)) badSchema(`${where} must be an object`);
       for (const key of Object.keys(d)) {
         if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
@@ -148,7 +150,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
   const drop = new Set<string>();
   if (decl.drop !== undefined && !Array.isArray(decl.drop)) badSchema("drop must be an array of collection names");
   for (const name of decl.drop ?? []) {
-    if (typeof name !== "string" || !NAME.test(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME}`);
+    if (typeof name !== "string" || !isName(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
     if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
     drop.add(name);
   }
