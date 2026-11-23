@@ -26,7 +26,7 @@ Set `CHROME_PATH` when Chrome is not at the macOS default or on `PATH` as `googl
 
 ## Publishing a run
 
-The results tables of [docs/benchmarks.md](../docs/benchmarks.md) are generated. Each sits between `<!-- bench:table <id> -->` and `<!-- /bench:table -->`. `docs-tables.ts` names the run each table reads and the series each cell takes. A cell is the median of one series. A ratio comes from the same test `compare` makes, and gets a `‡` when the runs do not separate the two (see above). `docs` refuses a ratio whose run counts could never be separated, so a published ratio without a `‡` is one the test separated. A `†` marks a cell whose runs fall into two clusters. Under each table the command writes the run counts, the Chrome version, the CPU, the load average, the commit and a link to the full results.
+The results tables of [docs/benchmarks.md](../docs/benchmarks.md) are generated. Each sits between `<!-- bench:table <id> -->` and `<!-- /bench:table -->`. `docs-tables.ts` names the run each table reads and the series each cell takes. A cell is the median of one series. A ratio comes from the same test `compare` makes, and gets a `‡` when the runs do not separate the two (see above). `docs` refuses a cell of fewer than 4 runs, so no ratio is of run counts that could never be separated, and a ratio without a `‡` is one the test separated. It also refuses a table that reads a workload and contender with a failed run in the file. A `†` marks a cell whose runs fall into two clusters. Under each table the command writes the run counts, the Chrome version, the CPU, the load average, the commit and a link to the full results.
 
 To publish a run:
 

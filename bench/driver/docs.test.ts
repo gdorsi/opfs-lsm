@@ -38,7 +38,11 @@ function run(contender: string, kops: number, over: Partial<RunRecord> = {}): Ru
 }
 
 const runsOf = (contender: string, kops: number[], over: Partial<RunRecord> = {}) => kops.map((k) => run(contender, k, over));
-const published = (records: readonly RunRecord[]): Published => ({ measures: measure(records), runs: records });
+const published = (records: readonly RunRecord[]): Published => ({
+  measures: measure(records),
+  runs: records.filter((r) => !r.error),
+  failed: records.filter((r) => r.error),
+});
 
 const TABLE: Table = {
   id: "reads",
@@ -97,12 +101,24 @@ suite("renderDocs", () => {
     assert.doesNotMatch(render([42.8, 42.5, 43, 42.8, 47.4], [47.9, 47.6, 48.1, 47.3, 47.8]), /‡/);
   });
 
-  test("a ratio of fewer than 4 runs per side throws and names the table, the row and the run counts", () => {
+  test("a cell of fewer than 4 runs throws and names the table, the row, the column and the run count", () => {
     assert.throws(
       () => render([95, 100, 105], [190, 200, 210]),
-      /table "reads", row "Random reads", column "": 3 runs against 3 cannot show a difference.*at least 4 runs per contender/,
+      /table "reads", row "Random reads", column "IndexedDB": 3 runs of kv\/test kv\/idb\. Publish at least 4 runs per contender/,
     );
-    assert.throws(() => render([95, 100, 105, 98], [190]), /4 runs against 1 cannot show a difference/);
+    assert.throws(() => render([95, 100, 105, 98], [190]), /column "kv": 1 runs of kv\/test kv\/kv/);
+  });
+
+  test("a failed run of a workload and contender the table reads throws, and one of another does not", () => {
+    const ok = [...runsOf("kv/idb", [95, 100, 100, 105]), ...runsOf("kv/kv", [190, 200, 200, 210])];
+    const failed = (over: Partial<RunRecord>) => [...ok, { ...run("kv/kv", 1, over), error: "timeout\nat phase read" }];
+    assert.throws(
+      () => renderDocs(PAGE, [TABLE], () => published(failed({}))),
+      /table "reads", row "Random reads", column "kv": .* has a failed run of kv\/test kv\/kv \(timeout\)/,
+    );
+    for (const other of [{ workload: "kv/other" }, { contender: "kv/third" }, { size: "tiny" as const }]) {
+      assert.doesNotThrow(() => renderDocs(PAGE, [TABLE], () => published(failed(other))));
+    }
   });
 
   test("a cell whose runs form two clusters is marked with a †, and a legend follows", () => {
@@ -115,7 +131,7 @@ suite("renderDocs", () => {
   });
 
   test("a cell with no series throws and names the table, the row and the column", () => {
-    const records = [...runsOf("kv/idb", [100, 100, 100])];
+    const records = [...runsOf("kv/idb", [100, 100, 100, 100])];
     assert.throws(
       () => renderDocs(PAGE, [TABLE], () => published(records)),
       /table "reads", row "Random reads", column "kv": 2026-01-01T00-00-00-test has no series kv\/test kv\/kv read rate/,
