@@ -60,10 +60,12 @@ export function checkDbName(name: string): DbName {
 }
 
 /**
- * A view of a detached buffer reads as empty, so only an empty one needs the
- * look at its buffer, which V8 has to allocate for a small array.
+ * The copies count elements, so anything but a Uint8Array would be stored
+ * wrong. A view of a detached buffer reads as empty, so only an empty one
+ * needs the look at its buffer, which V8 has to allocate for a small array.
  */
 function assertBuffer(bytes: Uint8Array, label: string): void {
+  if (!(bytes instanceof Uint8Array)) throw new ConstraintError(`${label} must be a Uint8Array`);
   if (bytes.byteLength > 0) return;
   const buf = bytes.buffer as ArrayBuffer & { detached?: boolean };
   if (buf.detached === true) {
