@@ -42,7 +42,9 @@ export function xorshift(seed: number): Source {
 /**
  * A fuzzer's input, read front to back like libFuzzer's FuzzedDataProvider:
  * a choice takes 4 bytes, bytes are copied as they are, and once the input
- * runs out every choice is 0, so a short input makes a small case.
+ * runs out every choice is 0, so a short input makes a small case. A choice
+ * of 0 is therefore always the common case: a rare event is `int(n) === 1`,
+ * and a list to `pick` from starts with its usual value.
  */
 export function bytesSource(data: Uint8Array): Source {
   let at = 0;
@@ -76,10 +78,10 @@ function key(r: Source): Uint8Array {
 
 export function randomEntries(r: Source, n: number, seq0: number): Entry[] {
   return Array.from({ length: n }, (_, i) => ({
-    del: r.int(5) === 0,
+    del: r.int(5) === 1,
     key: key(r),
-    value: r.bytes(r.int(40) === 0 ? 5000 + r.int(70_000) : r.int(200), r.int(2) ? 6 : 256),
-    seq: r.int(50) === 0 ? 2n ** 40n + BigInt(r.int(1000)) : BigInt(seq0 + i),
+    value: r.bytes(r.int(40) === 1 ? 5000 + r.int(70_000) : r.int(200), r.int(2) ? 6 : 256),
+    seq: r.int(50) === 1 ? 2n ** 40n + BigInt(r.int(1000)) : BigInt(seq0 + i),
   }));
 }
 
@@ -335,10 +337,10 @@ export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
     const runs: Uint8Array[] = [];
     for (let at = 0; at < Math.max(all.length, 1); at += per) {
       const slice = all.slice(at, at + per);
-      if (r.int(30) === 0) slice.reverse();
+      if (r.int(30) === 1) slice.reverse();
       runs.push(encoded(encoder, slice));
     }
-    if (runs.length && r.int(8) === 0) {
+    if (runs.length && r.int(8) === 1) {
       const i = r.int(runs.length);
       runs[i] = r.int(2) ? corrupt(r, runs[i]!) : inflate(r, runs[i]!, indexFields(runs[i]!));
       // Past the CRC, the footer, index and blocks are what refuse it.
@@ -347,16 +349,16 @@ export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
     return runs;
   });
   const marks = marksBlock(r);
-  const badMarks = marks.byteLength > 4 && r.int(10) === 0;
+  const badMarks = marks.byteLength > 4 && r.int(10) === 1;
   return {
     sources,
     marks: badMarks ? concat([marks.subarray(0, 4), corrupt(r, marks.subarray(4))]) : marks,
     badMarks,
     drop: r.int(2),
-    target: r.pick([0, 64, 1024, 16384, 1 << 22, Number.MAX_SAFE_INTEGER, 1e20, -5, Number.NaN]),
-    chunk: r.pick([0, 16, 256, 4096, 65536]),
-    tail: r.pick([0, 16, 256, 4096, 65536]),
-    yieldBytes: r.pick([0, 1, 1000, 1 << 20]),
+    target: r.pick([1 << 22, 0, 64, 1024, 16384, Number.MAX_SAFE_INTEGER, 1e20, -5, Number.NaN]),
+    chunk: r.pick([4096, 0, 16, 256, 65536]),
+    tail: r.pick([4096, 0, 16, 256, 65536]),
+    yieldBytes: r.pick([1 << 20, 0, 1, 1000]),
     host: 1 + r.int(2 ** 30),
   };
 }
