@@ -60,12 +60,13 @@ export function checkDbName(name: string): DbName {
 }
 
 /**
- * The copies count elements, so anything but a Uint8Array would be stored
- * wrong. A view of a detached buffer reads as empty, so only an empty one
- * needs the look at its buffer, which V8 has to allocate for a small array.
+ * The copies count elements, so only an array of bytes is stored right; one
+ * from another realm counts too. A view of a detached buffer reads as empty,
+ * so only an empty one needs the look at its buffer, which V8 has to allocate
+ * for a small array.
  */
 function assertBuffer(bytes: Uint8Array, label: string): void {
-  if (!(bytes instanceof Uint8Array) && Object.prototype.toString.call(bytes) !== "[object Uint8Array]") {
+  if (!ArrayBuffer.isView(bytes) || bytes.BYTES_PER_ELEMENT !== 1) {
     throw new ConstraintError(`${label} must be a Uint8Array`);
   }
   if (bytes.byteLength > 0) return;
