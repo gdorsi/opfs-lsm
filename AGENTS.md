@@ -57,4 +57,4 @@ Create worktrees inside `.claude/worktrees/` in the repository, never change cod
 
 ## Static checks
 
-`pnpm static` runs oxlint (`.oxlintrc.json`), `check:docs`, and fallow dead-code detection (`.fallowrc.json`). CI runs all three in the `static` job. If fallow reports a new script entry point as unused, add it to `entry` in `.fallowrc.json`. oxlint rejects `fake-indexeddb` imports under `bench/`, which must run on real IndexedDB; see bench/README.md. The repository's own oxlint rules are in `scripts/oxlint-plugin.mjs`.
+`pnpm static` runs oxlint (`.oxlintrc.json`), `lint:engine` (asc `--pedantic` and dead code over the AssemblyScript engine, which oxlint and fallow cannot parse), `check:docs`, and fallow dead-code detection (`.fallowrc.json`). CI runs all four in the `static` job. If fallow reports a new script entry point as unused, add it to `entry` in `.fallowrc.json`. oxlint rejects `fake-indexeddb` imports under `bench/`, which must run on real IndexedDB; see bench/README.md. The repository's own oxlint rules are in `scripts/oxlint-plugin.mjs`.

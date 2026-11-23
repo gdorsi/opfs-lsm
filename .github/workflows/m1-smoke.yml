@@ -73,6 +73,8 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # A wasm engine that corrupts its own heap tends to hang rather than fail.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -82,6 +84,40 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+
+  # The wasm engine on its checked twin, against the build at the merge-base,
+  # and under each Jazzer.js engine target for a minute (docs/verification.md).
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge-base with origin/main, and the trailers of the commits after it.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @opfs-lsm/kv build:wasm-checked
+      - name: the kv suite on the checked twin
+        run: pnpm --filter @opfs-lsm/kv test
+        env:
+          KV_ENGINE: checked
+      # On a push to main the merge-base is the pushed commit itself.
+      - name: the gate against the merge-base
+        if: github.event_name == 'pull_request'
+        run: pnpm --filter @opfs-lsm/kv engine:gate
+      - name: each engine fuzz target for 60 s
+        run: for t in engine-encode engine-scan engine-merge; do pnpm --filter @opfs-lsm/kv fuzz:jazzer "$t" 60 || exit 1; done
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-findings
+          path: packages/kv/fuzz/.build/crash-*
+          if-no-files-found: ignore
 
   static:
     runs-on: ubuntu-latest
@@ -94,27 +130,24 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm lint:engine
       - run: pnpm check:docs
       - run: pnpm deadcode
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: cargo test -p engine-core
 
   wasm-fresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Same toolchain and binaryen as the committed binary. A rustc or binaryen bump
-      # changes the bytes: rebuild with the new versions and update both lines.
-      - run: rustup toolchain install 1.93.1 --profile minimal --target wasm32-unknown-unknown && rustup default 1.93.1
-      - run: |
-          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz | tar xz -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/binaryen-version_133/bin" >> "$GITHUB_PATH"
-      - run: sh crates/engine-wasm/build.sh
-      - run: git diff --exit-code packages/kv/wasm/engine.wasm || { echo "::error::packages/kv/wasm/engine.wasm does not match the Rust source. Run 'sh crates/engine-wasm/build.sh' and commit packages/kv/wasm/engine.wasm."; exit 1; }
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      # The lockfile installs assemblyscript 0.28.20, the compiler of the committed
+      # binary, and packages/kv/engine/build.sh refuses any other version.
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @opfs-lsm/kv build:wasm
+      - run: git diff --exit-code packages/kv/wasm/engine.wasm || { echo "::error::packages/kv/wasm/engine.wasm does not match packages/kv/engine. Run 'pnpm --filter @opfs-lsm/kv build:wasm' and commit packages/kv/wasm/engine.wasm."; exit 1; }
 
   formal:
     runs-on: ubuntu-latest

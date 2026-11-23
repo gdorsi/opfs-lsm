@@ -1,5 +1,5 @@
 /**
- * Engine-core bridge. Loads a module that implements `crates/engine-abi.md`.
+ * Engine-core bridge. Loads a module that implements `packages/kv/engine/abi.md`.
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
@@ -65,7 +65,7 @@ export type EngineExports = {
 
 /**
  * A compaction merge that the host drives a stop at a time
- * (crates/engine-abi.md, "Merge session"), so it holds a window of each
+ * (packages/kv/engine/abi.md, "Merge session"), so it holds a window of each
  * input instead of the whole input.
  */
 export type MergeSpec = {
@@ -143,7 +143,7 @@ const TAG_PUT = 1;
 const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
-export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
+export function flatEngine(instance: { readonly exports: WebAssembly.Exports }): FlatEngine {
   const ex = instance.exports as unknown as EngineExports;
 
   function call(
@@ -152,12 +152,12 @@ export function flatEngine(instance: WebAssembly.Instance): FlatEngine {
     fill: (into: Uint8Array) => void,
     op: (ptr: number) => number,
   ): Uint8Array {
-    const ptr = ex.input_ptr(len);
+    const ptr = ex.input_ptr(len) >>> 0;
     if (ptr === 0 && len > 0) throw new EngineOutOfMemoryError(name, len);
     fill(new Uint8Array(ex.memory.buffer, ptr, len));
     const code = op(ptr);
     if (code < 0) throw statusError(name, code, len);
-    const at = ex.result_ptr();
+    const at = ex.result_ptr() >>> 0;
     return new Uint8Array(ex.memory.buffer).slice(at, at + ex.result_len());
   }
 
@@ -304,7 +304,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
 }
 
 /**
- * A run record (crates/engine-abi.md). The body is a view into `bytes`. The
+ * A run record (packages/kv/engine/abi.md). The body is a view into `bytes`. The
  * keys are copies, so the manifest does not keep `bytes` alive.
  */
 function readRun(bytes: Uint8Array): EncodedRun {
@@ -362,7 +362,7 @@ function setEngine(next: FlatEngine | undefined): void {
 async function loadWasm(): Promise<FlatEngine> {
   // Keep this a literal `new URL(..., import.meta.url)`: bundlers emit the .wasm only for that form.
   const module = await WebAssembly.compile(await readEngine(new URL("../../wasm/engine.wasm", import.meta.url)));
-  const loaded = flatEngine(await WebAssembly.instantiate(module, {}));
+  const loaded = flatEngine(await WebAssembly.instantiate(module, engineImports()));
   wasmModule = module;
   return loaded;
 }
@@ -381,6 +381,13 @@ let readEngine: (url: URL) => Promise<BufferSource> = fetchWasm;
  */
 export function readEngineWith(read: (url: URL) => Promise<BufferSource>): void {
   readEngine = read;
+}
+
+let engineImports = (): WebAssembly.Imports => ({});
+
+/** Test seam: what each new instance imports. The module this context loads imports nothing, its checked twin a shadow memory. */
+export function importEngineWith(imports: () => WebAssembly.Imports): void {
+  engineImports = imports;
 }
 
 /**
@@ -438,8 +445,8 @@ async function loaded(): Promise<FlatEngine> {
 
 /**
  * True when `err` is a wasm trap. A trap does not unwind, so the trapped
- * call's frames stay on the instance's shadow stack: a few thousand traps use
- * it up and every later call fails. A fresh instance takes over.
+ * call keeps what it allocated, and a session it trapped in stays open. A
+ * fresh instance takes over.
  */
 function afterTrap(err: unknown): boolean {
   if (!(err instanceof WebAssembly.RuntimeError)) return false;
@@ -456,7 +463,7 @@ function corrupt(err: unknown, what: string): unknown {
 function restartEngine(): void {
   if (!wasmModule) return;
   try {
-    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
   } catch {
     // No memory for a second instance: the old one stays.
   }
@@ -464,7 +471,7 @@ function restartEngine(): void {
 
 /** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
 type EngineMemory = {
-  /** The current instance's memory. Talc never gives memory back, so it only grows until a recycle. */
+  /** The current instance's memory. Wasm memory never shrinks, so it only grows until a recycle. */
   wasmBytes: number;
   /** The most memory any instance reached. */
   wasmPeakBytes: number;
@@ -495,7 +502,7 @@ export function engineMemory(): EngineMemory {
 export function recycleEngine(maxBytes: number): boolean {
   if (!engine || !wasmModule || engine.sessionOpen || engine.memoryBytes() <= maxBytes) return false;
   try {
-    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, {})));
+    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
   } catch {
     // No memory for a second instance: the old one still works.
     return false;

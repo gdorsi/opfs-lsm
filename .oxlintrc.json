@@ -14,7 +14,7 @@
   "ignorePatterns": [
     "**/dist/**",
     "**/wasm/**",
-    "target/**",
+    "packages/kv/engine/**",
     ".scratch/**",
     ".claude/**",
     ".agents/**",

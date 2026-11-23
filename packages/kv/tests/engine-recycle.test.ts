@@ -142,16 +142,17 @@ describe("the host's recycle points", () => {
   it("recycles after a flush chunk that grew the instance past the threshold", async () => {
     // One backlog of three chunks, one run short of a compaction. The pass after a fold would
     // recycle once, so only a recycle between chunks makes it more than one.
+    // A 1 MiB chunk takes the instance past 2 MiB: its input and its run.
     const kept = await workload({ flushRunBytes: MiB, wasmRecycleBytes: Number.POSITIVE_INFINITY }, 60, 1);
-    const recycled = await workload({ flushRunBytes: MiB, wasmRecycleBytes: 3 * MiB }, 60, 1);
+    const recycled = await workload({ flushRunBytes: MiB, wasmRecycleBytes: 2 * MiB }, 60, 1);
 
     expect(recycled.stats.flushes).toBe(3);
     expect(recycled.stats.compactionSteps).toBe(0);
     expect(kept.recycled).toBe(0);
-    expect(kept.stats.memory.wasmBytes).toBeGreaterThan(3 * MiB);
+    expect(kept.stats.memory.wasmBytes).toBeGreaterThan(2 * MiB);
     expect(recycled.recycled).toBeGreaterThanOrEqual(2);
-    expect(recycled.stats.memory.wasmBytes).toBeLessThanOrEqual(3 * MiB);
-    expect(recycled.stats.memory.wasmPeakBytes).toBeGreaterThan(3 * MiB);
+    expect(recycled.stats.memory.wasmBytes).toBeLessThanOrEqual(2 * MiB);
+    expect(recycled.stats.memory.wasmPeakBytes).toBeGreaterThan(2 * MiB);
   });
 
   it("recycles after a compaction step that grew the instance past the threshold", async () => {

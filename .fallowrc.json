@@ -22,7 +22,8 @@
     "docs/research/tanstack-db-drop-in/*.mjs"
   ],
   "ignorePatterns": [
-    "site/stageshow/kit/**"
+    "site/stageshow/kit/**",
+    "packages/kv/engine/**"
   ],
   "ignoreBinaries": [
     "wasm-pack",
