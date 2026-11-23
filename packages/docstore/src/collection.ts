@@ -1,10 +1,11 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
+import { CountDeltas } from "./counts.js";
 import { decodeDocs, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
-import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
+import type { CountQuery, EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
 
@@ -14,7 +15,7 @@ import type { StoreCore, WritePlan } from "./store.js";
  */
 export interface Collection<T extends JsonDoc, Ix, In = T> {
   readonly name: string;
-  /** The indexes this handle's schema declares for the collection, by name. */
+  /** The indexes this handle's schema declares for the collection that `query` reads, by name: every one but the count indexes. */
   readonly indexes: ReadonlyMap<string, IndexInfo>;
 
   /** The stored document, or undefined. */
@@ -87,8 +88,12 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPageOf<T, Ix, I>>;
-  /** How many results `query` would return, from `offset` and stopping at `limit` if given. */
-  count(q: Query<T, Ix>): Promise<number>;
+  /**
+   * How many results `query` would return, from `offset` and stopping at
+   * `limit` if given. On a count index: how many documents the groups in
+   * range hold, read from one or two rows per group, stopping at `limit`.
+   */
+  count(q: CountQuery<T, Ix>): Promise<number>;
 
   /**
    * Reads from one kv snapshot: every read in `body` sees the same state,
@@ -109,16 +114,19 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
 export const RETRY: unique symbol = Symbol("retry");
 
 const NONE: readonly Entry[] = [];
+const NO_GROUPS: readonly Uint8Array[] = [];
 
 /**
  * A row read before the transaction. The body retries unless the row still
  * holds `bytes`. `owned` lists the row's unique entries while some unique
- * index is building, and is empty otherwise.
+ * index is building, and is empty otherwise. `groups` are the keys of its
+ * count groups.
  */
 type Prior = {
   readonly bytes: Uint8Array | undefined;
   readonly before: readonly Entry[];
   readonly owned: readonly Entry[];
+  readonly groups: readonly Uint8Array[];
 };
 
 /**
@@ -133,9 +141,10 @@ const buildingUnique = (coll: BoundCollection) =>
   coll.maintained.some((p) => p.target.kind === "unique" && p.state.kind === "building");
 
 function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc: StoredDoc | undefined): Prior {
-  if (!bytes) return { bytes, before: NONE, owned: NONE };
+  if (!bytes) return { bytes, before: NONE, owned: NONE, groups: NO_GROUPS };
   const owned: Entry[] | undefined = buildingUnique(coll) ? [] : undefined;
-  return { bytes, before: entriesOf(coll, idb, doc!, "stored", owned), owned: owned ?? NONE };
+  const groups: Uint8Array[] | undefined = coll.counted ? [] : undefined;
+  return { bytes, before: entriesOf(coll, idb, doc!, "stored", owned, groups), owned: owned ?? NONE, groups: groups ?? NO_GROUPS };
 }
 
 /**
@@ -157,15 +166,19 @@ function planChanges(
   const idbs = ids.map(idBytes);
   const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
   const after: (readonly Entry[])[] = [];
+  const afterGroups: (readonly Uint8Array[])[] = [];
   const claims = new Map<string, { readonly key: Uint8Array; readonly at: number }>();
   for (let i = 0; i < n; i++) {
     const doc = docs[i];
     if (!doc) {
       after.push(NONE);
+      afterGroups.push(NO_GROUPS);
       continue;
     }
     const unique: Entry[] = [];
-    after.push(entriesOf(coll, idbs[i]!, doc.doc, "next", unique));
+    const groups: Uint8Array[] | undefined = coll.counted ? [] : undefined;
+    after.push(entriesOf(coll, idbs[i]!, doc.doc, "next", unique, groups));
+    afterGroups.push(groups ?? NO_GROUPS);
     for (const u of unique) {
       const k = keyString(u.key);
       const other = claims.get(k);
@@ -197,6 +210,7 @@ function planChanges(
       }
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
+      const counts = coll.counted ? new CountDeltas() : undefined;
       let existed = 0;
       const rows = values.slice(0, n);
       const kept = rows.map((old, i) => (docs[i] ? bytesEqual(old, docs[i]!.bytes) : old === undefined));
@@ -208,7 +222,15 @@ function planChanges(
         if (kept[i]) continue;
         if (doc) tx.put(rowKeys[i]!, doc.bytes);
         else tx.delete(rowKeys[i]!);
-        const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, old, "stored") : NONE;
+        let before = NONE;
+        let groups = NO_GROUPS;
+        if (prior) ({ before, groups } = prior[i]!);
+        else if (old) {
+          const stored: Uint8Array[] | undefined = counts && [];
+          before = entriesOf(coll, idbs[i]!, old, "stored", undefined, stored);
+          if (stored) groups = stored;
+        }
+        counts?.tally(groups, afterGroups[i]!);
         const diff = diffEntries(before, after[i]!);
         for (const k of diff.remove) {
           // Empty unless a unique index is building: no string per key then.
@@ -219,6 +241,7 @@ function planChanges(
       }
       for (const k of removes) tx.delete(k);
       for (const e of writes) tx.put(e.key, e.value);
+      counts?.apply(tx);
       return existed;
     },
   };
@@ -405,7 +428,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     return this.view((snap) => snap.queryEntries(q));
   }
 
-  count(q: Query<T, Ix>): Promise<number> {
+  count(q: CountQuery<T, Ix>): Promise<number> {
     return this.view((snap) => snap.count(q));
   }
 

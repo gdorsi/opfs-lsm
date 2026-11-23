@@ -16,7 +16,7 @@ import type { QueryInput, Scalar } from "../src/schema.js";
 import { ARITY, MODEL, UNIQUE_TAGS, checkQuery, queryArbOn, schema, textArb, withUniqueTags, type Doc } from "./docs.js";
 import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
-import { expected, stored } from "./oracle.js";
+import { stored, storedRows } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 import { ingest } from "@opfs-lsm/kv/testing";
 
@@ -229,7 +229,7 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
     await Promise.all([store.whenIdle(), previous?.whenIdle()]);
     const docs = [...model.values()];
     const indexes = utags === "ready" ? [...Object.values(MODEL), UNIQUE_TAGS.model] : Object.values(MODEL);
-    const entries = indexes.reduce((n, ix) => n + expected(docs, ix, {}).length, 0);
+    const entries = indexes.reduce((n, ix) => n + storedRows(docs, ix), 0);
     expect((await storedCatalog(kv)).dropped).toEqual([]);
     expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
   } finally {
@@ -240,7 +240,7 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
 
 describe("docstore against an in-memory model", () => {
   it(
-    "agrees on every read, and leaves exactly the catalog, the rows and their entries in kv",
+    "agrees on every read, and leaves exactly the catalog, the rows, their entries and one row per counted group in kv",
     async () => {
       await expect(
         fc.assert(fc.asyncProperty(fc.boolean(), fc.array(cmdArb, { maxLength: 40 }), run), { numRuns: RUNS, ...replay }),

@@ -2,8 +2,22 @@ import { CorruptDatabaseError, type Decode, type Entry, type Range, type ViewSna
 import { readableTarget, type BoundCollection } from "./catalog.js";
 import { JsonBatch, decodeDoc, fieldsBatch } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { compareBytes, decodeEntries, encodeCursor, entryRowKey, idOf, keyId, parseId, rowKey, scanPlan, type ScanPlan, type ScanTarget } from "./keys.js";
-import type { Cursor, EntryPageOf, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
+import {
+  compareBytes,
+  decodeCount,
+  decodeEntries,
+  encodeCursor,
+  entryRowKey,
+  idOf,
+  keyId,
+  parseId,
+  rowKey,
+  scanPlan,
+  type EntryTarget,
+  type ScanPlan,
+  type ScanTarget,
+} from "./keys.js";
+import type { CountQuery, Cursor, EntryPageOf, IdPage, JsonDoc, Page, Query, QueryInput } from "./schema.js";
 
 /** Reads of one collection from one kv snapshot. */
 export interface CollectionSnapshot<T extends JsonDoc, Ix> {
@@ -24,8 +38,8 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPageOf<T, Ix, I>>;
-  /** How many results `query` would return, from `offset` and stopping at `limit` if given. */
-  count(q: Query<T, Ix>): Promise<number>;
+  /** See `Collection.count`. */
+  count(q: CountQuery<T, Ix>): Promise<number>;
 }
 
 function limitOf(limit: unknown): number | undefined {
@@ -50,7 +64,7 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
 const nothing = () => undefined;
 
 /** What `queryEntries` needs of an entry's value, decoded from the bytes where kv holds them. A covering entry's fields are parsed in a batch. */
-const ENTRY_VALUE: { readonly [K in Exclude<ScanTarget["kind"], "covering">]: Decode<unknown> } = {
+const ENTRY_VALUE: { readonly [K in Exclude<EntryTarget["kind"], "covering">]: Decode<unknown> } = {
   rows: nothing,
   sorted: nothing,
   text: nothing,
@@ -139,7 +153,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   }
 
   async query(q: Query<T, Ix>): Promise<Page<T>> {
-    const plan = this.plan(q, 1);
+    const plan = this.entries(q);
     const { target, limit, range } = plan;
     // The entry past `limit` only says a next page exists, so its document is not read or parsed.
     let left = limit ?? Number.POSITIVE_INFINITY;
@@ -170,7 +184,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   }
 
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
-    const plan = this.plan(q, 1);
+    const plan = this.entries(q);
     const { target, limit } = plan;
     const unique = target.kind === "unique";
     const page = await this.scan(plan, unique ? idOf : nothing);
@@ -181,7 +195,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   async queryEntries<I extends (keyof Ix & string) | undefined = undefined>(
     q: Query<T, Ix> & { readonly index?: I | undefined },
   ): Promise<EntryPageOf<T, Ix, I>> {
-    const plan = this.plan(q, 1);
+    const plan = this.entries(q);
     const { target, limit, range } = plan;
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
@@ -198,9 +212,16 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     return { entries, ...next } as EntryPageOf<T, Ix, I>;
   }
 
-  async count(q: Query<T, Ix>): Promise<number> {
+  async count(q: CountQuery<T, Ix>): Promise<number> {
     const plan = this.plan(q, 0);
     const { range, limit, offset } = plan;
+    if (plan.target.kind === "count") {
+      // Its rows hold numbers: `limit` caps their sum, not how many are read.
+      const rows = await Promise.all(plan.ranges.map((r) => this.snap.rangeValues(r.range, decodeCount)));
+      let n = 0;
+      for (const row of rows.flat()) n += row.value;
+      return limit === undefined ? n : Math.min(n, limit);
+    }
     if (range) return this.snap.count(range);
     if (plan.repeats) return merge(this.snap, plan, () => {});
     // Each range counts at most what the page can hold, and the ranges share no document.
@@ -215,8 +236,17 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     return plan.range ? this.snap.rangeValues(plan.range, value) : mergeEntries(this.snap, plan, value);
   }
 
+  /** The plan of a read of entries, with one past `limit`. A count index has none. */
+  private entries(q: Query<T, Ix>) {
+    const plan = this.plan(q, 1);
+    if (plan.target.kind === "count") {
+      throw new DocStoreError("query", `"${(q as QueryInput).index}" of "${this.coll.name}" is a count index, which only count reads`);
+    }
+    return plan as typeof plan & { readonly target: EntryTarget };
+  }
+
   /** `peek` extra entries tell whether another page follows. `range` is the query's one range, when it has one. */
-  private plan(q: Query<T, Ix>, peek: number) {
+  private plan(q: CountQuery<T, Ix>, peek: number) {
     const input = q as QueryInput;
     const limit = limitOf(input.limit);
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);

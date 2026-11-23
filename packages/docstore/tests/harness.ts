@@ -55,7 +55,7 @@ export async function storedPrefix(kv: Db, collection: string, index?: string): 
  * `kv` whose `method` lets `free` calls through and holds the later ones
  * until `release`. `arrived(n)` resolves once n calls have been made.
  */
-export function gate(kv: Db, method: "range" | "catalog-or-batch", free: number) {
+export function gate(kv: Db, method: "range" | "catalog-or-batch" | "update" | "view", free: number) {
   let allowed = free;
   let calls = 0;
   let wake: (() => void)[] = [];
@@ -73,13 +73,17 @@ export function gate(kv: Db, method: "range" | "catalog-or-batch", free: number)
             yield* kv.range(range);
           },
         }
-      : {
-          batch: async (build) => (await pass(), kv.batch(build)),
-          update: async (keys, body) => {
-            if (keys.length === 1 && bytesEqual(keys[0]!, CATALOG_KEY)) await pass();
-            return kv.update(keys, body);
-          },
-        };
+      : method === "update"
+        ? { update: async (keys, body) => (await pass(), kv.update(keys, body)) }
+        : method === "view"
+          ? { view: async (body) => (await pass(), kv.view(body)) }
+          : {
+              batch: async (build) => (await pass(), kv.batch(build)),
+              update: async (keys, body) => {
+                if (keys.length === 1 && bytesEqual(keys[0]!, CATALOG_KEY)) await pass();
+                return kv.update(keys, body);
+              },
+            };
   return {
     db: wrap(kv, over),
     arrived: (n: number) =>
