@@ -7,7 +7,7 @@
  * stop, which two builds of the engine must agree on.
  */
 import type { EngineExports } from "../src/store/engine.js";
-import { blocksOf, fixSstCrc } from "./targets.js";
+import { blocksOf, fixSstCrc, footerOf } from "./targets.js";
 
 /** Where a case builder takes its choices from. */
 export interface Source {
@@ -59,7 +59,7 @@ export function bytesSource(data: Uint8Array): Source {
   });
 }
 
-const NEED = 1;
+export const NEED = 1;
 export const DONE = 5;
 const TAG_PUT = 1;
 const TAG_DEL = 2;
@@ -125,6 +125,100 @@ function corrupt(r: Source, b: Uint8Array): Uint8Array {
   return out;
 }
 
+/** Where a buffer keeps a length: `width` bytes at `at`, as a u32 or a varint. */
+export type LengthField = { readonly at: number; readonly width: number; readonly varint: boolean };
+
+/** Lengths a check written `o + len > end` wraps on, for any `o` past 16. */
+export const HUGE = [0xffffffff, 0xfffffff0, 0x80000000];
+
+function varint(v: number): Uint8Array {
+  const out: number[] = [];
+  for (; v >= 0x80; v >>>= 7) out.push((v & 0x7f) | 0x80);
+  out.push(v);
+  return Uint8Array.from(out);
+}
+
+function readVarint(b: Uint8Array, at: number): { value: number; width: number } | undefined {
+  let value = 0;
+  for (let i = 0; i < 5 && at + i < b.byteLength; i++) {
+    value += (b[at + i]! & 0x7f) * 2 ** (7 * i);
+    if (b[at + i]! < 0x80) return { value, width: i + 1 };
+  }
+  return undefined;
+}
+
+/** `b` with the length at `field` set to `value`. */
+export function inflated(b: Uint8Array, field: LengthField, value: number): Uint8Array {
+  return concat([b.subarray(0, field.at), field.varint ? varint(value) : u32s([value]), b.subarray(field.at + field.width)]);
+}
+
+function inflate(r: Source, b: Uint8Array, fields: readonly LengthField[]): Uint8Array {
+  return fields.length ? inflated(b, r.pick(fields), r.pick(HUGE)) : b.slice();
+}
+
+/** The key and value lengths of an entry list `pack` wrote. */
+export function entryFields(b: Uint8Array): LengthField[] {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const fields: LengthField[] = [];
+  for (let o = 0; o + 13 <= b.byteLength; ) {
+    const put = b[o] === TAG_PUT;
+    fields.push({ at: o + 9, width: 4, varint: false });
+    o += 13 + view.getUint32(o + 9, true);
+    if (!put || o + 4 > b.byteLength) continue;
+    fields.push({ at: o, width: 4, varint: false });
+    o += 4 + view.getUint32(o, true);
+  }
+  return fields;
+}
+
+/** The lengths of a pattern list. */
+export function patternFields(b: Uint8Array): LengthField[] {
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const fields: LengthField[] = [];
+  for (let o = 0; o + 4 <= b.byteLength; o += 4 + view.getUint32(o, true)) fields.push({ at: o, width: 4, varint: false });
+  return fields;
+}
+
+/** The prefix, key suffix and value lengths of a data block (`tests/oracle/sst-ref.ts`, `encodeBlock`). */
+export function blockFields(b: Uint8Array): LengthField[] {
+  const fields: LengthField[] = [];
+  if (b.byteLength < 4) return fields;
+  const count = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(0, true);
+  let o = 4;
+  const skipLength = () => {
+    const v = readVarint(b, o);
+    if (!v) return false;
+    fields.push({ at: o, width: v.width, varint: true });
+    o += v.width + v.value;
+    return true;
+  };
+  if (!skipLength()) return fields;
+  for (let i = 0; i < count && o + 9 < b.byteLength; i++) {
+    const put = b[o] === TAG_PUT;
+    o += 9;
+    if (!skipLength() || (put && !skipLength())) break;
+  }
+  return fields;
+}
+
+/** The first key, last key and block lengths of a run's index rows. */
+export function indexFields(run: Uint8Array): LengthField[] {
+  const footer = footerOf(run);
+  const fields: LengthField[] = [];
+  if (!footer) return fields;
+  const view = new DataView(run.buffer, run.byteOffset, run.byteLength);
+  let o = footer.indexStart;
+  for (let i = 0; i < footer.blockCount && o + 16 <= run.byteLength; i++) {
+    for (let k = 0; k < 2; k++) {
+      fields.push({ at: o, width: 4, varint: false });
+      o += 4 + view.getUint32(o, true);
+    }
+    fields.push({ at: o + 4, width: 4, varint: false });
+    o += 8;
+  }
+  return fields;
+}
+
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 function result(ex: EngineExports): string {
@@ -164,12 +258,13 @@ function transcript(run: (log: string[]) => void): Transcript {
 
 export type EncodeCase = { readonly input: Uint8Array };
 
-/** An entry list as is, corrupt, or with a bad tag. */
+/** An entry list as is, corrupt, with a bad tag, or with a length near 2^32. */
 export function encodeCase(r: Source): EncodeCase {
   const input = pack(randomEntries(r, r.pick([0, 1, 2, 5, 30, 200, 2000]), 1 + r.int(100)));
-  const kind = r.int(3);
+  const kind = r.int(4);
   if (kind === 1) return { input: corrupt(r, input) };
   if (kind === 2 && input.byteLength) input[0] = r.pick([0, 3, 255]);
+  if (kind === 3) return { input: inflate(r, input, entryFields(input)) };
   return { input };
 }
 
@@ -183,13 +278,17 @@ function patterns(r: Source): Uint8Array {
   return concat(Array.from({ length: r.int(3) }, () => r.bytes(r.int(3), r.int(2) ? 6 : 256)).flatMap((p) => [u32s([p.byteLength]), p]));
 }
 
-/** A data block of a run `encoder` writes, and a pattern list, either of them corrupt or neither. */
+/** A data block of a run `encoder` writes, and a pattern list, either of them corrupt or with a length near 2^32, or neither. */
 export function scanCase(r: Source, encoder: EngineExports): ScanCase {
   const blocks = blocksOf(encoded(encoder, randomEntries(r, r.pick([1, 5, 30, 200]), 1)));
   const block = blocks[r.int(blocks.length)] ?? new Uint8Array(0);
   const pats = patterns(r);
-  const kind = r.int(3);
-  return { block: kind === 1 ? corrupt(r, block) : block, patterns: kind === 2 ? corrupt(r, pats) : pats };
+  const kind = r.int(5);
+  if (kind === 1) return { block: corrupt(r, block), patterns: pats };
+  if (kind === 2) return { block, patterns: corrupt(r, pats) };
+  if (kind === 3) return { block: inflate(r, block, blockFields(block)), patterns: pats };
+  if (kind === 4) return { block, patterns: inflate(r, pats, patternFields(pats)) };
+  return { block, patterns: pats };
 }
 
 export function driveScan(ex: EngineExports, c: ScanCase): Transcript {
@@ -226,7 +325,7 @@ function marksBlock(r: Source): Uint8Array {
   return concat([u32s([marks.length]), ...marks]);
 }
 
-/** Up to five sources of runs `encoder` writes, now and then one out of key order or corrupt, with or without a CRC that matches. */
+/** Up to five sources of runs `encoder` writes, now and then one out of key order, corrupt or with an index length near 2^32, with or without a CRC that matches. */
 export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
   let seq = 1;
   const sources = Array.from({ length: r.int(6) }, () => {
@@ -241,7 +340,7 @@ export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
     }
     if (runs.length && r.int(8) === 0) {
       const i = r.int(runs.length);
-      runs[i] = corrupt(r, runs[i]!);
+      runs[i] = r.int(2) ? corrupt(r, runs[i]!) : inflate(r, runs[i]!, indexFields(runs[i]!));
       // Past the CRC, the footer, index and blocks are what refuse it.
       if (r.int(2)) fixSstCrc(runs[i]!);
     }

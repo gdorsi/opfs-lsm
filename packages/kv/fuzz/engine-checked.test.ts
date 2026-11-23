@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { EngineExports } from "../src/store/engine.js";
 import { checkedFile, openChecked, openShipped, takeCheckedReports, type CheckedEngine } from "../checked/engine-under-test.ts";
+import { blocksOf, fixSstCrc, footerOf } from "./targets.js";
 import {
+  blockFields,
   concat,
   DONE,
   driveEncode,
@@ -10,12 +12,19 @@ import {
   driveScan,
   encodeCase,
   encoded,
+  entryFields,
+  HUGE,
+  indexFields,
+  inflated,
   mergeCase,
+  NEED,
   pack,
+  patternFields,
   randomEntries,
   scanCase,
   u32s,
   xorshift,
+  type MergeCase,
   type Transcript,
 } from "./engine-drive.js";
 
@@ -79,6 +88,38 @@ function disagreements(what: string, want: Transcript, got: Transcript, mayTrap:
   return twin.largestAllocation() > LIMIT ? [`${what}: asked for a block of ${twin.largestAllocation()} bytes`] : [];
 }
 
+function withCrc(run: Uint8Array): Uint8Array {
+  fixSstCrc(run);
+  return run;
+}
+
+const FOOTER = 40;
+
+/** `run` with its block index replaced by `index`, of `rows` rows. */
+function withIndex(run: Uint8Array, index: Uint8Array, rows: number): Uint8Array {
+  const footer = run.slice(run.byteLength - FOOTER);
+  const view = new DataView(footer.buffer);
+  view.setUint32(4, rows, true);
+  view.setUint32(24, index.byteLength, true);
+  return withCrc(concat([run.subarray(0, view.getUint32(20, true)), index, footer]));
+}
+
+/** `run` with a second block so long that its end wraps to 0, a third block over all the data, and empty blocks after. */
+function wrapsDataOffset(run: Uint8Array): Uint8Array {
+  const out = run.slice();
+  const view = new DataView(out.buffer);
+  const { dataLen } = footerOf(run)!;
+  const lengths = indexFields(run).filter((_, i) => i % 3 === 2);
+  const rewrite = (row: number, offset: number, length: number) => {
+    view.setUint32(lengths[row]!.at - 4, offset, true);
+    view.setUint32(lengths[row]!.at, length, true);
+  };
+  rewrite(1, view.getUint32(lengths[1]!.at - 4, true), 2 ** 32 - view.getUint32(lengths[1]!.at - 4, true));
+  rewrite(2, 0, dataLen);
+  for (let row = 3; row < lengths.length; row++) rewrite(row, dataLen, 0);
+  return withCrc(out);
+}
+
 describe("the engine on its checked twin", () => {
   it(
     "encodes entry lists, malformed ones included",
@@ -122,6 +163,40 @@ describe("the engine on its checked twin", () => {
     },
     TIMEOUT,
   );
+
+  it("refuses a length near 2^32 in any length field", () => {
+    const es = randomEntries(xorshift(1), 100, 1).sort((a, b) => Buffer.compare(a.key, b.key));
+    const input = pack(es);
+    const run = encoded(shipped, es);
+    const block = blocksOf(run)[1]!;
+    const pats = concat([u32s([3]), Uint8Array.of(1, 2, 3), u32s([0]), u32s([1]), Uint8Array.of(9)]);
+    const merge = (run: Uint8Array): MergeCase => ({ sources: [[run]], marks: u32s([0]), badMarks: false, drop: 0, target: 1 << 20, chunk: 4096, tail: 4096, yieldBytes: 1 << 20, host: 1 });
+    const status = (code: number) => (t: Transcript) => t.includes(`${code}:`);
+    /** A session that refuses a run's index asks for its tail and no block. */
+    const refusedAtTail = (t: Transcript) => {
+      const at = t.indexOf("-5:");
+      return at >= 0 && t.slice(0, at).filter((line) => line.startsWith(`${NEED}:`)).length === 1;
+    };
+    const found: string[] = [];
+    const refused = <C>(what: string, c: C, drive: (ex: EngineExports, c: C) => Transcript, ok: (t: Transcript) => boolean) => {
+      const broke = differences(what, c, drive);
+      if (!broke.length && !ok(drive(twin.exports, c))) broke.push(`${what}: not refused`);
+      found.push(...broke);
+    };
+    for (const value of HUGE) {
+      for (const f of entryFields(input)) refused(`entry length at ${f.at} = ${value}`, { input: inflated(input, f, value) }, driveEncode, status(-5));
+      for (const f of blockFields(block)) refused(`block length at ${f.at} = ${value}`, { block: inflated(block, f, value), patterns: pats }, driveScan, status(-5));
+      for (const f of patternFields(pats)) refused(`pattern length at ${f.at} = ${value}`, { block, patterns: inflated(pats, f, value) }, driveScan, status(-11));
+      for (const f of indexFields(run)) refused(`index length at ${f.at} = ${value}`, merge(withCrc(inflated(run, f, value))), driveMerge, refusedAtTail);
+    }
+    // A check written `o + len > end` takes each of these: a length of 0xffffffff steps back to offset 3, where `ff 00 00 00` names the 255 bytes left.
+    const stepsBack = concat([u32s([0xffffffff]), new Uint8Array(3), new Uint8Array(255).fill(7)]);
+    const { dataLen } = footerOf(run)!;
+    refused("a pattern list whose first length steps back", { block, patterns: stepsBack }, driveScan, status(-11));
+    refused("an index whose first key length steps back", merge(withIndex(run, concat([stepsBack, u32s([0, dataLen])]), 1)), driveMerge, refusedAtTail);
+    refused("an index whose block lengths wrap the data offset", merge(wrapsDataOffset(run)), driveMerge, refusedAtTail);
+    expect({ found, reports: takeCheckedReports() }).toEqual({ found: [], reports: [] });
+  });
 
   it("refuses what it cannot allocate with the shipped build's status", () => {
     const huge = 0xffffffff;
