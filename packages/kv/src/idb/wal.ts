@@ -338,8 +338,10 @@ function sameMeta(a: WalMeta, b: WalMeta): boolean {
   );
 }
 
-/** Seqs per `getAll`. Every chunk of a read is in flight at once. */
+/** Seqs per `getAll` of a flush read, which sizes each read from the last. */
 const READ_CHUNK = 25_000;
+/** Seqs per `getAll` of a tail read. Every chunk is in flight at once, so one decodes while the next is read. */
+const TAIL_CHUNK = 100;
 
 /**
  * Records with `after < seq <= head`, ascending. Committed seqs are gapless
@@ -356,8 +358,8 @@ async function readRecords(
   head: Seq,
 ): Promise<WalRecord[]> {
   const chunks: Promise<WalRecord[]>[] = [];
-  for (let lo = after + 1; lo <= head; lo += READ_CHUNK) {
-    const hi = Math.min(head, lo + READ_CHUNK - 1);
+  for (let lo = after + 1; lo <= head; lo += TAIL_CHUNK) {
+    const hi = Math.min(head, lo + TAIL_CHUNK - 1);
     chunks.push(
       reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi))).then((values) => {
         if (values.length !== hi - lo + 1) {
@@ -415,13 +417,17 @@ async function readRecordsUpTo(
   return records;
 }
 
-async function readTail(tx: IDBTransaction, since: Seq, held?: Generation): Promise<WalTail> {
+/** Told a tail's generation, its `ingestedThrough` and its `manifest` copy (see `WalTail`) before its records are read. */
+export type TailStart = (generation: Generation, ingestedThrough: Seq, manifest: Promise<Uint8Array | undefined> | undefined) => void;
+
+async function readTail(tx: IDBTransaction, since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
   const meta = tx.objectStore(META_STORE);
   const [generation, ingestedThrough] = await Promise.all([
     metaGeneration(meta, META_GENERATION),
     metaSeq(meta, META_INGESTED),
   ]);
   const copy = held === undefined || held === generation ? undefined : reqToPromise<Uint8Array | undefined>(meta.get(META_MANIFEST));
+  started?.(generation, ingestedThrough, copy);
   const after = asSeq(Math.max(since, ingestedThrough));
   const head = await headOf(tx, after);
   const records = await readRecords(tx.objectStore(WAL_STORE), after, head);
@@ -587,12 +593,13 @@ export class TabWal extends IdBWal {
 
   /**
    * The tail after `since`, from one readonly transaction, with the
-   * `manifest` copy when the recorded generation is not `held`.
+   * `manifest` copy when the recorded generation is not `held`. `started`
+   * hears the generation before the records are read.
    */
-  async tail(since: Seq, held?: Generation): Promise<WalTail> {
+  async tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
     const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
-    const tail = await readTail(tx, since, held);
+    const tail = await readTail(tx, since, held, started);
     return tail;
   }
 
