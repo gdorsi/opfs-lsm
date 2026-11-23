@@ -29,7 +29,7 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 - **[`@opfs-lsm/tanstack-query`](packages/tanstack-query)** persists the TanStack Query cache. Pass `kvStorage(db)` as the `storage` of `createAsyncStoragePersister` or `experimental_createQueryPersister`, where TanStack's docs use `idb-keyval`.
 - **[`@opfs-lsm/yjs`](packages/yjs)** keeps Yjs documents. `KvPersistence` has the `whenSynced`, `clearData`, and `destroy` of y-indexeddb, and merges the stored updates of a document into one when they reach 500. Example: [Whiteboard](examples/whiteboard-yjs).
 - **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Notes](examples/notes-manager-automerge).
-- **[`@opfs-lsm/fate`](packages/fate)** keeps the records the fate client caches, and the mutations it queues while offline. It takes the place of `@nkzw/fate-indexeddb`. Example: [LinearLite on fate](examples/linearlite-fate).
+- **[`@opfs-lsm/fate`](packages/fate)** keeps the records the fate client caches, and the mutations it queues while offline. It takes the place of `@nkzw/fate-indexeddb`.
 
 ### Building blocks
 

@@ -3,7 +3,6 @@ packages:
   - "packages/*"
   - "examples/linearlite-tanstackdb"
   - "examples/linearlite-docstore"
-  - "examples/linearlite-fate"
   - "examples/whiteboard-yjs"
   - "examples/notes-manager-automerge"
   - "site"

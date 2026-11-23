@@ -35,9 +35,6 @@ adapters:
     bench: "fate: cold load of 100 lists"
     slot: fate
     guide: /fate/
-    example:
-      name: LinearLite on fate
-      link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-fate
   - name: Automerge
     detail: Documents that merge edits from every device, saved in the browser so they open offline.
     replaces: IndexedDBStorageAdapter
