@@ -30,8 +30,8 @@ export type KvStore = Common & {
   get(key: Bytes): Promise<Bytes | undefined>;
   /** One read for every key, in the order asked. */
   getMany(keys: readonly Bytes[]): Promise<(Bytes | undefined)[]>;
-  /** Values of keys in [start, endExclusive), ascending, at most `limit`, past the first `offset`. */
-  range(start: Bytes, endExclusive: Bytes | undefined, limit: number, offset?: number): Promise<Bytes[]>;
+  /** Values of keys in [start, endExclusive), ascending, or descending with `reverse`, at most `limit`, past the first `offset` in that order. */
+  range(start: Bytes, endExclusive: Bytes | undefined, limit: number, offset?: number, reverse?: boolean): Promise<Bytes[]>;
   /** How many keys [start, endExclusive) holds. */
   count(start: Bytes, endExclusive: Bytes): Promise<number>;
   /** Read-modify-write of one key that no other write gets inside (YCSB F). `f` may run more than once: its last run counts. */

@@ -47,19 +47,12 @@ function liveBytes(o: TrackerOracle): number {
 
 type Expected = Readonly<Record<Screen, Json>>;
 
-/**
- * What `prepare` hands the later phases of its page: each screen's binding, the answers to check, and the sync batches
- * as an iterator over a second copy of the seeded history, already past the import, so the page never holds the history
- * and no timed phase generates batches it does not write.
- */
+/** What `prepare` hands the later phases of its page: each screen's binding, the batches to write, and the answers to check. */
 let run:
   | {
       readonly bindings: Readonly<Record<Screen, JsonRow>>;
       readonly first: Expected;
-      readonly syncCount: number;
-      readonly batches: Iterator<Tx>;
-      /** Sync batches the iterator has handed out. */
-      written: number;
+      readonly syncs: readonly Tx[];
       /** Expected answers after sync batch k (1-based), at every k the live half checks. */
       readonly after: ReadonlyMap<number, Expected>;
       screens: LiveScreen[];
@@ -94,21 +87,17 @@ function checkAll(ctx: Ctx, screens: readonly LiveScreen[], expected: Expected, 
 async function replay(ctx: Ctx, from: number, to: number, checks: boolean): Promise<void> {
   const r = running();
   const store = await ctx.store();
-  if (r.written !== from) throw new Error(`replay from batch ${from}, but ${r.written} are written`);
-  for (let k = from + 1; k <= to; k++) {
-    const next = r.batches.next();
-    if (next.done) throw new Error(`the history ends before sync batch ${k}`);
-    r.written = k;
-    const tx = screenTx(next.value);
+  for (let k = from; k < to; k++) {
+    const tx = screenTx(r.syncs[k]!);
     if (tx) await ctx.time("sync", JSON.stringify(tx.events).length, () => store.apply(tx), tx.events.length);
-    const expected = checks ? r.after.get(k) : undefined;
-    if (expected) checkAll(ctx, r.screens, expected, `after sync batch ${k}`);
+    const expected = checks ? r.after.get(k + 1) : undefined;
+    if (expected) checkAll(ctx, r.screens, expected, `after sync batch ${k + 1}`);
     await yieldTask();
-    if (k % 200 === 0) ctx.progress(`sync: ${k} of ${r.syncCount} batches`);
+    if ((k + 1) % 200 === 0) ctx.progress(`sync: ${k + 1} of ${r.syncs.length} batches`);
   }
 }
 
-const half = () => Math.floor(running().syncCount / 2);
+const half = () => Math.floor(running().syncs.length / 2);
 
 /** Untimed, so a measured phase never includes taking its screens down. */
 function closeScreens(name: string): Phase<"tanstack-live"> {
@@ -124,38 +113,24 @@ function closeScreens(name: string): Phase<"tanstack-live"> {
   };
 }
 
-/** The history's sync batches, the import already generated and passed over. */
-function syncBatches(ctx: Ctx): Iterator<Tx> {
-  const it = trackerHistory(ctx.size, ctx.params.seed).load[Symbol.iterator]();
-  let head = it.next();
-  while (!head.done && head.value.kind === "import") head = it.next();
-  return (function* () {
-    while (!head.done) {
-      yield head.value;
-      head = it.next();
-    }
-  })();
-}
-
 /** The history and the oracle: each screen's binding, the batches to write and every answer to check. */
 function prepare(ctx: Ctx): void {
   const oracle = new TrackerOracle();
-  let syncCount = 0;
+  const syncs: Tx[] = [];
   for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
     if (tx.kind === "import") oracle.apply(tx);
-    else syncCount++;
+    else syncs.push(tx);
   }
   const bindings = Object.fromEntries(SCREENS.map((s) => [s, TRACKER.goals[s].curate(oracle, picker(seedOf(ctx.params.seed, s)))[0]!])) as unknown as Record<Screen, JsonRow>;
   const answers = (): Expected => Object.fromEntries(SCREENS.map((s) => [s, oracle.goals[s](bindings[s] as never) as Json])) as Expected;
   const first = answers();
   const after = new Map<number, Expected>();
-  const mid = Math.floor(syncCount / 2);
-  const syncs = syncBatches(ctx);
-  for (let k = 1; k <= syncCount; k++) {
-    oracle.apply(syncs.next().value as Tx);
-    if (k > mid && ((k - mid) % CHECK_EVERY === 0 || k === syncCount)) after.set(k, answers());
-  }
-  run = { bindings, first, syncCount, batches: syncBatches(ctx), written: 0, after, screens: [] };
+  const mid = Math.floor(syncs.length / 2);
+  syncs.forEach((tx, k) => {
+    oracle.apply(tx);
+    if (k + 1 > mid && ((k + 1 - mid) % CHECK_EVERY === 0 || k + 1 === syncs.length)) after.set(k + 1, answers());
+  });
+  run = { bindings, first, syncs, after, screens: [] };
 }
 
 const phases: Phase<"tanstack-live">[] = [
@@ -223,7 +198,7 @@ const phases: Phase<"tanstack-live">[] = [
     page: "same",
     timed: true,
     mainThread: true,
-    run: (ctx) => replay(ctx, half(), running().syncCount, true),
+    run: (ctx) => replay(ctx, half(), running().syncs.length, true),
   },
   closeScreens("close"),
   {
@@ -234,7 +209,7 @@ const phases: Phase<"tanstack-live">[] = [
       prepare(ctx);
       const r = running();
       r.screens = await openAll(await ctx.store(), r.bindings);
-      const last = r.after.get(r.syncCount);
+      const last = r.after.get(r.syncs.length);
       ctx.check(last !== undefined, "no expected answers after the last sync batch");
       if (last) checkAll(ctx, r.screens, last, "after the last sync batch, from storage");
       for (const s of r.screens) await s.close();
