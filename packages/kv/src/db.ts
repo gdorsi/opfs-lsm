@@ -1130,12 +1130,12 @@ class DbImpl implements Db {
     // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
     const read = () => keysReader(this.memRows(ks), ks, this.point());
-    /** What the last `warm` read, at the `appliedThrough` it read at. */
-    let warmed: { readonly at: Seq; readonly values: (Uint8Array | undefined)[] } | undefined;
+    /** What the last `warm` read, and the `appliedThrough` it read at. */
+    let warmed: [Seq, (Uint8Array | undefined)[]] | undefined;
     const plan = () => {
       // Nothing landed since the warm read, so it read this state: no second read.
       const values =
-        warmed?.at === this.mem.appliedThrough ? warmed.values : held.attempt(() => read()(this.installed.levels));
+        warmed?.[0] === this.mem.appliedThrough ? warmed[1] : held.attempt(() => read()(this.installed.levels));
       warmed = undefined;
       if (values instanceof Miss) return held.keep(values);
       let result!: T;
@@ -1148,7 +1148,7 @@ class DbImpl implements Db {
     const warm = async () => {
       // The rows, levels and marks it reads are all taken now, so the values are the state at `at`.
       const at = this.mem.appliedThrough;
-      warmed = { at, values: await this.settleInstalled(read(), held) };
+      warmed = [at, await this.settleInstalled(read(), held)];
     };
     if (this.pressure.full) await this.admit();
     await warm();
