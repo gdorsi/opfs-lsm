@@ -84,6 +84,18 @@ describe("WAL read", () => {
     wal.close();
   });
 
+  it("reads a tail longer than one chunk in seq order, and tells the generation before the records", async () => {
+    const wal = await seeded(250);
+    await advance(wal, { through: 3, generation: 2 });
+    const heard: unknown[] = [];
+    const tail = await wal.tail(0, 1, (generation, ingestedThrough, manifest) => heard.push(generation, ingestedThrough, manifest !== undefined));
+    expect(heard).toEqual([2, 3, true]);
+    expect(summary(tail.records)).toEqual(Array.from({ length: 247 }, (_, i) => `${i + 4}:k${i + 4}`));
+    await deleteSeq(200);
+    await expect(wal.tail(0)).rejects.toThrow("wal gap in seqs 104..203");
+    wal.close();
+  });
+
   it("throws on a missing seq instead of shifting the ones after it", async () => {
     const wal = await seeded(5);
     await deleteSeq(3);

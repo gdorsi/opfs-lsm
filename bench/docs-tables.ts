@@ -136,7 +136,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-22T16-08-00-apple-m2-pro",
+    file: "2026-11-23T03-32-22-apple-m2-pro",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -167,7 +167,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-22T16-08-00-apple-m2-pro",
+    file: "2026-11-23T03-32-22-apple-m2-pro",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },

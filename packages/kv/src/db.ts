@@ -883,10 +883,15 @@ class DbImpl implements Db {
    * Otherwise the tail is not one any more, and a sync reads again.
    */
   async boot(recovering: Promise<boolean>): Promise<void> {
-    const reading = this.wal.tail(SEQ_ZERO, GENERATION_NONE).then(async (tail) => {
-      await this.load(tail.generation, tail.ingestedThrough > SEQ_ZERO, tail.manifest);
-      return tail;
-    });
+    // The runs open while the records are read. The read settles once the
+    // load has, so no load installs its generation after the fallback below.
+    let loading: Promise<boolean> | undefined;
+    const reading = this.wal
+      .tail(SEQ_ZERO, GENERATION_NONE, (generation, ingestedThrough, manifest) => {
+        loading = Promise.resolve(manifest).then((copy) => this.load(generation, ingestedThrough > SEQ_ZERO, copy));
+        loading.catch(() => undefined);
+      })
+      .finally(() => loading);
     const [kept, tail] = await Promise.all([recovering, reading.catch(() => undefined)]);
     if (tail && kept && (await this.follow(tail)) === "done") return;
     if (this.loaded) this.release(this.loaded);
