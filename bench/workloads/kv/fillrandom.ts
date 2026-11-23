@@ -100,7 +100,7 @@ export default defineWorkload({
         let start = ctx.model.key(0);
         let want = ctx.model.nextLive(0);
         for (let page = 0; page < Math.ceil(ctx.params.ops / limit) && want !== undefined; page++) {
-          const values = await ctx.time("page", 0, () => store.range(start, undefined, limit), limit);
+          const values = await ctx.time("page", 0, () => store.range(start, undefined, limit), 1);
           // Between calls: the next page starts after the last key this one returned, as a cursor does.
           for (const v of values) {
             const id = ctx.model.verifyAny(v);
