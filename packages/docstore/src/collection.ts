@@ -211,7 +211,8 @@ function planChanges(
         const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, old, "stored") : NONE;
         const diff = diffEntries(before, after[i]!);
         for (const k of diff.remove) {
-          const at = owners.get(keyString(k));
+          // Empty unless a unique index is building: no string per key then.
+          const at = owners.size === 0 ? undefined : owners.get(keyString(k));
           if (at === undefined || bytesEqual(values[at], idbs[i])) removes.push(k);
         }
         for (const e of diff.write) writes.push(e);
