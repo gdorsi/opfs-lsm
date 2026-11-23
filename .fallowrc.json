@@ -18,7 +18,8 @@
     "bench/contenders/*/*.ts",
     "docs/research/opfs-worker-probes/*.js",
     "docs/research/opfs-worker-probes/*.mjs",
-    "docs/research/android-device-run/*.mjs"
+    "docs/research/android-device-run/*.mjs",
+    "docs/research/tanstack-db-drop-in/*.mjs"
   ],
   "ignorePatterns": [
     "site/stageshow/kit/**"
