@@ -201,6 +201,9 @@ function sideCell(s: Series): string {
   return `${n === 1 ? format(median) : `${format(median)} (${format(min, false)}–${format(max, false)})`}${clusters ? " †" : ""}`;
 }
 
+/** Every run of both sides has one value, so the test cannot mark the series. */
+const identical = (a: Series, b: Series) => a.summary.min === a.summary.max && b.summary.min === b.summary.max && a.summary.min === b.summary.min;
+
 /**
  * Every series both measures hold, with the verdict of B against A by the
  * rank-sum test of the runs and the metric's direction. Without `all` only the
@@ -216,6 +219,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   let compared = 0;
   let same = 0;
   let unseparable = 0;
+  let allTied = 0;
   let marked = false;
   for (const sa of a.all) {
     const sb = b.get(sa.at);
@@ -227,6 +231,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
     const v = versus(sa, sb);
     if (!v.distinct) same++;
     if (!v.separable) unseparable++;
+    else if (identical(sa, sb)) allTied++;
     if (!all && !v.distinct) continue;
     marked ||= !!sa.summary.clusters || !!sb.summary.clusters;
     const at = sa.at;
@@ -246,8 +251,8 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   }
   out.push("", `${compared} series compared, ${same} with no measurable difference`);
   if (unseparable > 0) out.push(`${unseparable} of them have too few runs to show a difference: ${ENOUGH_RUNS} runs per side are enough`);
-  if (compared > unseparable) {
-    const tested = compared - unseparable;
+  const tested = compared - unseparable - allTied;
+  if (tested > 0) {
     out.push(`chance alone would mark about ${(tested * LEVEL).toFixed(1)} of the ${tested} series the test can separate, at the ${LEVEL * 100}% level`);
   }
   if (marked) out.push("", "`†`: this side's runs form two clusters, so its median and range hide two states. `report` prints both.");
