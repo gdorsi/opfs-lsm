@@ -549,13 +549,15 @@ export class MergeSession {
    */
   reserve(list: usize, marks: usize, marksLen: usize, chunkBytes: usize, tailBytes: usize): bool {
     const n = <usize>load<u32>(list);
-    let ok = this.sources.tryCapacity(n << 2);
+    if (!this.sources.tryCapacity(n << 2)) return false;
+    // Objects before buffers. Only a buffer can report OUT_OF_MEMORY, and a chunk reserved first could take the room the next source's objects need.
+    for (let i: usize = 0; i < n; i++) this.sources.pushU32(<u32>changetype<usize>(new Source()));
+    let ok = true;
     let o: usize = 4;
     for (let i: usize = 0; i < n && ok; i++) {
       const runs = <usize>load<u32>(list + o);
       o += 4;
-      const source = new Source();
-      this.sources.pushU32(<u32>changetype<usize>(source));
+      const source = this.source(<u32>i);
       const reader = source.reader;
       reader.index = <u32>i;
       reader.chunkBytes = max<usize>(chunkBytes, 1);

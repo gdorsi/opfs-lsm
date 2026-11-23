@@ -56,6 +56,8 @@ merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64,
     set: about `chunk_bytes` per source plus the output buffer. Returns 0,
     -12 while a session is open, -5 for a malformed list, -1 for a run
     shorter than a footer, or -10 when the working set cannot be reserved.
+    It traps only when memory cannot hold the session's own objects, a few
+    hundred bytes per source.
 
 merge_pump() -> i32
     Merge until the host has to act, always between two keys. Returns
