@@ -824,7 +824,7 @@ try {
 | `"cursor"` | `after` belongs to another range, or predates a `clear` or a redefinition. | Query again without `after`. |
 | `"document"` | A bad or repeated id, a changed id, or a value an index cannot hold. | Fix the document. Nothing was stored. |
 | `"invalid"` | A validator rejected a document: `issues` lists why, and `ids` names it if it has a string id. Or a validator returned a Promise. | Fix the document, or use a synchronous validator. Nothing was stored. |
-| `ConstraintError` | A write passes kv's batch limit, or a query compares against a value longer than a kv key (8 KiB). | Split the write, or shorten the value. |
+| `ConstraintError` | A write passes kv's batch limit, or a query value makes a key over kv's 8 KiB limit. | Split the write, or shorten the query value. |
 | `ClosedError` | The kv handle closed, also from `changes`. | Open kv again. |
 
 ## Limits
