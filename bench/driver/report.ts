@@ -111,7 +111,7 @@ export function report(records: readonly RunRecord[], titles: ReadonlyMap<string
       if (!phases[0]!.timed) continue;
       const rate = get(row, "rate");
       const wall = get(row, "wall");
-      const pooled = new Map(opsOf(phases[0]!).map((op) => [op, merge(phases.flatMap((ph) => samplesOf(ph, op)))]));
+      const pooled = new Map([...new Set(phases.flatMap(opsOf))].map((op) => [op, merge(phases.flatMap((ph) => samplesOf(ph, op)))]));
       [...pooled].sort((a, b) => b[1].n - a[1].n).forEach(([op, h], i) => {
         const head = i === 0 ? `| ${row.name} | ${row.contender} | ${phases.length} | ${cell(rate)} | ${cell(wall)} ` : "| | | | | ";
         out.push(`${head}| ${op} | ${Math.round(h.n / phases.length)} | ${fmtUs(quantile(h, 0.5))} | ${fmtUs(quantile(h, 0.99))} | ${fmtUs(quantile(h, 0.999))} | ${fmtUs(h.maxUs)} |`);

@@ -2,6 +2,7 @@
  * node bench/cli.ts <verb> [args]
  *
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--seed N]
+ *       [--timeout MS (per phase, default 1800000)]
  *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N]
  *   smoke [--check] [--seed N]
  *                           every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
@@ -76,10 +77,10 @@ async function main(): Promise<number> {
         workloads: smoke ? [] : positionals,
         contenders: values.contenders ? values.contenders.split(",") : [],
         size,
-        reps: smoke ? 1 : Number(values.reps),
+        reps: smoke ? 1 : countFlag("reps", values.reps),
         seed: seedFlag(values.seed),
         headless: !values.headed,
-        timeoutMs: Number(values.timeout),
+        timeoutMs: countFlag("timeout", values.timeout),
         smoke,
         check: smoke && values.check,
         maxPeakBytes: bytesFlag("maxPeakBytes", "max-peak-bytes", values["max-peak-bytes"]).maxPeakBytes,
@@ -175,6 +176,12 @@ function seedFlag(value: string): number {
   const seed = Number(value);
   if (!/^\d+$/.test(value) || seed > 0xffff_ffff) throw new Error(`--seed must be a whole number from 0 to ${0xffff_ffff}`);
   return seed;
+}
+
+function countFlag(flag: string, value: string): number {
+  const n = Number(value);
+  if (!/^\d+$/.test(value) || n < 1) throw new Error(`--${flag} must be a positive whole number`);
+  return n;
 }
 
 /** `{ [key]: bytes }` when the flag is set, `{}` when it is not. */

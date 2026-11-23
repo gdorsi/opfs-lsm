@@ -8,6 +8,7 @@ pnpm bench kv/                               # one family
 pnpm bench kv/fillrandom kv/ycsb-a --size large --reps 7
 pnpm bench yjs/ --contenders kv              # one contender
 pnpm bench kv/ --reps 5 --seed 7             # the same runs on another seed (default 1)
+pnpm bench kv/ --timeout 600000              # the limit of one phase in ms (default 1800000)
 pnpm bench:size                              # bundle sizes
 pnpm bench:smoke                             # everything at size tiny, 1 rep
 pnpm bench:smoke --check                     # what CI runs: the bundle-size budgets, the access-pattern owners, then the smoke and the byte budgets, from one run of the build

@@ -23,7 +23,7 @@ export const SIZES: readonly SizeName[] = ["tiny", "small", "large"];
  * has made relaxed since version 121. "sqlite-full" is SQLite's default
  * `synchronous=FULL` with a rollback journal, on OPFS.
  */
-export type Durability = "idb-default" | "idb-strict" | "sqlite-full" | "none";
+export type Durability = "idb-default" | "sqlite-full" | "none";
 
 /** Sizing in the LevelDB setup-line vocabulary. */
 export type Params = {

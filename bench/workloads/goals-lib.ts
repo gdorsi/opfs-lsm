@@ -74,7 +74,7 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
         const op = d.txOp(tx);
         await ctx.time(op, d.txBytes(tx), () => store.apply(tx), d.txCount(tx));
         n++;
-        if (op === during && ++matched % every === 0) answers.set(n, canonical(await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0)));
+        if (op === during && ++matched % every === 0) answers.set(n, canonical(await ctx.time("read", 0, () => store.goals[read.goal]!(read.params), 0), `${read.goal} after batch ${n}`));
         if (n % 500 === 0) ctx.progress(`replay: ${n} batches`);
       }
       n = 0;
@@ -205,20 +205,22 @@ export function picker(seed: number): Picker {
 }
 
 /** JSON with object keys sorted, so two answers compare whatever order their fields were built in. */
-function canonical(v: Json | undefined): string {
-  if (v === null || typeof v !== "object") return JSON.stringify(v ?? null);
-  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+function canonical(v: Json | undefined, at = "answer"): string {
+  if (v === undefined) throw new Error(`${at} is undefined, which JSON would turn into null`);
+  if (typeof v === "number" && !Number.isFinite(v)) throw new Error(`${at} is ${v}, which JSON would turn into null`);
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map((x, i) => canonical(x, `${at}[${i}]`)).join(",")}]`;
   const o = v as { readonly [k: string]: Json };
   return `{${Object.keys(o)
     .sort()
-    .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+    .map((k) => `${JSON.stringify(k)}:${canonical(o[k], `${at}.${k}`)}`)
     .join(",")}}`;
 }
 
 /** Undefined when equal; otherwise both sides around the first difference. */
 export function differ(got: Json, want: Json): string | undefined {
-  const a = canonical(got);
-  const b = canonical(want);
+  const a = canonical(got, "got");
+  const b = canonical(want, "want");
   if (a === b) return undefined;
   let i = 0;
   while (i < a.length && a[i] === b[i]) i++;
