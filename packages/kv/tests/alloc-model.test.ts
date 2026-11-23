@@ -50,20 +50,33 @@ function walk(a: Allocator): string | undefined {
   return at === end ? undefined : `blocks end at ${at}, the heap at ${end}`;
 }
 
+/** Allocs and reallocs the cap refused, over every run. */
+let refused = 0;
+
+/** A size up to `small`, or now and then up to 400 KB, so the 64-page cap refuses some and the runs fill memory. */
+function sizeFrom(random: () => number, small: number): number {
+  return Math.floor(random() ** 3 * (random() < 0.1 ? 400_000 : small)) + 1;
+}
+
 /** The first rule `seed`'s run of operations breaks, or undefined. */
 function run(seed: number): string | undefined {
   const random = lcg(seed);
   const a = new WebAssembly.Instance(module, {}).exports as unknown as Allocator;
   const live = new Map<number, { size: number; tag: number }>();
   const bytes = () => new Uint8Array(a.memory.buffer);
-  const holds = (ptr: number, size: number, tag: number) => bytes().subarray(ptr, ptr + size).every((b) => b === tag);
+  // Every byte is `tag` when the first is and the block equals itself shifted by one, a memcmp even for 400 KB.
+  const holds = (ptr: number, size: number, tag: number) =>
+    bytes()[ptr] === tag && Buffer.from(a.memory.buffer, ptr, size - 1).equals(Buffer.from(a.memory.buffer, ptr + 1, size - 1));
   for (let op = 0; op < OPS; op++) {
     const k = random();
     const ptrs = [...live.keys()];
     if (k < 0.45 || !ptrs.length) {
-      const size = Math.floor(random() ** 3 * 5000) + 1;
+      const size = sizeFrom(random, 5000);
       const ptr = a.alloc(size);
-      if (!ptr) continue;
+      if (!ptr) {
+        refused++;
+        continue;
+      }
       if (ptr % 8) return `op ${op}: alloc returned ${ptr}, not 8-byte aligned`;
       const tag = (seed + op) & 0xff;
       bytes().fill(tag, ptr, ptr + size);
@@ -71,9 +84,13 @@ function run(seed: number): string | undefined {
     } else if (k < 0.75) {
       const ptr = ptrs[Math.floor(random() * ptrs.length)]!;
       const { size, tag } = live.get(ptr)!;
-      const grown = Math.floor(random() ** 3 * 8000) + 1;
+      const grown = sizeFrom(random, 8000);
       const moved = a.realloc(ptr, grown);
-      if (!moved) continue;
+      if (!moved) {
+        refused++;
+        if (!holds(ptr, size, tag)) return `op ${op}: a refused realloc of ${ptr} changed its bytes`;
+        continue;
+      }
       if (!holds(moved, Math.min(size, grown), tag)) return `op ${op}: realloc of ${ptr} to ${grown} bytes lost bytes`;
       live.delete(ptr);
       bytes().fill(tag, moved, moved + grown);
@@ -98,7 +115,7 @@ function run(seed: number): string | undefined {
 }
 
 describe("the engine's allocator", () => {
-  it("keeps its blocks apart, aligned and intact, and its heap tiled", async () => {
+  it("keeps its blocks apart, aligned and intact, and its heap tiled, with memory full or not", async () => {
     const broken: string[] = [];
     for (let seed = 1; seed <= SEEDS; seed++) {
       const why = run(seed);
@@ -106,7 +123,7 @@ describe("the engine's allocator", () => {
       // A worker that never yields misses vitest's heartbeat, which fails a long sweep that passed.
       await new Promise((resolve) => setImmediate(resolve));
     }
-    expect(broken).toEqual([]);
+    expect({ broken, filledMemory: refused > 0 }).toEqual({ broken: [], filledMemory: true });
   }, 10_000 + SEEDS * 500);
 
   it("moves a block it cannot grow in place into free space when memory is full", () => {
