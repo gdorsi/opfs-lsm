@@ -41,6 +41,7 @@ export const PATTERNS = {
   "doc-newest-end": "documents: the newest end of a global time index under constant churn",
   "doc-group-by": "documents: a group-by count on a non-leading field, joined to names",
   "doc-substring": "documents: a substring match on titles that no equality or range answers",
+  "doc-burst": "documents: the reads a board fires in the same task as it opens, timed to the last answer, and the same reads one after the other",
 
   "tanstack-eager": "TanStack DB, eager: persisting transactions, and loading every row in a fresh tab, settled and unsettled",
   "tanstack-on-demand": "TanStack DB, on demand: a live query that loads its own rows through an index",

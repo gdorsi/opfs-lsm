@@ -4,7 +4,7 @@
  * and how its bindings are curated from the oracle (LDBC-style: bindings near
  * one cost quantile, so cold, first and warm calls do comparable work).
  */
-import type { Dataset } from "../../core/goals.ts";
+import type { Call, Dataset } from "../../core/goals.ts";
 import { WORKSPACES, trackerHistory } from "./history.ts";
 import { TrackerOracle } from "./oracle.ts";
 import { LIMITS, OPEN, type Issue, type Status, type TrackerSpec, type Tx } from "./types.ts";
@@ -32,8 +32,15 @@ function filling<T>(items: Iterable<T>, cost: (t: T) => number, limit: number): 
   return full.length > 0 ? full : all;
 }
 
+/** A project's board as it opens: its status counts, one page per open column, and who carries the open work. */
+const board = (projectId: string): Call<TrackerSpec>[] => [
+  { goal: "statusCounts", params: { projectId } },
+  ...OPEN.map((status) => ({ goal: "statusPage" as const, params: { projectId, status } })),
+  { goal: "assigneeLoad", params: { projectId } },
+];
+
 export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
-  title: "tracker: a task-tracker workspace aged by its history, then 11 screens' worth of goals, cold, first and warm",
+  title: "tracker: a task-tracker workspace aged by its history, then 11 screens' worth of goals and a project board's reads fired together, cold, first and warm",
   owns: ["doc-ingest", "doc-read-during-sync", "doc-edit", "doc-reread"],
   entries: { tiny: WORKSPACES.tiny.issues, small: WORKSPACES.small.issues, large: WORKSPACES.large.issues },
   history: trackerHistory,
@@ -154,6 +161,14 @@ export const TRACKER: Dataset<TrackerSpec, Tx, TrackerOracle> = {
     },
   },
   duringLoad: { during: "sync", every: 10, read: { goal: "recentActivity", params: {} } },
+  burst: {
+    name: "board",
+    owns: "doc-burst",
+    curate: (o, pick) => {
+      const open = countBy(o.issues.values(), (i) => (isOpen(i.status) ? i.projectId : undefined));
+      return pick.near(open.keys(), { cost: (p) => open.get(p)!, key: (p) => p, n: BINDINGS, q: 0.5 }).map(board);
+    },
+  },
   reread(o) {
     // Move the most recently updated todo issue to in progress: its list, the next list and the counts must all show it.
     let latest: Issue | undefined;

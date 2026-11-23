@@ -27,6 +27,13 @@ const GOALS = [
   { label: "First 20 issues whose title contains a word", phase: "search" },
 ] as const;
 
+const BOARD = [
+  { label: "A project's board, 6 reads started together", phase: "board" },
+  { label: "The same 6 reads, one after the other", phase: "board-serial" },
+] as const;
+
+const SCREENS = [...GOALS, ...BOARD].map(({ label, phase }) => ({ label, phase, metric: ["mean:cold", "mean:warm"] as const }));
+
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
@@ -131,7 +138,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-23T03-32-22-apple-m2-pro",
+    file: "2026-11-23T20-57-14-apple-m5-max",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -142,13 +149,13 @@ export const TABLES: readonly Table[] = [
       { head: "docstore vs SQLite", ratio: { of: "docstore", over: "SQLite on OPFS" } },
     ],
     rows: [
-      ...GOALS.map(({ label, phase }) => ({ label, phase, metric: ["mean:cold", "mean:warm"] as const })),
+      ...SCREENS,
       { label: "Opening the store in a fresh tab, before the todo issues goal", phase: "statusPage", metric: "mean:open" },
     ],
   },
   {
     id: "goals-large",
-    file: "2026-11-22T14-47-06-apple-m5-max",
+    file: "2026-11-23T22-22-35-apple-m5-max",
     size: "large",
     workload: "tracker/goals",
     unit: null,
@@ -158,11 +165,11 @@ export const TABLES: readonly Table[] = [
       { head: "docstore", at: "tracker/docstore" },
       { head: "docstore vs Dexie", ratio: { of: "docstore", over: "Dexie" } },
     ],
-    rows: GOALS.map(({ label, phase }) => ({ label, phase, metric: ["mean:cold", "mean:warm"] as const })),
+    rows: SCREENS,
   },
   {
     id: "writes",
-    file: "2026-11-23T03-32-22-apple-m2-pro",
+    file: "2026-11-23T20-57-14-apple-m5-max",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },

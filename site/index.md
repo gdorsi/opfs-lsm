@@ -95,36 +95,36 @@ bench:
         versus: docstore against Dexie, cold
         stores: [docstore, Dexie]
         setup: The first call in a fresh tab, medians of 5 runs on an Apple M5 Max
-        note: Cold, docstore is faster on 5 of the 11 goals and slower on 6. A fresh tab loads each page its rows sit on.
+        note: Cold, docstore is faster on 4 of the 11 goals and slower on 5, and the runs do not separate the other 2. A fresh tab loads each page its rows sit on.
         rows:
-          - { measure: "The column a sprint close just emptied", ours: 6.75 ms, theirs: 75.0 ms, ratio: 11× }
-          - { measure: "First 50 open issues with a label", ours: 14.5 ms, theirs: 146 ms, ratio: 10× }
-          - { measure: "Issues per status in a project", ours: 3.55 ms, theirs: 12.4 ms, ratio: 3.5× }
-          - { measure: "Rows at 90% of a project's list", ours: 13.2 ms, theirs: 24.7 ms, ratio: 1.9× }
-          - { measure: "Open issues per person, top 10", ours: 5.09 ms, theirs: 8.24 ms, ratio: 1.6× }
-          - { measure: "First 20 issues whose title contains a word", ours: 9.93 ms, theirs: 6.46 ms, ratio: 0.65× }
-          - { measure: "The 50 most recently updated issues", ours: 4.56 ms, theirs: 2.28 ms, ratio: 0.50× }
-          - { measure: "First 50 open issues by priority, with counts", ours: 19.2 ms, theirs: 8.09 ms, ratio: 0.42× }
-          - { measure: "First 50 open issues assigned to a person", ours: 14.0 ms, theirs: 3.21 ms, ratio: 0.23× }
-          - { measure: "An issue with its comments and their authors", ours: 7.42 ms, theirs: 1.48 ms, ratio: 0.20× }
-          - { measure: "First 50 todo issues, with assignee and labels", ours: 13.5 ms, theirs: 2.11 ms, ratio: 0.16× }
+          - { measure: "The column a sprint close just emptied", ours: 8.27 ms, theirs: 60.8 ms, ratio: 7.3× }
+          - { measure: "Issues per status in a project", ours: 3.48 ms, theirs: 8.47 ms, ratio: 2.4× }
+          - { measure: "Rows at 90% of a project's list", ours: 12.8 ms, theirs: 22.1 ms, ratio: 1.7× }
+          - { measure: "Open issues per person, top 10", ours: 5.90 ms, theirs: 9.78 ms, ratio: 1.7× }
+          - { measure: "First 50 open issues with a label", ours: 12.5 ms, theirs: 13.9 ms, ratio: 1.1× ‡ }
+          - { measure: "First 20 issues whose title contains a word", ours: 8.50 ms, theirs: 8.83 ms, ratio: 1.0× ‡ }
+          - { measure: "First 50 open issues assigned to a person", ours: 4.74 ms, theirs: 4.35 ms, ratio: 0.92× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 4.54 ms, theirs: 2.83 ms, ratio: 0.62× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 16.2 ms, theirs: 9.08 ms, ratio: 0.56× }
+          - { measure: "The 50 most recently updated issues", ours: 4.23 ms, theirs: 2.10 ms, ratio: 0.50× }
+          - { measure: "An issue with its comments and their authors", ours: 6.68 ms, theirs: 2.18 ms, ratio: 0.33× }
       - title: A task tracker at 200,000 issues, warm
         versus: docstore against Dexie, warm
         stores: [docstore, Dexie]
         setup: The same call again, medians of 5 runs on an Apple M5 Max
         note: Warm, docstore is faster on all 11 goals.
         rows:
-          - { measure: "First 50 open issues with a label", ours: 0.305 ms, theirs: 142 ms, ratio: 460× }
-          - { measure: "Issues per status in a project", ours: 0.118 ms, theirs: 7.96 ms, ratio: 67× }
-          - { measure: "Rows at 90% of a project's list", ours: 0.356 ms, theirs: 23.7 ms, ratio: 67× }
-          - { measure: "The column a sprint close just emptied", ours: 1.32 ms, theirs: 73.3 ms, ratio: 56× }
-          - { measure: "First 20 issues whose title contains a word", ours: 0.177 ms, theirs: 5.23 ms, ratio: 30× }
-          - { measure: "First 50 open issues by priority, with counts", ours: 0.444 ms, theirs: 6.30 ms, ratio: 14× }
-          - { measure: "Open issues per person, top 10", ours: 0.620 ms, theirs: 6.40 ms, ratio: 10× }
-          - { measure: "An issue with its comments and their authors", ours: 0.0833 ms, theirs: 0.417 ms, ratio: 5.0× }
-          - { measure: "First 50 open issues assigned to a person", ours: 0.325 ms, theirs: 1.56 ms, ratio: 4.8× }
-          - { measure: "First 50 todo issues, with assignee and labels", ours: 0.271 ms, theirs: 1.00 ms, ratio: 3.7× }
-          - { measure: "The 50 most recently updated issues", ours: 0.422 ms, theirs: 1.10 ms, ratio: 2.6× }
+          - { measure: "Rows at 90% of a project's list", ours: 0.354 ms, theirs: 22.1 ms, ratio: 63× }
+          - { measure: "Issues per status in a project", ours: 0.129 ms, theirs: 7.00 ms, ratio: 54× }
+          - { measure: "The column a sprint close just emptied", ours: 1.74 ms, theirs: 61.6 ms, ratio: 35× }
+          - { measure: "First 50 open issues with a label", ours: 0.289 ms, theirs: 9.32 ms, ratio: 32× }
+          - { measure: "First 20 issues whose title contains a word", ours: 0.146 ms, theirs: 3.70 ms, ratio: 25× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 0.373 ms, theirs: 6.23 ms, ratio: 17× }
+          - { measure: "Open issues per person, top 10", ours: 0.557 ms, theirs: 5.61 ms, ratio: 10× }
+          - { measure: "First 50 open issues assigned to a person", ours: 0.255 ms, theirs: 1.52 ms, ratio: 6.0× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 0.207 ms, theirs: 1.04 ms, ratio: 5.0× }
+          - { measure: "An issue with its comments and their authors", ours: 0.0917 ms, theirs: 0.391 ms, ratio: 4.3× }
+          - { measure: "The 50 most recently updated issues", ours: 0.492 ms, theirs: 1.06 ms, ratio: 2.2× }
   - title: Against SQLite on OPFS
     theirs: SQLite
     groups:
@@ -134,45 +134,45 @@ bench:
         setup: 20,000 issues, 42,000 comments, 120 people. Medians of 5 runs
         note: SQLite waits for each commit to be crash-safe before returning, its default. docstore returns sooner, with Chrome's relaxed durability.
         rows:
-          - { measure: "Opening the store in a fresh tab", ours: 13.1 ms, theirs: 27.8 ms, ratio: 2.1× }
-          - { measure: "Import, mean of 47 batches of up to 1,000 rows", ours: 12.6 ms, theirs: 21.5 ms, ratio: 1.7× }
-          - { measure: "Sync, mean of 851 batches of about 50 changes", ours: 2.55 ms, theirs: 13.2 ms, ratio: 5.2× }
-          - { measure: "Sprint close, 1,054 issues in one batch", ours: 45.8 ms, theirs: 71.1 ms, ratio: 1.6× }
-          - { measure: "One edit", ours: 0.336 ms, theirs: 2.79 ms, ratio: 8.3× }
-          - { measure: "Re-reading the 50 latest issues during the sync", ours: 0.503 ms, theirs: 0.554 ms, ratio: 1.1× }
+          - { measure: "Opening the store in a fresh tab", ours: 16.9 ms, theirs: 20.3 ms, ratio: 1.2× }
+          - { measure: "Import, mean of 47 batches of up to 1,000 rows", ours: 10.5 ms, theirs: 17.6 ms, ratio: 1.7× }
+          - { measure: "Sync, mean of 851 batches of about 50 changes", ours: 2.05 ms, theirs: 10.5 ms, ratio: 5.1× }
+          - { measure: "Sprint close, 1,054 issues in one batch", ours: 33.9 ms, theirs: 52.8 ms, ratio: 1.6× }
+          - { measure: "One edit", ours: 0.222 ms, theirs: 3.40 ms, ratio: 15× }
+          - { measure: "Re-reading the 50 latest issues during the sync", ours: 0.427 ms, theirs: 0.404 ms, ratio: 0.94× }
       - title: Its screens, cold
         versus: the first call in a fresh tab
         stores: [docstore, SQLite on OPFS]
-        setup: Cold, docstore is faster than SQLite on 4 of the 11 goals and slower on 6.
-        note: Dexie, the third store in the full table, beats docstore at opening the store and on 7 of the 11 cold screens.
+        setup: Cold, docstore is faster than SQLite on 4 of the 11 goals and slower on 5.
+        note: Dexie, the third store in the full table, opens the store in the same time as docstore and has the lower cold median on 5 of the 11 screens.
         rows:
-          - { measure: "Issues per status in a project", ours: 4.51 ms, theirs: 5.53 ms, ratio: 1.2× }
-          - { measure: "First 50 todo issues, with assignee and labels", ours: 9.07 ms, theirs: 7.16 ms, ratio: 0.79× }
-          - { measure: "The column a sprint close just emptied", ours: 6.24 ms, theirs: 6.10 ms, ratio: 0.98× ‡ }
-          - { measure: "Rows at 90% of a project's list", ours: 10.3 ms, theirs: 6.22 ms, ratio: 0.61× }
-          - { measure: "An issue with its comments and their authors", ours: 7.11 ms, theirs: 6.24 ms, ratio: 0.88× }
-          - { measure: "First 50 open issues by priority, with counts", ours: 13.8 ms, theirs: 7.43 ms, ratio: 0.54× }
-          - { measure: "First 50 open issues with a label", ours: 10.2 ms, theirs: 13.4 ms, ratio: 1.3× }
-          - { measure: "First 50 open issues assigned to a person", ours: 10.1 ms, theirs: 7.83 ms, ratio: 0.77× }
-          - { measure: "The 50 most recently updated issues", ours: 4.95 ms, theirs: 6.93 ms, ratio: 1.4× }
-          - { measure: "Open issues per person, top 10", ours: 5.47 ms, theirs: 7.11 ms, ratio: 1.3× }
-          - { measure: "First 20 issues whose title contains a word", ours: 8.12 ms, theirs: 6.00 ms, ratio: 0.74× }
+          - { measure: "Issues per status in a project", ours: 3.64 ms, theirs: 3.79 ms, ratio: 1.0× ‡ }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 3.91 ms, theirs: 4.84 ms, ratio: 1.2× }
+          - { measure: "The column a sprint close just emptied", ours: 5.52 ms, theirs: 4.20 ms, ratio: 0.76× }
+          - { measure: "Rows at 90% of a project's list", ours: 7.90 ms, theirs: 4.35 ms, ratio: 0.55× }
+          - { measure: "An issue with its comments and their authors", ours: 5.90 ms, theirs: 4.29 ms, ratio: 0.73× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 9.65 ms, theirs: 5.05 ms, ratio: 0.52× }
+          - { measure: "First 50 open issues with a label", ours: 8.28 ms, theirs: 9.55 ms, ratio: 1.2× }
+          - { measure: "First 50 open issues assigned to a person", ours: 4.57 ms, theirs: 5.38 ms, ratio: 1.2× }
+          - { measure: "The 50 most recently updated issues", ours: 3.85 ms, theirs: 4.84 ms, ratio: 1.3× }
+          - { measure: "Open issues per person, top 10", ours: 5.05 ms, theirs: 4.86 ms, ratio: 0.96× ‡ }
+          - { measure: "First 20 issues whose title contains a word", ours: 6.49 ms, theirs: 4.39 ms, ratio: 0.68× }
       - title: Its screens, warm
         versus: the same call again
         stores: [docstore, SQLite on OPFS]
-        setup: Warm, docstore answers 5 of the 11 goals fastest.
+        setup: Warm, docstore answers 7 of the 11 goals fastest.
         rows:
-          - { measure: "Issues per status in a project", ours: 0.176 ms, theirs: 0.173 ms, ratio: 0.98× ‡ }
-          - { measure: "First 50 todo issues, with assignee and labels", ours: 0.362 ms, theirs: 0.537 ms, ratio: 1.5× }
-          - { measure: "The column a sprint close just emptied", ours: 0.755 ms, theirs: 0.292 ms, ratio: 0.39× }
-          - { measure: "Rows at 90% of a project's list", ours: 0.417 ms, theirs: 0.369 ms, ratio: 0.89× }
-          - { measure: "An issue with its comments and their authors", ours: 0.131 ms, theirs: 0.323 ms, ratio: 2.5× }
-          - { measure: "First 50 open issues by priority, with counts", ours: 0.635 ms, theirs: 0.431 ms, ratio: 0.68× }
-          - { measure: "First 50 open issues with a label", ours: 0.454 ms, theirs: 3.99 ms, ratio: 8.8× }
-          - { measure: "First 50 open issues assigned to a person", ours: 0.427 ms, theirs: 0.568 ms, ratio: 1.3× }
-          - { measure: "The 50 most recently updated issues", ours: 0.527 ms, theirs: 0.817 ms, ratio: 1.6× }
-          - { measure: "Open issues per person, top 10", ours: 0.416 ms, theirs: 0.370 ms, ratio: 0.89× }
-          - { measure: "First 20 issues whose title contains a word", ours: 0.259 ms, theirs: 0.305 ms, ratio: 1.2× ‡ }
+          - { measure: "Issues per status in a project", ours: 0.0960 ms, theirs: 0.126 ms, ratio: 1.3× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 0.170 ms, theirs: 0.422 ms, ratio: 2.5× }
+          - { measure: "The column a sprint close just emptied", ours: 0.492 ms, theirs: 0.205 ms, ratio: 0.42× }
+          - { measure: "Rows at 90% of a project's list", ours: 0.267 ms, theirs: 0.286 ms, ratio: 1.1× ‡ }
+          - { measure: "An issue with its comments and their authors", ours: 0.0823 ms, theirs: 0.210 ms, ratio: 2.6× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 0.374 ms, theirs: 0.321 ms, ratio: 0.86× }
+          - { measure: "First 50 open issues with a label", ours: 0.295 ms, theirs: 2.75 ms, ratio: 9.3× }
+          - { measure: "First 50 open issues assigned to a person", ours: 0.202 ms, theirs: 0.424 ms, ratio: 2.1× }
+          - { measure: "The 50 most recently updated issues", ours: 0.353 ms, theirs: 0.568 ms, ratio: 1.6× }
+          - { measure: "Open issues per person, top 10", ours: 0.346 ms, theirs: 0.281 ms, ratio: 0.81× }
+          - { measure: "First 20 issues whose title contains a word", ours: 0.169 ms, theirs: 0.207 ms, ratio: 1.2× }
       - title: TanStack DB on demand
         versus: against its SQLite persistence
         stores: [opfs-lsm, SQLite]
@@ -351,7 +351,7 @@ await db.view(async (snap) => {
 
 <div class="bench-foot">
 
-Runs in headless Chrome 157 on an Apple M2 Pro, and on an Apple M5 Max for the tracker at 200,000 issues.
+Runs in headless Chrome 157 on an Apple M2 Pro, and on an Apple M5 Max for the task tracker.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 

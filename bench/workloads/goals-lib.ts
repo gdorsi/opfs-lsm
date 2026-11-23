@@ -9,6 +9,8 @@
  *   prepare  same   untimed   curate bindings, compute every expected answer, carry them; footprint
  *   <goal>   fresh  timed     COLD_ROUNDS rounds, each on its own fresh page. Round r: open, "cold" = binding r. Round 0 goes on:
  *                             "first" = the other bindings once; "warm" = every binding WARM_ROUNDS times
+ *   <burst>  fresh  timed     the dataset's bursts on a goal's rounds: the calls of one burst fired in one task, timed to the last answer
+ *   <burst>-serial            the same, each call awaited before the next starts
  *   reread   fresh  timed     one write, then the reads that must show it ("edit", "reread")
  *
  * The oracle folds the same history in the page that replays it and never
@@ -28,6 +30,8 @@ type Store = GoalStore<GoalSpecMap, unknown> & { settle(): Promise<void> };
 type Read = { readonly goal: string; readonly params: JsonRow; readonly expected: Json };
 type Script = {
   readonly goals: Readonly<Record<string, { readonly bindings: readonly JsonRow[]; readonly expected: readonly Json[] }>>;
+  /** Per burst, its calls and their expected answers, in call order. */
+  readonly bursts: readonly (readonly Read[])[];
   readonly reread: { readonly tx: unknown; readonly reads: readonly Read[] };
 };
 
@@ -39,6 +43,7 @@ let live: { readonly history: History<unknown>; readonly oracle: Oracle<GoalSpec
 
 export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O extends Oracle<S, Tx>>(family: F, dataset: Dataset<S, Tx, O>): Workload<F> {
   const d = dataset as unknown as Dataset<GoalSpecMap, unknown, Oracle<GoalSpecMap, unknown>>;
+  if (d.burst.name in d.goals) throw new Error(`burst ${d.burst.name} shares a goal's phase name`);
   const storeOf = async (ctx: PhaseContext<F>) => (await ctx.store()) as unknown as Store;
   const running = () => {
     if (!live) throw new Error("no history on this page: replay did not run");
@@ -129,37 +134,76 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
         ctx.check(bindings.length >= 1 && bindings.length <= COLD_ROUNDS, `${goal}: ${bindings.length} bindings`);
         goals[goal] = { bindings, expected: bindings.map((b) => oracle.goals[goal]!(b)) };
       }
+      const curated = d.burst.curate(oracle, picker(seedOf(ctx.params.seed, d.burst.name)));
+      ctx.check(curated.length >= 1 && curated.length <= COLD_ROUNDS, `${d.burst.name}: ${curated.length} bursts`);
+      const bursts = curated.map((calls) => calls.map((c) => ({ ...c, expected: oracle.goals[c.goal]!(c.params) })));
       const { tx, reads } = d.reread(oracle);
       oracle.apply(tx);
       ctx.carry.script = {
         goals,
+        bursts,
         reread: { tx, reads: reads.map((r) => ({ ...r, expected: oracle.goals[r.goal]!(r.params) })) },
       } satisfies Script;
     },
   };
 
-  const goal = (name: string): Phase<F> => ({
+  /** Rounds of a phase: `units` is how many bindings (or bursts) there are, `fire` times and checks unit `b` under op `op`. */
+  const roundsPhase = (name: string, units: (script: Script) => number, fire: (ctx: PhaseContext<F>, store: Store, op: string, b: number) => Promise<void>): Phase<F> => ({
     name,
     page: "fresh",
     rounds: COLD_ROUNDS,
     timed: true,
     mainThread: true,
     async run(ctx) {
-      const { bindings, expected } = scriptOf(ctx).goals[name]!;
-      if (ctx.round >= bindings.length) return;
+      const n = units(scriptOf(ctx));
+      if (ctx.round >= n) return;
       const store = await storeOf(ctx);
       const call = async (op: string, b: number) => {
-        const got = await ctx.time(op, 0, () => store.goals[name]!(bindings[b]!));
-        check(ctx, `${name} ${JSON.stringify(bindings[b])}`, got, expected[b]!);
+        await fire(ctx, store, op, b);
         await yieldTask();
       };
       await yieldTask();
       await call("cold", ctx.round);
       if (ctx.round > 0) return;
-      for (let b = 1; b < bindings.length; b++) await call("first", b);
-      for (let round = 0; round < WARM_ROUNDS; round++) for (let b = 0; b < bindings.length; b++) await call("warm", b);
+      for (let b = 1; b < n; b++) await call("first", b);
+      for (let round = 0; round < WARM_ROUNDS; round++) for (let b = 0; b < n; b++) await call("warm", b);
     },
   });
+
+  const goal = (name: string) =>
+    roundsPhase(
+      name,
+      (script) => script.goals[name]!.bindings.length,
+      async (ctx, store, op, b) => {
+        const { bindings, expected } = scriptOf(ctx).goals[name]!;
+        const got = await ctx.time(op, 0, () => store.goals[name]!(bindings[b]!));
+        check(ctx, `${name} ${JSON.stringify(bindings[b])}`, got, expected[b]!);
+      },
+    );
+
+  const burst = (mode: "together" | "serial") =>
+    roundsPhase(
+      mode === "together" ? d.burst.name : `${d.burst.name}-serial`,
+      (script) => script.bursts.length,
+      async (ctx, store, op, b) => {
+        const calls = scriptOf(ctx).bursts[b]!;
+        const ask = (c: Read) => store.goals[c.goal]!(c.params);
+        // One sample per burst: a screen waits for its last answer. Each call counts as an op.
+        const got = await ctx.time(
+          op,
+          0,
+          mode === "together"
+            ? () => Promise.all(calls.map(ask))
+            : async () => {
+                const answers: Json[] = [];
+                for (const c of calls) answers.push(await ask(c));
+                return answers;
+              },
+          calls.length,
+        );
+        calls.forEach((c, k) => check(ctx, `${d.burst.name} ${c.goal} ${JSON.stringify(c.params)}`, got[k]!, c.expected));
+      },
+    );
 
   const reread: Phase<F> = {
     name: "reread",
@@ -183,9 +227,9 @@ export function goalWorkload<F extends Family, S extends GoalSpecMap, Tx, O exte
   return defineWorkload({
     family,
     title: d.title,
-    owns: [...d.owns, ...Object.values(d.goals).map((g) => g.owns)],
+    owns: [...d.owns, ...Object.values(d.goals).map((g) => g.owns), d.burst.owns],
     params: (size) => ({ entries: d.entries[size], keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0 }),
-    phases: [replay, settle, recent, prepare, ...Object.keys(d.goals).map(goal), reread],
+    phases: [replay, settle, recent, prepare, ...Object.keys(d.goals).map(goal), burst("together"), burst("serial"), reread],
   });
 }
 
