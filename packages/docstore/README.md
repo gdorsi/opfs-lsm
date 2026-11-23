@@ -790,7 +790,7 @@ try {
 
 | Error | When | What to do |
 |---|---|---|
-| `"schema"` | The stored catalog and this schema disagree, the catalog lacks the collection, or a queried index is still building. | Open with the newer schema, or bump `version`. Query a building index again later. |
+| `"schema"` | The stored catalog and this schema disagree, the catalog lacks the collection, or a queried index is still building. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema, or bump `version`. Query a building index again later. Rename the collection or index. |
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |
 | `"query"` | A query is malformed. | Fix the query. |
