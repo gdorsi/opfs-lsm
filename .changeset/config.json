@@ -12,7 +12,8 @@
       "@opfs-lsm/tanstack-db",
       "@opfs-lsm/yjs",
       "@opfs-lsm/automerge",
-      "@opfs-lsm/fate"
+      "@opfs-lsm/fate",
+      "@opfs-lsm/tanstack-query"
     ]
   ],
   "linked": [],
