@@ -109,7 +109,8 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
     closed = true;
     stopSampler();
     await killGroup(child);
-    rmSync(profile, { recursive: true, force: true });
+    // Chrome's helpers can still write to the profile for a moment after the kill, which fails a plain rm with ENOTEMPTY.
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
 
   try {

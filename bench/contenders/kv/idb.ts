@@ -1,7 +1,7 @@
 /**
  * A hand-written IndexedDB key-value store doing the same ops as kv: one
  * object store with binary keys, one readwrite transaction per batch,
- * getAll(range, limit) for scans, count(range) for counts. Default durability, like kv's WAL.
+ * getAll(range, limit) for scans and getAllRecords in reverse, count(range) for counts. Default durability, like kv's WAL.
  *
  * Every write calls `commit()` once its requests are issued. Without it,
  * Chrome waits for the requests' success events to reach the tab before it
@@ -13,11 +13,15 @@ import { done, openIdb, request } from "../../page/idb.ts";
 const STORE = "kv";
 /** kv bytes are always ArrayBuffer-backed; TypeScript's IDBValidKey wants that spelled out. */
 const k = (b: Uint8Array) => b as Uint8Array<ArrayBuffer>;
+/** `getAllRecords` (Chrome 141) takes a direction, which `getAll` lacks; TypeScript's DOM types do not have it yet. */
+type RecordsStore = IDBObjectStore & {
+  getAllRecords(options: { query: IDBKeyRange; count: number; direction: IDBCursorDirection }): IDBRequest<{ value: Uint8Array }[]>;
+};
 
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); getMany = one readonly tx of gets; range = getAll(bound, limit), after a key cursor advance for an offset; count = count(bound)",
+  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); getMany = one readonly tx of gets; range = getAll(bound, limit), or getAllRecords(bound, limit, prev) in reverse, after a key cursor advance for an offset; count = count(bound)",
   engine: false,
   async open(name) {
     const db = await openIdb(`idb-${name}`, (d) => d.createObjectStore(STORE));
@@ -42,25 +46,39 @@ export default defineContender({
         const s = store("readonly");
         return Promise.all(keys.map((key) => request<Uint8Array | undefined>(s.get(k(key)))));
       },
-      async range(start, endExclusive, limit, offset = 0) {
+      async range(start, endExclusive, limit, offset = 0, reverse = false) {
+        // An empty range: IDBKeyRange.bound throws a DataError on it.
+        if (endExclusive && indexedDB.cmp(k(start), k(endExclusive)) >= 0) return [];
         const s = store("readonly");
         const boundFrom = (from: Uint8Array<ArrayBuffer>) =>
           endExclusive ? IDBKeyRange.bound(from, k(endExclusive), false, true) : IDBKeyRange.lowerBound(from);
-        let from = k(start);
-        if (offset > 0) {
-          // IndexedDB has no offset: a key cursor advances past the entries, then getAll reads from where it stopped.
-          const at = await new Promise<IDBValidKey | undefined>((resolve, reject) => {
-            const req = s.openKeyCursor(boundFrom(from));
+        // IndexedDB has no offset: a key cursor advances past the entries, and the bulk read starts where it stopped.
+        const skip = (range: IDBKeyRange, dir: IDBCursorDirection) =>
+          new Promise<Uint8Array<ArrayBuffer> | undefined>((resolve, reject) => {
+            const req = s.openKeyCursor(range, dir);
             let moved = false;
             req.onerror = () => reject(req.error);
             req.onsuccess = () => {
-              if (!req.result || moved) return resolve(req.result?.key);
+              if (!req.result || moved) return resolve(req.result ? new Uint8Array(req.result.key as ArrayBuffer) : undefined);
               moved = true;
               req.result.advance(offset);
             };
           });
+        if (reverse) {
+          let range = boundFrom(k(start));
+          if (offset > 0) {
+            const at = await skip(range, "prev");
+            if (at === undefined) return [];
+            range = IDBKeyRange.bound(k(start), at);
+          }
+          const records = await request<{ value: Uint8Array }[]>((s as RecordsStore).getAllRecords({ query: range, count: limit, direction: "prev" }));
+          return records.map((r) => r.value);
+        }
+        let from = k(start);
+        if (offset > 0) {
+          const at = await skip(boundFrom(from), "next");
           if (at === undefined) return [];
-          from = new Uint8Array(at as ArrayBuffer);
+          from = at;
         }
         return request<Uint8Array[]>(s.getAll(boundFrom(from), limit));
       },

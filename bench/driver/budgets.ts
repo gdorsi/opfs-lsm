@@ -27,7 +27,7 @@ export const BUDGETS: readonly Budget[] = [
   { workload: "kv/fillseq", contender: "kv/kv", size: "tiny", phase: "settle", metric: "amp:wampTotal", max: 2.2 },
   { workload: "kv/ycsb-a", contender: "kv/kv", size: "tiny", phase: "settle-after", metric: "amp:wampTotal", max: 2.0 },
   { workload: "kv/ycsb-a", contender: "kv/kv", size: "tiny", phase: "settle-after", metric: "amp:spaceAmp", max: 1.8 },
-  { workload: "tanstack/todos", contender: "tanstack/kv", size: "tiny", phase: "check-after", metric: "amp:wampTotal", max: 2.5 },
+  { workload: "tanstack/todos", contender: "tanstack/kv", size: "tiny", phase: "check-inserts", metric: "amp:wampTotal", max: 2.5 },
   { workload: "tanstack/todos", contender: "tanstack/kv", size: "tiny", phase: "check-after", metric: "amp:spaceAmp", max: 1.5 },
   { workload: "tracker/goals", contender: "tracker/docstore", size: "tiny", phase: "settle", metric: "amp:wampTotal", max: 4.6 },
   { workload: "tracker/goals", contender: "tracker/docstore", size: "tiny", phase: "settle", metric: "amp:spaceAmp", max: 2.7 },

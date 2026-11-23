@@ -100,6 +100,35 @@ export async function scanAll(ctx: Ctx, scans: readonly Scan[]): Promise<number[
   return results.map((values) => values.length);
 }
 
+/** One bounded read over the ids in [lo, hi), ascending or `reverse`, at most `limit` values, counting `count` ops. */
+export type Bounded = { lo: number; hi: number; limit: number; op: string; reverse?: boolean; count?: number };
+
+/**
+ * Runs `reads` back to back, bounds built before the first call. Each result is checked after the last against the model:
+ * the live ids of the range in scan order, cut at `limit`, no more and no fewer. Returns the number of values each read read.
+ */
+export async function boundedAll(ctx: Ctx, reads: readonly Bounded[]): Promise<number[]> {
+  const bounds = reads.map((r) => [ctx.model.key(r.lo), ctx.model.key(r.hi)] as const);
+  const store = await ctx.store();
+  const results: Uint8Array[][] = [];
+  for (const [i, r] of reads.entries()) {
+    results.push(await ctx.time(r.op, 0, () => store.range(bounds[i]![0], bounds[i]![1], r.limit, 0, r.reverse ?? false), r.count ?? r.limit));
+  }
+  reads.forEach(({ lo, hi, limit, reverse }, i) => {
+    const want: number[] = [];
+    for (let k = 0; k < hi - lo && want.length < limit; k++) {
+      const id = reverse ? hi - 1 - k : lo + k;
+      if (ctx.model.version(id) > 0) want.push(id);
+    }
+    const got = results[i]!.map((v) => ctx.model.verifyAny(v));
+    ctx.check(
+      got.length === want.length && got.every((id, j) => id === want[j]),
+      `${reverse ? "reverse " : ""}read of [${lo}, ${hi}) limit ${limit}: got ${got.length} ids from ${got[0]}, want ${want.length} from ${want[0]}`,
+    );
+  });
+  return results.map((values) => values.length);
+}
+
 export const uniform = (ctx: Ctx, n: number) => () => Math.floor(ctx.rng() * n);
 
 /** fill + settle: the untimed-for-reads layout most read phases start from. */

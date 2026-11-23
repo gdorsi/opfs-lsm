@@ -6,7 +6,7 @@ import { rowBytes, todoRow as row } from "../../page/tanstack.ts";
 /**
  * The todo rows of the table family written through a TanStack DB collection:
  * first insert, bulk inserts in transactions of 1,000, serial single-row
- * transactions, updates and deletes in transactions of 100, then a cold open
+ * transactions, updates and deletes in transactions of 100, a reopen over the unsettled data, then a cold open
  * that loads every row. Untimed check phases compare the whole collection with
  * the model, so a number cannot come from work that did not persist.
  */
@@ -53,7 +53,7 @@ const TX_CHANGE = 100;
 
 export default defineWorkload({
   family: "tanstack",
-  title: "TanStack DB todo collection: first insert, bulk and serial inserts, updates, deletes, cold open",
+  title: "TanStack DB todo collection: first insert, bulk and serial inserts, updates, deletes, reopen unsettled, cold open",
   owns: ["tanstack-eager"],
   params: (size) => {
     const entries = { tiny: 1_000, small: 100_000, large: 1_000_000 }[size];
@@ -97,10 +97,13 @@ export default defineWorkload({
         await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(keys), slice.length);
       }
     }),
+    phase("reopen-unsettled", async (ctx) => {
+      await ctx.store();
+    }, { page: "fresh" }),
     check("check-after", true),
     phase("coldopen", async (ctx) => {
       await ctx.store();
-    }, { page: "fresh" }),
+    }, { page: "fresh", rounds: 5 }),
     check("check-cold", false),
   ],
 });

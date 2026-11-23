@@ -75,3 +75,13 @@ test("compare says how many differences chance alone would give, counting only t
     );
   assert.match(compare(many(20), many(20)), /chance alone would mark about 1\.0 of the 20 series/);
 });
+
+test("the report lists the ops of every run, not only the first", () => {
+  const snap = { n: 1, sumUs: 1, minUs: 1, maxUs: 1, buckets: [[1, 1]] as [number, number][] };
+  const withOps = (latency: Record<string, typeof snap>): RunRecord => {
+    const r = run(1, 100);
+    return { ...r, phases: [{ ...r.phases[0]!, latency }] };
+  };
+  const [a, b] = [withOps({ get: snap }), withOps({ get: snap, scan: snap })];
+  assert.match(report([a, b]), /\| scan \|/);
+});

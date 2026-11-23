@@ -2,17 +2,21 @@ import { defineWorkload } from "../../core/types.ts";
 import { permutation } from "../../page/model.ts";
 import { fillPhase, getIds, getMisses, kvParams, settlePhase, uniform, warmPhase } from "../kv-lib.ts";
 
+/** Values a page of the scan over fresh tombstones reads. */
+const PAGE_DELETED = 100;
+
 /**
  * db_bench order on one database: N/100 single puts each awaited on the empty
  * store (fillsync), random fill, reads while compaction still runs, then reads
  * and misses over warm pages once it has settled, a cold open in a fresh tab
  * after the SharedWorker has exited, the same reads over that tab's cold
- * pages, then deletes of a random tenth and the space compaction gives back.
+ * pages, then deletes of a random tenth, reads and a cursor-paged scan over those fresh tombstones,
+ * and the space compaction gives back.
  */
 export default defineWorkload({
   family: "kv",
-  title: "single awaited puts, random fill, random reads during compaction, then warm, misses, cold open, cold reads, random deletes",
-  owns: ["kv-single-put", "kv-random-fill", "kv-point-get", "kv-cold-open", "kv-delete"],
+  title: "single awaited puts, random fill, random reads during compaction, then warm, misses, cold open, cold reads, random deletes, reads and pages over the tombstones",
+  owns: ["kv-single-put", "kv-random-fill", "kv-point-get", "kv-cold-open", "kv-delete", "kv-read-deleted"],
   params: (size) => kvParams(size),
   phases: [
     {
@@ -78,6 +82,34 @@ export default defineWorkload({
         }
         const store = await ctx.store();
         for (const keys of batches) await ctx.time("deleteMany", keys.length * keyBytes, () => store.deleteMany(keys), keys.length);
+      },
+    },
+    {
+      name: "readrandom-deleted",
+      page: "same",
+      timed: true,
+      run: (ctx) => getIds(ctx, ctx.params.ops, uniform(ctx, ctx.params.entries)),
+    },
+    {
+      name: "pagedeleted",
+      page: "same",
+      timed: true,
+      async run(ctx) {
+        const limit = PAGE_DELETED;
+        const store = await ctx.store();
+        let start = ctx.model.key(0);
+        let want = ctx.model.nextLive(0);
+        for (let page = 0; page < Math.ceil(ctx.params.ops / limit) && want !== undefined; page++) {
+          const values = await ctx.time("page", 0, () => store.range(start, undefined, limit), 1);
+          // Between calls: the next page starts after the last key this one returned, as a cursor does.
+          for (const v of values) {
+            const id = ctx.model.verifyAny(v);
+            ctx.check(id === want, `page ${page}: got id ${id}, want ${want}`);
+            want = ctx.model.nextLive(id + 1);
+            start = ctx.model.key(id + 1);
+          }
+          ctx.check(values.length === limit || want === undefined, `page ${page}: ${values.length} of ${limit} values, id ${want} is live`);
+        }
       },
     },
     {

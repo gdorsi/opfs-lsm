@@ -1,15 +1,15 @@
 import { defineWorkload } from "../../core/types.ts";
-import { fillPhase, kvParams, type Scan, scanAll, settlePhase, warmPhase } from "../kv-lib.ts";
+import { type Bounded, boundedAll, fillPhase, kvParams, type Scan, scanAll, settlePhase, warmPhase } from "../kv-lib.ts";
 
 /** The page a count-free read asks for. */
 const PAGE = 50;
 /** The values one page of the full scan reads. */
 const READ_PAGE = 1_000;
 
-/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, counts, pages an offset deep and reads of many keys. */
+/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, pages an offset deep and reads of many keys. */
 export default defineWorkload({
   family: "kv",
-  title: "ascending fill, full scan, random seeks of 10 and 100 keys, counts, offsets and reads of many keys",
+  title: "ascending fill, full scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, offsets and reads of many keys",
   owns: ["kv-seq-fill", "kv-scan", "kv-count", "kv-offset", "kv-multi-get"],
   params: (size) => kvParams(size),
   phases: [
@@ -36,6 +36,29 @@ export default defineWorkload({
         await scanAll(ctx, Array.from({ length: seeks }, () => ({ from: Math.floor(ctx.rng() * ctx.params.entries), limit: nexts, op: "seek", count: 1 })));
       },
     })),
+    {
+      name: "seekreverse",
+      page: "same",
+      timed: true,
+      async run(ctx) {
+        const { entries, ops } = ctx.params;
+        const reads = Array.from({ length: Math.ceil(ops / 10) }, (): Bounded => ({ lo: 0, hi: Math.floor(ctx.rng() * entries), limit: 100, op: "seek", count: 1, reverse: true }));
+        await boundedAll(ctx, reads);
+      },
+    },
+    {
+      name: "scanbounded",
+      page: "same",
+      timed: true,
+      async run(ctx) {
+        const { entries } = ctx.params;
+        const reads = Array.from({ length: 200 }, (): Bounded => {
+          const lo = Math.floor(ctx.rng() * (entries - PAGE + 1));
+          return { lo, hi: lo + PAGE, limit: 2 * PAGE, op: "bounded", count: 1 };
+        });
+        (await boundedAll(ctx, reads)).forEach((n, i) => ctx.check(n === PAGE, `bounded scan from ${reads[i]!.lo} read ${n} of ${PAGE} values`));
+      },
+    },
     {
       name: "count",
       page: "same",

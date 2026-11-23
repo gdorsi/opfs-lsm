@@ -7,7 +7,7 @@ export function hostInfo(chrome: string, headless: boolean): HostInfo {
   let gitSha = "unknown";
   try {
     gitSha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
-    const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim();
+    const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
     if (dirty) gitSha += "-dirty";
   } catch {
     // not a git checkout
