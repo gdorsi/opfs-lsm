@@ -17,3 +17,17 @@ test("a miss key sorts between two stored keys and is not a stored key", () => {
     assert.ok(compare(miss, model.key(id + 1)) < 0, `miss < key(${id + 1})`);
   }
 });
+
+test("verify and verifyAny fail a value whose body differs from its header's", () => {
+  const model = createModel({ ...kvParams("tiny"), seed: 1 });
+  const good = model.nextValue(3);
+  model.verify(3, good);
+  assert.equal(model.verifyAny(good), 3);
+  const bad = good.slice();
+  bad[bad.length - 1]! ^= 1;
+  assert.throws(() => model.verify(3, bad), /byte \d+ is/);
+  assert.throws(() => model.verifyAny(bad), /byte \d+ is/);
+  const middle = good.slice();
+  middle[20]! ^= 1;
+  assert.throws(() => model.verify(3, middle), /byte 20 is/);
+});
