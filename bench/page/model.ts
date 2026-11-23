@@ -33,9 +33,9 @@ export type Model = {
   expected(id: number): Uint8Array | undefined;
   /** Record a delete. */
   remove(id: number): void;
-  /** Throws unless `got` is what the model expects for `id`. */
+  /** Throws unless `got` is, byte for byte, what the model expects for `id`. */
   verify(id: number, got: Uint8Array | undefined): void;
-  /** Throws unless `got` is the current value of some live key; returns its id. */
+  /** Throws unless `got` is, byte for byte, the current value of some live key; returns its id. */
   verifyAny(got: Uint8Array): number;
   /** The smallest live id at or after `from`; undefined when there is none. */
   nextLive(from: number): number | undefined;
@@ -103,6 +103,12 @@ export function createModel(params: Params, carried?: string): Model {
     return { id: view.getUint32(0), version: view.getUint32(4) };
   };
 
+  const checkBody = (got: Uint8Array, id: number, version: number) => {
+    const want = valueOf(id, version);
+    const at = want.findIndex((byte, i) => got[i] !== byte);
+    if (at >= 0) throw new CorrectnessError(`key ${id} version ${version}: byte ${at} is ${got[at]}, want ${want[at]}`);
+  };
+
   const model: Model = {
     params,
     key,
@@ -135,12 +141,14 @@ export function createModel(params: Params, carried?: string): Model {
       if (h.id !== id || h.version !== want) {
         throw new CorrectnessError(`key ${id}: got id ${h.id} version ${h.version}, want version ${want}`);
       }
+      checkBody(got, id, want);
     },
     verifyAny(got) {
       const h = headerOf(got);
       if (h.version === 0 || v[h.id] !== h.version) {
         throw new CorrectnessError(`scan: id ${h.id} version ${h.version} is not live`);
       }
+      checkBody(got, h.id, h.version);
       return h.id;
     },
     nextLive(from) {

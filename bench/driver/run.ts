@@ -11,12 +11,25 @@ import { hostInfo } from "./host.ts";
 import type { PlannedRun } from "./plan.ts";
 import { tabPlan } from "./tabs.ts";
 
+/**
+ * Chrome keeps an origin's IndexedDB backing store open for 2 s after its last
+ * connection closes, so a tab opened sooner finds it warm. Opens after 2 s or
+ * more cost the same (19 ms against 1 ms for a 200k-row store); the wait keeps
+ * 1 s of margin.
+ */
+const BACKING_STORE_GRACE_MS = 3000;
+
+/** Waits out the backing store's grace, so the next tab opens it cold. */
+export const waitBackingStoreCold = () => new Promise((resolve) => setTimeout(resolve, BACKING_STORE_GRACE_MS));
+
 export type RunOptions = {
   readonly origin: string;
   readonly headless: boolean;
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
   readonly kv: KvOptions;
+  /** Wait out the backing store's grace before each fresh tab. Only timings need it, so the smoke skips it. */
+  readonly coldTabs: boolean;
   readonly log: (line: string) => void;
 };
 
@@ -56,15 +69,18 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     const url = `${opts.origin}/index.html${query.size > 0 ? `?${query}` : ""}`;
     let tabs: [Tab | undefined, Tab | undefined] = [undefined, undefined];
     let carry: string | undefined;
+    let opened = 0;
     const freshTabs = async () => {
       for (const tab of tabs) await tab?.evaluate("__bench.closeStore()", 60_000);
       for (const tab of tabs) await tab?.close();
       tabs = [undefined, undefined];
       await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
+      if (opts.coldTabs) await waitBackingStoreCold();
     };
     for (const { phase, round, fresh, slot } of tabPlan(run.phases)) {
       if (fresh) await freshTabs();
-      const tab = (tabs[slot] ??= await chrome.openTab(url));
+      // Only the run's first tab touches storage: a touch in a later tab opens the IndexedDB backing store before the timed open.
+      const tab = (tabs[slot] ??= await chrome.openTab(opened++ === 0 ? `${url}${query.size > 0 ? "&" : "?"}touch` : url));
       const req: PhaseRequest = {
         workload: run.workload,
         contender: run.contender,

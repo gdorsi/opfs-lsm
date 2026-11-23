@@ -11,15 +11,18 @@ const { minKey, maxKey } = Dexie;
  * IndexedDB keys reject null, so an issue with no assignee is simply absent
  * from the assignee indexes, which no goal reads for unassigned issues.
  * A multiEntry index cannot be part of a compound one, so a label page walks
- * the project's issues newest first and tests the labels. For the curated
- * bindings at small and large that reads fewer rows than `*labelIds`, which
- * spans every project and status.
+ * the project's issues newest first and tests the labels. The walk stops at
+ * the page, so it is short for a common label and long for a rare one in a
+ * big project. `*labelIds` spans every project and status, and costs every
+ * write an index entry per label. For the curated bindings, the walk reads
+ * fewer rows at large and more at small, where two of five bindings are a
+ * rare label in a big project.
  */
 export default defineContender({
   family: "tracker",
   durability: "idb-default",
   fastPath:
-    "Dexie 4; a table per entity, compound indexes; where().between().reverse().limit(), count(), offset(), keys() for one key-only range read of the group-by; joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
+    "Dexie 4; a table per entity, compound indexes; where().between().reverse().limit(), count(), offset(), keys() for one key-only range read of the group-by, eachKey() on a covering index with the title for search, stopped at the page by until(); joins = bulkGet of distinct foreign keys; each goal in one read transaction; a batch = one rw transaction of bulkGet and bulkPut/bulkDelete",
   engine: false,
   async open(name) {
     const db = new Dexie(`dexie-${name}`);
@@ -28,7 +31,7 @@ export default defineContender({
       projects: "id, &key",
       labels: "id",
       issues:
-        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt]",
+        "id, [projectId+status+updatedAt], &[projectId+number], [projectId+status+priority+createdAt], [assigneeId+status+updatedAt], [projectId+assigneeId+status], updatedAt, [projectId+updatedAt+title]",
       comments: "id, [issueId+createdAt]",
     });
     await db.open();
@@ -149,8 +152,8 @@ export default defineContender({
           read(async () =>
             cards(
               await issues
-                .where("[projectId+updatedAt]")
-                .between([projectId, minKey], [projectId, maxKey])
+                .where("[projectId+updatedAt+title]")
+                .between([projectId, minKey, minKey], [projectId, maxKey, maxKey])
                 .reverse()
                 .filter((i) => i.labelIds.includes(labelId) && (OPEN as readonly string[]).includes(i.status))
                 .limit(LIMITS.page)
@@ -181,17 +184,19 @@ export default defineContender({
               .slice(0, LIMITS.load);
           }),
         search: ({ projectId, text }) =>
-          read(async () =>
-            refs(
-              await issues
-                .where("[projectId+updatedAt]")
-                .between([projectId, minKey], [projectId, maxKey])
-                .reverse()
-                .filter((i) => i.title.includes(text))
-                .limit(LIMITS.search)
-                .toArray(),
-            ),
-          ),
+          read(async () => {
+            // The title rides in the index key, as in SQLite's covering index: the scan tests keys and reads only the rows that match.
+            const hits: string[] = [];
+            await issues
+              .where("[projectId+updatedAt+title]")
+              .between([projectId, minKey, minKey], [projectId, maxKey, maxKey])
+              .reverse()
+              .until(() => hits.length === LIMITS.search)
+              .eachKey((key, cursor) => {
+                if ((key as [string, number, string])[2].includes(text)) hits.push(cursor.primaryKey);
+              });
+            return refs((await issues.bulkGet(hits)) as Issue[]);
+          }),
       },
       settle: async () => {},
       stats: async () => undefined,

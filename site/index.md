@@ -84,9 +84,9 @@ bench:
           - { measure: "TanStack DB: cold load of 91,000 rows", ours: 299 ms, theirs: 1.02 s, ratio: 3.4× }
           - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 105k rows/s, theirs: 9.80k rows/s, ratio: 11× }
           - { measure: "TanStack DB: one row per transaction", ours: 5.04k rows/s, theirs: 3.30k rows/s, ratio: 1.5× ‡ }
-          - { measure: "Yjs: cold load of 500 notes", ours: 8.78k notes/s, theirs: 1.90k notes/s, ratio: 4.6× }
+          - { measure: "Yjs: cold load of 500 notes", ours: 71.9 ms, theirs: 276 ms, ratio: 3.8× }
           - { measure: "Yjs: editing trace in one burst, no yield", ours: 18.5k edits/s, theirs: 2.13k edits/s, ratio: 8.7× }
-          - { measure: "Automerge: cold load of 500 notes", ours: 2.02k notes/s, theirs: 1.33k notes/s, ratio: 1.5× }
+          - { measure: "Automerge: cold load of 500 notes", ours: 249 ms, theirs: 377 ms, ratio: 1.5× }
           - { measure: "Automerge: write 500 notes", ours: 668 notes/s, theirs: 627 notes/s, ratio: 1.1× }
           - { measure: "fate: cold load of 100 lists", ours: 3.14k records/s, theirs: 1.18k records/s, ratio: 2.7× }
       - title: Typing, then reopening
@@ -101,11 +101,28 @@ bench:
           - { measure: "Automerge: one keystroke, main-thread time", ours: 0.521 ms, theirs: 0.288 ms, ratio: 0.55× ‡ }
           - { measure: "Automerge: reopening right after typing", ours: 63.6 ms, theirs: 59.0 ms, ratio: 0.93× }
           - { measure: "Automerge: reopening once kv has settled", ours: 66.3 ms, theirs: 58.8 ms, ratio: 0.89× }
-      - title: A task tracker at 200,000 issues
+      - title: A task tracker at 200,000 issues, cold
+        versus: docstore against Dexie, cold
+        stores: [docstore, Dexie]
+        setup: The first call in a fresh tab, medians of 5 runs on an Apple M5 Max
+        note: Cold, docstore is faster on 5 of the 11 goals and slower on 6. A fresh tab loads each page its rows sit on.
+        rows:
+          - { measure: "The column a sprint close just emptied", ours: 6.75 ms, theirs: 75.0 ms, ratio: 11× }
+          - { measure: "First 50 open issues with a label", ours: 14.5 ms, theirs: 146 ms, ratio: 10× }
+          - { measure: "Issues per status in a project", ours: 3.55 ms, theirs: 12.4 ms, ratio: 3.5× }
+          - { measure: "Rows at 90% of a project's list", ours: 13.2 ms, theirs: 24.7 ms, ratio: 1.9× }
+          - { measure: "Open issues per person, top 10", ours: 5.09 ms, theirs: 8.24 ms, ratio: 1.6× }
+          - { measure: "First 20 issues whose title contains a word", ours: 9.93 ms, theirs: 6.46 ms, ratio: 0.65× }
+          - { measure: "The 50 most recently updated issues", ours: 4.56 ms, theirs: 2.28 ms, ratio: 0.50× }
+          - { measure: "First 50 open issues by priority, with counts", ours: 19.2 ms, theirs: 8.09 ms, ratio: 0.42× }
+          - { measure: "First 50 open issues assigned to a person", ours: 14.0 ms, theirs: 3.21 ms, ratio: 0.23× }
+          - { measure: "An issue with its comments and their authors", ours: 7.42 ms, theirs: 1.48 ms, ratio: 0.20× }
+          - { measure: "First 50 todo issues, with assignee and labels", ours: 13.5 ms, theirs: 2.11 ms, ratio: 0.16× }
+      - title: A task tracker at 200,000 issues, warm
         versus: docstore against Dexie, warm
         stores: [docstore, Dexie]
         setup: The same call again, medians of 5 runs on an Apple M5 Max
-        note: Cold, the first call in a fresh tab, docstore is faster on 5 of the 11 goals and slower on 6.
+        note: Warm, docstore is faster on all 11 goals.
         rows:
           - { measure: "First 50 open issues with a label", ours: 0.305 ms, theirs: 142 ms, ratio: 460× }
           - { measure: "Issues per status in a project", ours: 0.118 ms, theirs: 7.96 ms, ratio: 67× }

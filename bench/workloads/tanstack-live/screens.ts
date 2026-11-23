@@ -15,6 +15,7 @@
  *   screens    same   untimed   every screen opened again
  *   sync-live  same   timed     the second half with every screen open ("sync"), answers checked every 10 batches
  *   close      same   untimed   every screen closed
+ *   reopen     fresh  untimed   the history again, every screen opened from storage and compared with the answers after the last batch
  */
 import { SCREENS, type LiveScreen, type LiveStore, type Screen } from "../../core/families.ts";
 import type { Json, JsonRow } from "../../core/goals.ts";
@@ -112,6 +113,26 @@ function closeScreens(name: string): Phase<"tanstack-live"> {
   };
 }
 
+/** The history and the oracle: each screen's binding, the batches to write and every answer to check. */
+function prepare(ctx: Ctx): void {
+  const oracle = new TrackerOracle();
+  const syncs: Tx[] = [];
+  for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
+    if (tx.kind === "import") oracle.apply(tx);
+    else syncs.push(tx);
+  }
+  const bindings = Object.fromEntries(SCREENS.map((s) => [s, TRACKER.goals[s].curate(oracle, picker(seedOf(ctx.params.seed, s)))[0]!])) as unknown as Record<Screen, JsonRow>;
+  const answers = (): Expected => Object.fromEntries(SCREENS.map((s) => [s, oracle.goals[s](bindings[s] as never) as Json])) as Expected;
+  const first = answers();
+  const after = new Map<number, Expected>();
+  const mid = Math.floor(syncs.length / 2);
+  syncs.forEach((tx, k) => {
+    oracle.apply(tx);
+    if (k + 1 > mid && ((k + 1 - mid) % CHECK_EVERY === 0 || k + 1 === syncs.length)) after.set(k + 1, answers());
+  });
+  run = { bindings, first, syncs, after, screens: [] };
+}
+
 const phases: Phase<"tanstack-live">[] = [
   {
     name: "import",
@@ -140,24 +161,7 @@ const phases: Phase<"tanstack-live">[] = [
     name: "prepare",
     page: "fresh",
     timed: false,
-    async run(ctx) {
-      const oracle = new TrackerOracle();
-      const syncs: Tx[] = [];
-      for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
-        if (tx.kind === "import") oracle.apply(tx);
-        else syncs.push(tx);
-      }
-      const bindings = Object.fromEntries(SCREENS.map((s) => [s, TRACKER.goals[s].curate(oracle, picker(seedOf(ctx.params.seed, s)))[0]!])) as unknown as Record<Screen, JsonRow>;
-      const answers = (): Expected => Object.fromEntries(SCREENS.map((s) => [s, oracle.goals[s](bindings[s] as never) as Json])) as Expected;
-      const first = answers();
-      const after = new Map<number, Expected>();
-      const mid = Math.floor(syncs.length / 2);
-      syncs.forEach((tx, k) => {
-        oracle.apply(tx);
-        if (k + 1 > mid && ((k + 1 - mid) % CHECK_EVERY === 0 || k + 1 === syncs.length)) after.set(k + 1, answers());
-      });
-      run = { bindings, first, syncs, after, screens: [] };
-    },
+    run: async (ctx) => prepare(ctx),
   },
   {
     name: "open",
@@ -197,6 +201,21 @@ const phases: Phase<"tanstack-live">[] = [
     run: (ctx) => replay(ctx, half(), running().syncs.length, true),
   },
   closeScreens("close"),
+  {
+    name: "reopen",
+    page: "fresh",
+    timed: false,
+    async run(ctx) {
+      prepare(ctx);
+      const r = running();
+      r.screens = await openAll(await ctx.store(), r.bindings);
+      const last = r.after.get(r.syncs.length);
+      ctx.check(last !== undefined, "no expected answers after the last sync batch");
+      if (last) checkAll(ctx, r.screens, last, "after the last sync batch, from storage");
+      for (const s of r.screens) await s.close();
+      r.screens = [];
+    },
+  },
 ];
 
 export default defineWorkload({

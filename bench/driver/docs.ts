@@ -3,8 +3,10 @@
  * docs/results/. The page holds each table between `<!-- bench:table <id> -->`
  * and `<!-- /bench:table -->`, and bench/docs-tables.ts says what every table
  * reads. A cell is the median of one `Series` and a ratio comes from
- * `versus`, so a published number is one that `compare` sees too. A ratio of
- * two sides that `versus` cannot separate is refused.
+ * `versus`, so a published number is one that `compare` sees too. A series of
+ * fewer than `ENOUGH_RUNS` runs is refused, so no ratio is of sides that
+ * `versus` cannot separate, and so is a table that reads a workload and
+ * contender with a failed run.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +58,8 @@ export type Table = {
 export type Published = {
   readonly measures: Measures;
   readonly runs: readonly Pick<RunRecord, "workload" | "contender" | "size" | "host">[];
+  /** The runs that ended in an error. They feed no series, and a table that reads their workload and contender is refused. */
+  readonly failed: readonly Pick<RunRecord, "workload" | "contender" | "size" | "error">[];
 };
 
 /**
@@ -63,6 +67,7 @@ export type Published = {
  * tree, unless the stamp is in LEGACY_DIRTY, when a run overrode a kv
  * option, and when a run used a seed other than the default: the page
  * publishes what an app gets by default, on the inputs the budgets hold for.
+ * A failed run is kept apart in `failed`.
  */
 export function readPublished(stamp: string, dir = RESULTS_DIR): Published {
   const all = readRecords(path.join(dir, `${stamp}.jsonl`));
@@ -77,7 +82,7 @@ export function readPublished(stamp: string, dir = RESULTS_DIR): Published {
   }
   const seed = measures.seeds.find((s) => s !== DEFAULT_SEED);
   if (seed !== undefined) throw new Error(`${stamp}: a run used seed ${seed}. Publish a run on the default seed ${DEFAULT_SEED}.`);
-  return { measures, runs: records };
+  return { measures, runs: records, failed: all.filter((r) => r.error) };
 }
 
 const BLOCK = /<!-- bench:table (\S+) -->\n([\s\S]*?)<!-- \/bench:table -->/g;
@@ -147,8 +152,17 @@ function renderTable(t: Table, pub: Published): string {
     const workload = cell.workload ?? row.workload ?? t.workload;
     const where = `the table "${t.id}", row "${labelOf(row).join(" / ")}", column "${col.head}"`;
     if (!workload) throw new Error(`${where}: no workload`);
+    const failed = pub.failed.find((r) => r.workload === workload && r.size === size && r.contender === cell.contender);
+    if (failed) {
+      throw new Error(`${where}: ${t.file} has a failed run of ${workload} ${cell.contender} (${failed.error!.split("\n")[0]}), so its medians are of the runs that survived. Publish a run without failures.`);
+    }
     const s = pub.measures.get({ workload, size, contender: cell.contender, phase: row.phase, metric });
     if (!s) throw new Error(`${where}: ${t.file} has no series ${workload} ${cell.contender} ${row.phase} ${metric}`);
+    if (s.summary.n < ENOUGH_RUNS) {
+      throw new Error(
+        `${where}: ${s.summary.n} runs of ${workload} ${cell.contender}. Publish at least ${ENOUGH_RUNS} runs per contender: ${ENOUGH_RUNS} against ${ENOUGH_RUNS} is the smallest equal pair the rank-sum test separates at the ${LEVEL * 100}% level, so a ratio of fewer could never lose its mark.`,
+      );
+    }
     used.add(s);
     return s;
   };
@@ -170,11 +184,6 @@ function renderTable(t: Table, pub: Published): string {
       const a = lookup(row, over, metric);
       const b = lookup(row, of, metric);
       const v = versus(a, b);
-      if (!v.separable) {
-        throw new Error(
-          `the table "${t.id}", row "${labelOf(row).join(" / ")}", column "${col.head}": ${a.summary.n} runs against ${b.summary.n} cannot show a difference, so the ratio could never lose its mark. Publish at least ${ENOUGH_RUNS} runs per contender: ${ENOUGH_RUNS} against ${ENOUGH_RUNS} is the smallest equal pair the rank-sum test separates at the ${LEVEL * 100}% level.`,
-        );
-      }
       if (!v.distinct) unseparated = true;
       return times(v.times) + (v.distinct ? "" : " ‡");
     });

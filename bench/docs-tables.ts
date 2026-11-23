@@ -76,7 +76,7 @@ export const TABLES: readonly Table[] = [
         metric: "rate",
         unit: "rows/s",
       },
-      { label: ["Yjs", "Cold load of 500 notes"], workload: "yjs/many-docs", phase: "load", metric: "rate", unit: "notes/s", at: FRAMEWORKS.yjs },
+      { label: ["Yjs", "Cold load of 500 notes, store open and check included"], workload: "yjs/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.yjs },
       {
         label: ["Yjs", "Editing trace written in one burst, 25,700 updates with no yield between keystrokes"],
         workload: "yjs/trace",
@@ -86,7 +86,7 @@ export const TABLES: readonly Table[] = [
         at: FRAMEWORKS.yjs,
       },
       { label: ["Yjs", "One keystroke typed at 60 Hz, main-thread time"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
-      { label: ["Automerge", "Cold load of 500 notes"], workload: "automerge/many-docs", phase: "load", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
+      { label: ["Automerge", "Cold load of 500 notes, store open and check included"], workload: "automerge/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.automerge },
       { label: ["Automerge", "Write 500 notes"], workload: "automerge/many-docs", phase: "persist", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
       {
         label: ["fate", "Cold load of 100 lists of 100 records"],

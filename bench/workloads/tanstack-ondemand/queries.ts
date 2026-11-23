@@ -58,8 +58,8 @@ function phase(name: string, body: (ctx: Ctx, store: OnDemandStore) => Promise<v
   return { name, page: "same", timed: true, ...extra, run: async (ctx) => body(ctx, await ctx.store()) };
 }
 
-/** Untimed: every owner's rows through a live query, compared with the model. */
-function check(name: string, footprint: boolean): Phase<"tanstack-ondemand"> {
+/** Untimed: every owner's rows through a live query, compared with the model. On a fresh page it reads what reached storage. */
+function check(name: string, footprint: boolean, page: Phase<"tanstack-ondemand">["page"] = "same"): Phase<"tanstack-ondemand"> {
   return phase(
     name,
     async (ctx, store) => {
@@ -74,7 +74,7 @@ function check(name: string, footprint: boolean): Phase<"tanstack-ondemand"> {
       }
       ctx.carry.liveLogicalBytes = live;
     },
-    { timed: false, footprint },
+    { timed: false, footprint, page },
   );
 }
 
@@ -104,10 +104,11 @@ export default defineWorkload({
       checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(0) }, want.length), want, "first query");
     }, { mainThread: true }),
     phase("query-owner", async (ctx, store) => {
-      const wants = Array.from({ length: OWNERS }, (_, o) => ownerRows(ctx, o));
+      const owners = Array.from({ length: OWNERS - 1 }, (_, k) => k + 1); // owner 0 is the first query's: its rows are loaded
+      const wants = owners.map((o) => ownerRows(ctx, o));
       const got: (readonly Todo[])[] = [];
-      for (const [o, want] of wants.entries()) got.push(await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(o) }, want.length));
-      wants.forEach((want, o) => checkRows(ctx, got[o]!, want, `owner ${o}`));
+      for (const [k, want] of wants.entries()) got.push(await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(owners[k]!) }, want.length));
+      wants.forEach((want, k) => checkRows(ctx, got[k]!, want, `owner ${owners[k]}`));
     }, { mainThread: true }),
     phase("query-page", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
@@ -151,5 +152,6 @@ export default defineWorkload({
       }
     }),
     check("check-after", true),
+    check("check-stored", false, "fresh"),
   ],
 });
