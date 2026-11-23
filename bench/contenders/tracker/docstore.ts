@@ -128,16 +128,14 @@ export default defineContender({
         },
         recentActivity: async () => cards((await issues.query({ index: "byUpdated", reverse: true, limit: LIMITS.page })).docs),
         async assigneeLoad({ projectId }) {
-          const [{ entries }, people] = await Promise.all([
-            issues.queryEntries({ index: "byProjectAssignee", eq: [projectId] }),
-            users.query({}),
-          ]);
+          const { entries } = await issues.queryEntries({ index: "byProjectAssignee", eq: [projectId] });
           const open = new Map<string, number>();
           for (const { values: [, assigneeId, status] } of entries) {
             if (assigneeId !== null && isOpen(status)) open.set(assigneeId, (open.get(assigneeId) ?? 0) + 1);
           }
-          return people.docs
-            .flatMap((u) => (open.has(u.id) ? [{ name: u.name, open: open.get(u.id)! }] : []))
+          const people = await users.getMany([...open.keys()]);
+          return people
+            .flatMap((u) => (u ? [{ name: u.name, open: open.get(u.id)! }] : []))
             .sort((a, b) => b.open - a.open || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
             .slice(0, LIMITS.load);
         },

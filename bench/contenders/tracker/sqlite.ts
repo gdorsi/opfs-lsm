@@ -30,7 +30,6 @@ const SCHEMA = [
   "CREATE INDEX IF NOT EXISTS issues_updated ON issues (updatedAt)",
   // The title rides in the index, as docstore's text index holds it: search tests it there and reads only the rows that match.
   "CREATE INDEX IF NOT EXISTS issues_project_updated ON issues (projectId, updatedAt, title)",
-  "CREATE INDEX IF NOT EXISTS issue_labels_label ON issue_labels (labelId, issueId)",
   "CREATE INDEX IF NOT EXISTS comments_issue ON comments (issueId, createdAt)",
 ];
 
@@ -230,7 +229,7 @@ export default defineContender({
   family: "tracker",
   durability: "sqlite-full",
   fastPath:
-    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, SQLite's default settings; normalized tables, issue_labels junction, 9 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, folded per row and run as at most five json_each statements per entity (delete, unlabel, UPDATE FROM, INSERT, label)",
+    "wa-sqlite on OPFS (OPFSCoopSyncVFS) in a dedicated worker, opened by @tanstack/browser-db-sqlite-persistence, SQLite's default settings; normalized tables, issue_labels junction, 8 secondary indexes; one SQL statement per goal (two for a thread); a batch = one transaction, folded per row and run as at most five json_each statements per entity (delete, unlabel, UPDATE FROM, INSERT, label)",
   engine: false,
   open: openSqlite,
 });

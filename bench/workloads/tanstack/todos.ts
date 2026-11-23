@@ -100,7 +100,7 @@ export default defineWorkload({
     check("check-after", true),
     phase("coldopen", async (ctx) => {
       await ctx.store();
-    }, { page: "fresh" }),
+    }, { page: "fresh", rounds: 5 }),
     check("check-cold", false),
   ],
 });

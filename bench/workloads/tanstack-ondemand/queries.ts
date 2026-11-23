@@ -54,6 +54,9 @@ async function run(ctx: Ctx, store: OnDemandStore, op: string, q: TodoQuery, cou
   return rows;
 }
 
+/** Untimed: a fresh page with the store open, so the phase after it measures its queries and not the open. */
+const reopen = (name: string): Phase<"tanstack-ondemand"> => phase(name, async () => {}, { page: "fresh", timed: false });
+
 function phase(name: string, body: (ctx: Ctx, store: OnDemandStore) => Promise<void>, extra: Partial<Phase<"tanstack-ondemand">> = {}): Phase<"tanstack-ondemand"> {
   return { name, page: "same", timed: true, ...extra, run: async (ctx) => body(ctx, await ctx.store()) };
 }
@@ -98,7 +101,7 @@ export default defineWorkload({
     check("check-inserts", true),
     phase("coldopen", async (ctx) => {
       await ctx.store();
-    }, { page: "fresh" }),
+    }, { page: "fresh", rounds: 5 }),
     phase("first-query", async (ctx, store) => {
       const want = ownerRows(ctx, 0);
       checkRows(ctx, await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(0) }, want.length), want, "first query");
@@ -110,6 +113,7 @@ export default defineWorkload({
       for (const [k, want] of wants.entries()) got.push(await run(ctx, store, "owner", { kind: "owner", owner: ownerOf(owners[k]!) }, want.length));
       wants.forEach((want, k) => checkRows(ctx, got[k]!, want, `owner ${owners[k]}`));
     }, { mainThread: true }),
+    reopen("reopen-pages"),
     phase("query-page", async (ctx, store) => {
       for (let k = 0; k < ctx.params.ops; k++) {
         const o = Math.floor(ctx.rng() * OWNERS);
@@ -120,10 +124,11 @@ export default defineWorkload({
         checkRows(ctx, got, want, `page of owner ${o} from ${from}`);
         ctx.check(got.every((r, j) => j === 0 || got[j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
       }
-    }, { page: "fresh", mainThread: true }),
+    }, { mainThread: true }),
+    reopen("reopen-ids"),
     {
       name: "query-ids",
-      page: "fresh",
+      page: "same",
       timed: true,
       mainThread: true,
       async run(ctx) {
