@@ -60,3 +60,17 @@ test("compare counts the series with too few runs to show a difference, and says
   const out = compare(rates([95, 100, 105]), rates([190, 200, 210]));
   assert.match(out, /2 series compared, 2 with no measurable difference\n2 of them have too few runs to show a difference: 4 runs per side are enough/);
 });
+
+test("compare says how many differences chance alone would give, counting only the series the test can separate", () => {
+  const out = compare(rates([95, 100, 105, 98, 102]), rates([190, 200, 210, 195, 205]));
+  assert.match(out, /\nchance alone would mark about 0\.1 of the 2 series the test can separate, at the 5% level/);
+  assert.doesNotMatch(compare(rates([95, 100, 105]), rates([190, 200, 210])), /chance alone/);
+  const many = (n: number) =>
+    measure(
+      Array.from({ length: 5 }, () => {
+        const r = run(1, 100);
+        return { ...r, phases: Array.from({ length: n }, (_, i) => ({ ...r.phases[0]!, name: `p${i}` })) };
+      }),
+    );
+  assert.match(compare(many(20), many(20)), /chance alone would mark about 2\.0 of the 40 series/);
+});

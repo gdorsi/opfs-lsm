@@ -7,7 +7,7 @@
  */
 import { merge, opsOf, quantile, samplesOf } from "../core/histogram.ts";
 import { DEFAULT_SEED, type HeapPeak, type RunRecord } from "../core/types.ts";
-import { describe, ENOUGH_RUNS, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
+import { describe, ENOUGH_RUNS, LEVEL, measure, versus, type At, type Measures, type Metric, type Series } from "./metrics.ts";
 
 type Stat = { median: number; min: number; max: number; n: number };
 
@@ -246,6 +246,10 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   }
   out.push("", `${compared} series compared, ${same} with no measurable difference`);
   if (unseparable > 0) out.push(`${unseparable} of them have too few runs to show a difference: ${ENOUGH_RUNS} runs per side are enough`);
+  if (compared > unseparable) {
+    const tested = compared - unseparable;
+    out.push(`chance alone would mark about ${(tested * LEVEL).toFixed(1)} of the ${tested} series the test can separate, at the ${LEVEL * 100}% level`);
+  }
   if (marked) out.push("", "`†`: this side's runs form two clusters, so its median and range hide two states. `report` prints both.");
   for (const [name, map] of Object.entries(only)) {
     if (map.size > 0) out.push("", `Only in ${name}:`, ...[...map].map(([key, n]) => `- ${key} (${n} series)`));
