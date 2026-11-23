@@ -11,8 +11,8 @@
  *
  *   pnpm --filter @opfs-lsm/kv build:wasm-checked
  *
- * `ensureChecked` rebuilds only when the engine source or this directory
- * changed, so the suites call it before they start.
+ * `ensureChecked` rebuilds only when the engine source, this directory or
+ * the compiler changed, so the suites call it before they start.
  */
 import asc from "assemblyscript/asc";
 import { createHash } from "node:crypto";
@@ -70,7 +70,7 @@ export async function buildChecked(root = KV, outDir = CHECKED_DIR): Promise<voi
 }
 
 function sourceHash(): string {
-  const hash = createHash("sha256");
+  const hash = createHash("sha256").update(asc.version);
   for (const dir of ["engine", "checked"]) {
     for (const name of readdirSync(join(KV, dir)).sort()) {
       if (name.endsWith(".ts")) hash.update(name).update(readFileSync(join(KV, dir, name)));

@@ -337,7 +337,7 @@ The gate prints a line per axis and fails on any line but speed:
 - Speed: the same workloads timed interleaved on both shipped builds. Printed, never judged. Published speed comes from `bench/`.
 - Size: no byte more, and the shipped module imports nothing.
 
-A change on purpose takes a trailer on one of the branch's commits: `Engine-Output: changed` lets the output differ, which then rests on the differential tests against the TypeScript oracles, and `Engine-Regression: <memory|work|size> <workload>, <reason>` lets one line regress.
+A change on purpose takes a trailer on one of the branch's commits: `Engine-Output: changed` lets the output differ, which then rests on the differential tests against the TypeScript oracles, and `Engine-Regression: <memory|work|size> <workload>, <reason>` lets one line regress. The size line's workload is `engine.wasm`.
 
 ## Run the static checks
 
@@ -355,7 +355,7 @@ Exit 0. It runs `oxlint`, `lint:engine`, `check:docs`, then `fallow dead-code`. 
 - `two-tab`: `pnpm --filter @opfs-lsm/kv two-tab`
 - `kill-chrome`: `pnpm --filter @opfs-lsm/kv kill-chrome --seed 1 --iterations 6`, the probes and each kill kind once (about a minute), then `pnpm --filter @opfs-lsm/kv power-loss-chrome`
 - `test`: `pnpm test`, stopped after 30 minutes, since an engine that corrupts its heap tends to hang
-- `engine`: `KV_ENGINE=checked pnpm --filter @opfs-lsm/kv test`, then `engine:gate`, then each engine Jazzer.js target for 60 s from its committed seeds. A finding is uploaded as `engine-findings`.
+- `engine`: `KV_ENGINE=checked pnpm --filter @opfs-lsm/kv test`, then `engine:gate` on a pull request, then each engine Jazzer.js target for 60 s from its committed seeds. A finding is uploaded as `engine-findings`.
 - `static`: `pnpm lint`, `pnpm lint:engine`, `pnpm check:docs` and `pnpm deadcode` (the steps of `pnpm static`)
 - `wasm-fresh`: `pnpm --filter @opfs-lsm/kv build:wasm`, then fails when `packages/kv/wasm/engine.wasm` differs from the committed binary
 - `formal`: `pnpm --filter @opfs-lsm/kv formal:kv`
@@ -363,7 +363,7 @@ Exit 0. It runs `oxlint`, `lint:engine`, `check:docs`, then `fallow dead-code`. 
 [`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs every night and on demand (`workflow_dispatch`, with `minutes` and `seed` inputs):
 
 - `kill-chrome`: 30 minutes of the kill loop with `--keep-going` and a random seed. The evidence of a failure is uploaded as `kill-chrome-evidence`.
-- `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, `KV_FUZZ_RUNS=50000` on `fuzz/`, `KV_ENGINE_CASES=3000` on `fuzz/engine-checked.test.ts`, and `KV_ALLOC_SEEDS=1000` on `tests/alloc-model.test.ts`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, fast-check draws a seed and prints it, with the path, on a failure. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
+- `seed-sweep`: random seeds and more runs for the seeded suites, one job each: `KV_MODEL_RUNS=2000` on `model.test.ts` and on `multi-handle.test.ts`, `KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200` on `crash-enum.test.ts`, `KV_FUZZ_RUNS=50000` on `fuzz/`, `KV_ENGINE_CASES=3000` on `fuzz/engine-checked.test.ts`, and `KV_ALLOC_SEEDS=1000` on `tests/alloc-model.test.ts`. With no `KV_MODEL_SEED` or `KV_FUZZ_SEED`, each run draws a seed and prints it on a failure, with the path where fast-check gives one. `alloc-model.test.ts` runs seeds 1 to `KV_ALLOC_SEEDS` and names each one that fails. Replay it with the commands in [Run the unit tests](#run-the-unit-tests) and [Fuzz the decoders](#fuzz-the-decoders).
 - `engine-fuzz`: each engine Jazzer.js target for 30 minutes. The corpus a target grows is cached between nights. A finding is uploaded as `engine-fuzz-<target>`.
 - `mutant-canary`: `pnpm --filter @opfs-lsm/kv mutant-canary`.
 

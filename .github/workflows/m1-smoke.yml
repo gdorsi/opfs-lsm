@@ -106,7 +106,9 @@ jobs:
         run: pnpm --filter @opfs-lsm/kv test
         env:
           KV_ENGINE: checked
+      # On a push to main the merge-base is the pushed commit itself.
       - name: the gate against the merge-base
+        if: github.event_name == 'pull_request'
         run: pnpm --filter @opfs-lsm/kv engine:gate
       - name: each engine fuzz target for 60 s
         run: for t in engine-encode engine-scan engine-merge; do pnpm --filter @opfs-lsm/kv fuzz:jazzer "$t" 60 || exit 1; done

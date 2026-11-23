@@ -114,12 +114,10 @@ describe("decoder bugs the fuzzers found", () => {
     await expect(corruptWithinBounds("decodeGeneration", () => decodeGeneration(m))).resolves.toBeUndefined();
   });
 
-  // KW1, tab path (`range({ valueContains })`). On wasm32 `usize` is 32 bits
-  // and release builds wrap, so `o + key_len > end` passed for a varint near
-  // 2^32 and the slice after it panicked: the wasm instance trapped
-  // (RuntimeError: unreachable). The same sums were in `read_records` and
-  // `decode_blocks`. 64-bit cargo fuzz cannot see it; the differential test
-  // does. The checks are now `key_len > end - o`, with `o <= end`.
+  // KW1, tab path (`range({ valueContains })`). On wasm32 an offset is 32
+  // bits and wraps, so a check written `o + key_len > end` passes for a
+  // varint near 2^32 and the read after it is out of bounds. The engine
+  // checks `key_len > end - o`, with `o <= end`.
   it("KW1: scan_block_contains does not panic on a varint near 2^32", () => {
     const block = new Uint8Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0xff, 0xff, 0xff, 0x0f, 1, 2, 3]);
     expect(() => scanBlockContainsIn(wasm, block, packPatterns([]))).not.toThrow(WebAssembly.RuntimeError);
