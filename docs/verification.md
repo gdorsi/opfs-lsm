@@ -17,7 +17,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `power-loss-chrome` (see [Lose IndexedDB commits in real Chrome](#lose-indexeddb-commits-in-real-chrome)), then `kill-chrome --minutes 10` |
 | `update`, the header of a WAL row (`rowValid`, `encodeOps`, `decodeOps`), or how a tab lands its own append (`commit`, `landed`) | `formal:update-exact`, then `tests/update.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. A change to the row format also takes the decoder row below. |
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
-| Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
+| Point get versus SST, including tombstones (`pointGet`, `keysReader`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `packages/kv/engine/merge.ts` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`, the `bottom` of `planCompaction`) | `formal:compact-preserve`, `pnpm --filter @opfs-lsm/kv test`, plus `drive bench kv/` for a real post-ingest get |
 | `destroyDb`, the `opfs-lsm-destroyed` row, the open lock, recovery rule 0, or the host's opens that never create | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `drive destroy`, then `power-loss-chrome --destroy`, then `kill-chrome --minutes 10` |
@@ -268,7 +268,7 @@ The tanstack-db suite includes a differential test (`packages/tanstack-db/tests/
 
 Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the corruption research note](research/corruption-hardening-test-suite.md) ("Decisions", techniques 7, 8 and 10):
 
-- Everywhere: corrupt or truncated bytes never hang, crash, panic in wasm, read out of bounds (in TypeScript, a `RangeError` from a `DataView`), allocate from a length field, or loop. An error is the documented one: `CorruptDatabaseError`, or `CommitError("corrupt wal row ...")` for a WAL row.
+- Everywhere: corrupt or truncated bytes never hang, crash, trap in wasm, read out of bounds (in TypeScript, a `RangeError` from a `DataView`), allocate from a length field, or loop. An error is the documented one: `CorruptDatabaseError`, or `CommitError("corrupt wal row ...")` for a WAL row.
 - Where a CRC is checked (manifests, and runs in the SharedWorker's compaction decode), changed bytes throw. They never decode, and never become lost data.
 - Where none is (a tab's run reads, block scans, WAL rows and `meta`), a wrong answer is allowed. Tabs keep skipping the SST CRC.
 

@@ -309,7 +309,7 @@ await todos.queryEntries({ index: "list", eq: [false] });
 
 ```ts
 // ordered by createdAt, carrying the lowercased words of title
-// a word ends at every character that is not a letter or a digit
+// a word ends at every character that is not a letter, a combining mark or a digit
 await todos.queryIds({ index: "search", match: "ow" });
 // => { ids: ["b"] }, "ow" is inside "window"
 await todos.queryIds({ index: "search", match: "MOM ca" });

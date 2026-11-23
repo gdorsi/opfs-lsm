@@ -21,7 +21,7 @@ description: "Formally check @opfs-lsm/kv core promises: WAL ack visibility acro
 | Change touches | Run |
 |---|---|
 | `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility`) |
-| `store/read.ts` `pointGet`, `db.ts` `readKey` / `get` | `formal:wal-over-sst` + ingest |
+| `store/read.ts` `pointGet`, `keysReader`, `db.ts` `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/read.ts` `latestSstEntry`, the merge session (`packages/kv/engine/merge.ts`) and its oracle (`tests/oracle/merge-ts.ts`), `host/compact.ts`, `store/levels.ts` `planCompaction` (`bottom`) | `formal:compact-preserve` |
 | `db.ts` `update` / `updateOnce`, `commit`, `landed`; `idb/wal.ts` `rowValid`, `encodeOps`, `decodeOps`, the head move of `adopt` | `formal:update-exact` |
