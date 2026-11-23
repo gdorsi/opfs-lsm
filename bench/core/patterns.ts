@@ -51,7 +51,6 @@ export const PATTERNS = {
   "yjs-many-docs": "Yjs: many small documents written, then each loaded cold",
   "automerge-trace": "Automerge: an editing trace persisted, typed at one key per frame, reopened before and after a settle",
   "automerge-many-docs": "Automerge: many small documents written, then each loaded cold",
-  "fate-cache": "fate: saving request results, then loading them cold from storage alone",
 } as const;
 
 export type Pattern = keyof typeof PATTERNS;

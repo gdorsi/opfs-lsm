@@ -34,21 +34,12 @@ importers:
       '@journeyapps/wa-sqlite':
         specifier: ^1.7.2
         version: 1.7.2
-      '@nkzw/fate':
-        specifier: 2.0.1
-        version: 2.0.1(@trpc/client@11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3))(@trpc/server@11.28.0(typescript@5.9.3))(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-      '@nkzw/fate-indexeddb':
-        specifier: 2.0.1
-        version: 2.0.1(@nkzw/fate@2.0.1(@trpc/client@11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3))(@trpc/server@11.28.0(typescript@5.9.3))(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
       '@opfs-lsm/automerge':
         specifier: workspace:*
         version: link:../packages/automerge
       '@opfs-lsm/docstore':
         specifier: workspace:*
         version: link:../packages/docstore
-      '@opfs-lsm/fate':
-        specifier: workspace:*
-        version: link:../packages/fate
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../packages/kv
@@ -1264,11 +1255,6 @@ packages:
     peerDependencies:
       '@emnapi/core': ^1.7.1 || 2.0.0-beta.2 || 2.0.0-beta.3
       '@emnapi/runtime': ^1.7.1 || 2.0.0-beta.2 || 2.0.0-beta.3
-
-  '@nkzw/fate-indexeddb@2.0.1':
-    resolution: {integrity: sha512-798bedohiRjDpSrxTohX8GWuzX0AE5yvJxUhgURVSwd0k9Qkl01aGkUmStGuKA39uCxbYdGtzgVVx41LPH4J4g==}
-    peerDependencies:
-      '@nkzw/fate': ^2.0.0
 
   '@nkzw/fate@2.0.1':
     resolution: {integrity: sha512-DL/yy9+rC1tLPn8C8VpWG4RhL1v/bm+AxmxqJwEsq8CWZ5axYF5OqmqtbYOX0A/wuXDw9S9I1fkmHApfCoYmsA==}
@@ -2615,9 +2601,6 @@ packages:
   human-id@4.2.2:
     resolution: {integrity: sha512-Z+8unD6em/MJwyrkWQ2M3wygRGI1+MztbutiNwk1DCuEPXOZRWGjtcMPZYP1exY9iNZMhd7ZOSMQSo9WYtiQRw==}
     hasBin: true
-
-  idb@8.0.4:
-    resolution: {integrity: sha512-jd0ITCrN+Zah4J7R/Z2jnR3W7A4BXDAjmo62MwWuSjxCiueUAf7X5rbodEdidWzeknwXHmLpdZkoiiCppNi30Q==}
 
   import-meta-resolve@4.2.0:
     resolution: {integrity: sha512-Iqv2fzaTQN28s/FwZAoFq0ZSs/7hMAHJVX+w8PZl3cY19Pxk6jFFalxQoIfW2826i/fDLXv8IiEZRIT0lDuWcg==}
@@ -4294,11 +4277,6 @@ snapshots:
       '@tybys/wasm-util': 0.10.5
     optional: true
 
-  '@nkzw/fate-indexeddb@2.0.1(@nkzw/fate@2.0.1(@trpc/client@11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3))(@trpc/server@11.28.0(typescript@5.9.3))(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))':
-    dependencies:
-      '@nkzw/fate': 2.0.1(@trpc/client@11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3))(@trpc/server@11.28.0(typescript@5.9.3))(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
-      idb: 8.0.4
-
   '@nkzw/fate@2.0.1(@trpc/client@11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3))(@trpc/server@11.28.0(typescript@5.9.3))(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))':
     dependencies:
       '@trpc/client': 11.28.0(@trpc/server@11.28.0(typescript@5.9.3))(typescript@5.9.3)
@@ -5490,8 +5468,6 @@ snapshots:
   html-void-elements@3.0.0: {}
 
   human-id@4.2.2: {}
-
-  idb@8.0.4: {}
 
   import-meta-resolve@4.2.0: {}
 

@@ -10,7 +10,6 @@ import type { Table } from "./driver/docs.ts";
 const FRAMEWORKS = {
   yjs: { "IndexedDB option": "yjs/y-indexeddb", "opfs-lsm": "yjs/kv" },
   automerge: { "IndexedDB option": "automerge/idb", "opfs-lsm": "automerge/kv" },
-  fate: { "IndexedDB option": "fate/indexeddb", "opfs-lsm": "fate/kv" },
 };
 
 const GOALS = [
@@ -88,14 +87,6 @@ export const TABLES: readonly Table[] = [
       { label: ["Yjs", "One keystroke typed at 60 Hz, main-thread time"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
       { label: ["Automerge", "Cold load of 500 notes, store open and check included"], workload: "automerge/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.automerge },
       { label: ["Automerge", "Write 500 notes"], workload: "automerge/many-docs", phase: "persist", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
-      {
-        label: ["fate", "Cold load of 100 lists of 100 records"],
-        workload: "fate/read-cache",
-        phase: "cold-load",
-        metric: "rate",
-        unit: "records/s",
-        at: FRAMEWORKS.fate,
-      },
     ],
   },
   {

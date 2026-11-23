@@ -29,12 +29,6 @@ adapters:
     example:
       name: LinearLite
       link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-tanstackdb
-  - name: fate
-    detail: A cache of what the app has fetched, plus the mutations made while offline.
-    replaces: "@nkzw/fate-indexeddb"
-    bench: "fate: cold load of 100 lists"
-    slot: fate
-    guide: /fate/
   - name: Automerge
     detail: Documents that merge edits from every device, saved in the browser so they open offline.
     replaces: IndexedDBStorageAdapter
@@ -76,7 +70,7 @@ bench:
       - title: Framework adapters
         versus: against each framework's IndexedDB option
         stores: [opfs-lsm, the IndexedDB option]
-        setup: TanStack DB, y-indexeddb, automerge-repo and fate's own IndexedDB storage
+        setup: TanStack DB, y-indexeddb and automerge-repo's IndexedDB storage
         rows:
           - { measure: "TanStack DB: cold load of 91,000 rows", ours: 299 ms, theirs: 1.02 s, ratio: 3.4× }
           - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 105k rows/s, theirs: 9.80k rows/s, ratio: 11× }
@@ -85,7 +79,6 @@ bench:
           - { measure: "Yjs: editing trace in one burst, no yield", ours: 18.5k edits/s, theirs: 2.13k edits/s, ratio: 8.7× }
           - { measure: "Automerge: cold load of 500 notes", ours: 249 ms, theirs: 377 ms, ratio: 1.5× }
           - { measure: "Automerge: write 500 notes", ours: 668 notes/s, theirs: 627 notes/s, ratio: 1.1× }
-          - { measure: "fate: cold load of 100 lists", ours: 3.14k records/s, theirs: 1.18k records/s, ratio: 2.7× }
       - title: Typing, then reopening
         versus: Yjs and Automerge on kv against their IndexedDB storage
         stores: [kv, the IndexedDB option]
@@ -226,24 +219,6 @@ const todos = createCollection(
   indexedDBCollectionOptions({ db, name: "todos", getKey }), // [!code --]
   docstoreCollectionOptions({ collection: store.collection("todos") }), // [!code ++]
 );
-```
-
-</template>
-<template v-slot:fate>
-
-```sh
-pnpm add @opfs-lsm/fate @opfs-lsm/kv
-```
-
-```ts
-import { kvStorage } from "@opfs-lsm/fate";
-
-const db = await openDb({ name: "app" }); // [!code ++]
-const persistence = createPersistence({
-  key: "acct:1",
-  storage: createIndexedDBStorage(), // [!code --]
-  storage: kvStorage(db), // [!code ++]
-});
 ```
 
 </template>
