@@ -110,7 +110,7 @@ export function tryAlloc(size: usize): usize {
 /**
  * `ptr` grown to `size` bytes: in place when the block after it is free and
  * large enough, or at the end of the heap; else moved. 0, with `ptr`
- * untouched, when memory cannot grow.
+ * untouched, when no free block fits it and memory cannot grow.
  */
 export function tryRealloc(ptr: usize, size: usize): usize {
   if (!ptr) return tryAlloc(size);
@@ -122,7 +122,8 @@ export function tryRealloc(ptr: usize, size: usize): usize {
   const after = block + have;
   if (after == end || (isFree(after) && after + sizeOf(after) == end)) {
     const room = after == end ? have : have + sizeOf(after);
-    if (room < need && !grow(need - room)) return 0;
+    // When memory cannot grow, a free block elsewhere may still fit it.
+    if (room < need) grow(need - room);
   }
   if (after != end && isFree(after) && have + sizeOf(after) >= need) {
     const total = have + sizeOf(after);
