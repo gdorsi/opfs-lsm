@@ -151,6 +151,7 @@ export default defineWorkload({
         await held.release();
       }
     }),
-    check("check-after", true, "fresh"),
+    check("check-after", true),
+    check("check-stored", false, "fresh"),
   ],
 });
