@@ -31,7 +31,7 @@ export class KvPersistence {
   private trimTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Set<Promise<void>>();
   private failure: { readonly error: unknown } | undefined;
-  private destroyed = false;
+  private destroying: Promise<void> | undefined;
 
   constructor(
     private readonly db: Db,
@@ -41,7 +41,7 @@ export class KvPersistence {
   ) {
     this.prefix = docPrefix(name);
     doc.on("update", this.storeUpdate);
-    doc.on("destroy", this.destroy);
+    doc.on("destroy", this.docDestroyed);
     // Content the doc held before this persistence was attached fires no update event.
     if (doc.store.clients.size > 0) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
     this.whenSynced = this.load();
@@ -63,13 +63,19 @@ export class KvPersistence {
     this.throwIfFailed();
   }
 
-  readonly destroy = async (): Promise<void> => {
-    if (this.destroyed) return;
-    this.destroyed = true;
+  /** Every call, and `doc.destroy()`, share one teardown, so each caller sees its failure. */
+  readonly destroy = (): Promise<void> => (this.destroying ??= this.teardown());
+
+  private async teardown(): Promise<void> {
     clearTimeout(this.trimTimer);
     this.doc.off("update", this.storeUpdate);
-    this.doc.off("destroy", this.destroy);
+    this.doc.off("destroy", this.docDestroyed);
     await this.flush();
+  }
+
+  /** Yjs drops the promise a listener returns, so a failure is left for a `destroy()` that waits. */
+  private readonly docDestroyed = (): void => {
+    this.destroy().catch(() => {});
   };
 
   /**
@@ -83,7 +89,7 @@ export class KvPersistence {
   }
 
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
-    if (origin === this || this.destroyed) return;
+    if (origin === this || this.destroying) return;
     this.track(this.db.put(this.nextKey(), update));
     if (++this.stored >= this.trimSize) {
       clearTimeout(this.trimTimer);
@@ -95,7 +101,7 @@ export class KvPersistence {
     const { updates, through } = await this.readStored();
     this.loadedUpdates = updates.length;
     this.stored = updates.length;
-    if (!this.destroyed) {
+    if (!this.destroying) {
       this.apply(updates);
       // The doc already holds every loaded update, so this merge needs no second read.
       const count = updates.length;
@@ -117,9 +123,9 @@ export class KvPersistence {
     // replay it without the updates it builds on: Yjs then holds it as pending,
     // which costs quadratic time in the number of such updates.
     await Promise.all(this.pending);
-    if (this.destroyed) return;
+    if (this.destroying) return;
     const { updates, through } = await this.readStored();
-    if (this.destroyed) return;
+    if (this.destroying) return;
     this.apply(updates);
     await this.replace(updates.length, through);
   }
