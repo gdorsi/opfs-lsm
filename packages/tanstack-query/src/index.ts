@@ -1,4 +1,7 @@
-import type { AsyncStorage } from "@tanstack/query-persist-client-core";
+import {
+  experimental_createQueryPersister,
+  type StoragePersisterOptions,
+} from "@tanstack/query-persist-client-core";
 import { prefixBound, type Db } from "@opfs-lsm/kv";
 
 const NAMESPACE = 0x71;
@@ -7,32 +10,38 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 /**
- * TanStack Query persister storage on a kv `Db`. The caller owns `db` and closes it.
- * One storage item is one kv entry: key `q` + UTF-8 key, value the UTF-8 string.
+ * TanStack Query's per-query persister on a kv `Db`. The caller owns `db` and closes it.
+ * One persisted query is one kv entry: key `q` + UTF-8 storage key, value the UTF-8 serialized query.
  */
-export function kvStorage(db: Db): Required<AsyncStorage<string>> {
-  return {
-    async getItem(key) {
-      const bytes = await db.get(encodeKey(key));
-      return bytes === undefined ? null : decoder.decode(bytes);
-    },
+export function createQueryPersister(
+  db: Db,
+  options: Omit<StoragePersisterOptions<string>, "storage"> = {},
+): ReturnType<typeof experimental_createQueryPersister<string>> {
+  return experimental_createQueryPersister({
+    ...options,
+    storage: {
+      async getItem(key) {
+        const bytes = await db.get(encodeKey(key));
+        return bytes === undefined ? null : decoder.decode(bytes);
+      },
 
-    async setItem(key, value) {
-      await db.put(encodeKey(key), encodeText(value));
-    },
+      async setItem(key, value) {
+        await db.put(encodeKey(key), encodeText(value));
+      },
 
-    async removeItem(key) {
-      await db.delete(encodeKey(key));
-    },
+      async removeItem(key) {
+        await db.delete(encodeKey(key));
+      },
 
-    async entries() {
-      const out: [string, string][] = [];
-      for await (const entry of db.range(prefixBound(Uint8Array.of(NAMESPACE)))) {
-        out.push([decoder.decode(entry.key.subarray(1)), decoder.decode(entry.value)]);
-      }
-      return out;
+      async entries() {
+        const out: [string, string][] = [];
+        for await (const entry of db.range(prefixBound(Uint8Array.of(NAMESPACE)))) {
+          out.push([decoder.decode(entry.key.subarray(1)), decoder.decode(entry.value)]);
+        }
+        return out;
+      },
     },
-  };
+  });
 }
 
 function encodeKey(key: string): Uint8Array {

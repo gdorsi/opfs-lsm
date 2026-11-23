@@ -403,9 +403,6 @@ importers:
         specifier: workspace:*
         version: link:../kv
     devDependencies:
-      '@tanstack/query-async-storage-persister':
-        specifier: 5.108.4
-        version: 5.108.4
       '@tanstack/query-core':
         specifier: 5.108.4
         version: 5.108.4
@@ -1753,9 +1750,6 @@ packages:
   '@tanstack/pacer-lite@0.3.0':
     resolution: {integrity: sha512-+YeHKWX5Zd1Irga2smwAolGtzOcf8VVYhM2QI5XEA5TN58iKKufTjhvrbTCEgLLglR1ynHMGVT/l4m5PkwOdaw==}
     engines: {node: '>=20'}
-
-  '@tanstack/query-async-storage-persister@5.108.4':
-    resolution: {integrity: sha512-3OxWCRj+ix1dYmu+8LOfJvBNSWQuas7XfkkEPmWvIQJaYcg6+uXoybMWgokAd87h67B0uiZf2mPnXqP1tVdj+g==}
 
   '@tanstack/query-core@5.108.4':
     resolution: {integrity: sha512-2Ks5dlLWz4eXJrthOyG0qW3SLt3xx0RrQmAmN0rnmogiaaOYuWiAe6HAm9KE2b2v8nig+vraNz8fsfZ6fF6zFg==}
@@ -4539,11 +4533,6 @@ snapshots:
   '@tanstack/history@1.162.5': {}
 
   '@tanstack/pacer-lite@0.3.0': {}
-
-  '@tanstack/query-async-storage-persister@5.108.4':
-    dependencies:
-      '@tanstack/query-core': 5.108.4
-      '@tanstack/query-persist-client-core': 5.108.4
 
   '@tanstack/query-core@5.108.4': {}
 

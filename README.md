@@ -26,7 +26,7 @@ Use another store in these cases:
 Each adapter stores the data of one framework in opfs-lsm. Your app keeps calling the framework's own API.
 
 - **[`@opfs-lsm/tanstack-db`](packages/tanstack-db)** keeps TanStack DB collections in docstore. Writes from every tab reach every collection live. In on-demand mode, a collection loads only the rows its live queries ask for, through docstore indexes. Example: [LinearLite](examples/linearlite-tanstackdb).
-- **[`@opfs-lsm/tanstack-query`](packages/tanstack-query)** persists the TanStack Query cache. Pass `kvStorage(db)` as the `storage` of `createAsyncStoragePersister` or `experimental_createQueryPersister`, where TanStack's docs use `idb-keyval`.
+- **[`@opfs-lsm/tanstack-query`](packages/tanstack-query)** persists the TanStack Query cache one query per kv entry. `createQueryPersister(db)` returns TanStack's per-query persister on kv.
 - **[`@opfs-lsm/yjs`](packages/yjs)** keeps Yjs documents. `KvPersistence` has the `whenSynced`, `clearData`, and `destroy` of y-indexeddb, and merges the stored updates of a document into one when they reach 500. Example: [Whiteboard](examples/whiteboard-yjs).
 - **[`@opfs-lsm/automerge`](packages/automerge)** is a storage adapter for automerge-repo. Pass `kvStorage(db)` to `new Repo({ storage })`. Example: [Notes](examples/notes-manager-automerge).
 
