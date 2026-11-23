@@ -271,8 +271,8 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
     case "text": {
       const text = readPath(doc, spec.text);
       if (text === undefined) return NONE;
-      if (typeof text !== "string") return { path: spec.text.join("."), why: "text-not-string" };
-      value = textValue(text);
+      if (text !== null && typeof text !== "string") return { path: spec.text.join("."), why: "text-not-string" };
+      value = textValue(text ?? "");
       break;
     }
   }

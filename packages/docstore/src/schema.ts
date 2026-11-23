@@ -40,8 +40,8 @@ type PathTo<T, Leaf, D extends number = 3> = [D] extends [never]
 type ScalarPath<T> = PathTo<T, Scalar>;
 /** Paths to an array of scalars: the first field of a multi index, written with a `[]` suffix. */
 type ArrayPath<T> = PathTo<T, readonly Scalar[]>;
-/** Paths to a string: the `text` of a text index. */
-type StringPath<T> = PathTo<T, string>;
+/** Paths to a string or null: the `text` of a text index. Null holds no words. */
+type StringPath<T> = PathTo<T, string | null>;
 
 type At<T, P extends string> = P extends `${infer H}.${infer R}`
   ? At<Defined<T[H & keyof T]>, R>

@@ -323,6 +323,8 @@ await todos.queryIds({ // type error, open is not a text index
 });
 ```
 
+A document whose text field is `null` has an entry with no words, which a query without `match` reads and a `match` never finds. A document without the field has no entry.
+
 ### Unique
 
 ```ts
