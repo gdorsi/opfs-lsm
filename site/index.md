@@ -86,7 +86,7 @@ bench:
           - { measure: "TanStack DB: one row per transaction", ours: 5.04k rows/s, theirs: 3.30k rows/s, ratio: 1.5× ‡ }
           - { measure: "Yjs: cold load of 500 notes", ours: 71.9 ms, theirs: 276 ms, ratio: 3.8× }
           - { measure: "Yjs: editing trace in one burst, no yield", ours: 18.5k edits/s, theirs: 2.13k edits/s, ratio: 8.7× }
-          - { measure: "Automerge: cold load of 500 notes", ours: 2.02k notes/s, theirs: 1.33k notes/s, ratio: 1.5× }
+          - { measure: "Automerge: cold load of 500 notes", ours: 249 ms, theirs: 377 ms, ratio: 1.5× }
           - { measure: "Automerge: write 500 notes", ours: 668 notes/s, theirs: 627 notes/s, ratio: 1.1× }
           - { measure: "fate: cold load of 100 lists", ours: 3.14k records/s, theirs: 1.18k records/s, ratio: 2.7× }
       - title: Typing, then reopening

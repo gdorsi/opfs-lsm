@@ -38,7 +38,7 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 | Yjs | Cold load of 500 notes, store open and check included | 276 ms † | 71.9 ms † | 3.8× |
 | Yjs | Editing trace written in one burst, 25,700 updates with no yield between keystrokes | 2.13k edits/s † | 18.5k edits/s | 8.7× |
 | Yjs | One keystroke typed at 60 Hz, main-thread time | 0.130 ms † | 0.156 ms † | 0.83× ‡ |
-| Automerge | Cold load of 500 notes | 1.33k notes/s | 2.02k notes/s | 1.5× |
+| Automerge | Cold load of 500 notes, store open and check included | 377 ms | 249 ms | 1.5× |
 | Automerge | Write 500 notes | 627 notes/s | 668 notes/s | 1.1× |
 | fate | Cold load of 100 lists of 100 records | 1.18k records/s | 3.14k records/s | 2.7× |
 
