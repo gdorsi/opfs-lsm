@@ -102,20 +102,20 @@ Each cell is cold / warm in ms: cold is the first call after opening the store i
 <!-- bench:table goals -->
 | Goal | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Issues per status in a project | 4.31 / 3.37 † | 5.23 / 0.200 | 3.99 † / 0.128 † | 1.3× / 1.6× |
-| First 50 todo issues, with assignee and label names | 2.35 / 1.06 † | 6.72 / 0.551 | 9.61 † / 0.341 | 0.70× / 1.6× |
-| The column a sprint close just emptied | 8.55 † / 6.09 | 5.66 / 0.273 | 5.14 † / 0.628 † | 1.1× ‡ / 0.44× ‡ |
-| Rows at 90% of a project's list | 10.6 / 8.01 | 5.98 / 0.367 | 10.2 † / 0.390 | 0.59× / 0.94× ‡ |
-| An issue with its comments and their authors | 1.61 / 0.474 | 5.92 / 0.313 † | 6.24 / 0.113 † | 0.95× ‡ / 2.8× |
-| First 50 open issues by priority, with comment counts | 4.69 / 2.65 | 6.98 / 0.425 | 13.2 † / 0.504 † | 0.53× / 0.84× |
-| First 50 open issues with a label | 29.0 / 25.7 | 12.9 / 4.01 | 9.92 † / 0.425 | 1.3× / 9.4× |
-| First 50 open issues assigned to a person | 2.95 / 1.63 | 7.41 / 0.570 | 9.87 † / 0.365 | 0.75× / 1.6× |
-| The 50 most recently updated issues | 2.40 / 1.26 | 6.47 / 0.803 | 4.13 / 0.535 | 1.6× / 1.5× |
-| Open issues per person, top 10 | 5.83 / 3.70 | 6.75 / 0.373 | 4.61 † / 0.403 | 1.5× / 0.93× |
-| First 20 issues whose title contains a word | 6.99 / 5.00 | 6.72 / 0.679 | 7.90 † / 0.214 † | 0.85× ‡ / 3.2× |
-| Opening the store in a fresh tab, before the todo issues goal | 2.29 | 26.5 | 14.0 | 1.9× |
+| Issues per status in a project | 4.15 / 3.18 | 5.53 / 0.173 | 4.51 / 0.176 | 1.2× / 0.98× ‡ |
+| First 50 todo issues, with assignee and label names | 2.41 / 1.23 | 7.16 / 0.537 | 9.07 / 0.362 | 0.79× / 1.5× |
+| The column a sprint close just emptied | 8.80 † / 6.22 | 6.10 / 0.292 | 6.24 / 0.755 | 0.98× ‡ / 0.39× |
+| Rows at 90% of a project's list | 10.4 / 8.20 | 6.22 / 0.369 | 10.3 / 0.417 | 0.61× / 0.89× |
+| An issue with its comments and their authors | 1.69 / 0.494 | 6.24 / 0.323 | 7.11 / 0.131 | 0.88× / 2.5× |
+| First 50 open issues by priority, with comment counts | 4.81 / 2.55 | 7.43 / 0.431 | 13.8 / 0.635 | 0.54× / 0.68× |
+| First 50 open issues with a label | 23.5 / 20.4 | 13.4 / 3.99 | 10.2 / 0.454 | 1.3× / 8.8× |
+| First 50 open issues assigned to a person | 2.84 / 1.65 | 7.83 / 0.568 | 10.1 / 0.427 | 0.77× / 1.3× |
+| The 50 most recently updated issues | 2.38 / 1.21 | 6.93 / 0.817 | 4.95 / 0.527 | 1.4× / 1.6× |
+| Open issues per person, top 10 | 5.79 / 3.74 | 7.11 / 0.370 | 5.47 / 0.416 | 1.3× / 0.89× |
+| First 20 issues whose title contains a word | 7.09 / 5.02 | 6.00 / 0.305 | 8.12 / 0.259 | 0.74× / 1.2× ‡ |
+| Opening the store in a fresh tab, before the todo issues goal | 2.30 | 27.8 | 13.1 | 2.1× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 4.8 to 10.3, commit 9be92034. Full results: [2026-11-22T16-08-00-apple-m2-pro](results/2026-11-22T16-08-00-apple-m2-pro.md).
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 4.5 to 7.2, commit 047eed40. Full results: [2026-11-23T03-32-22-apple-m2-pro](results/2026-11-23T03-32-22-apple-m2-pro.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
 
@@ -125,22 +125,18 @@ Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load av
 <!-- bench:table writes -->
 | Writes | Dexie | SQLite on OPFS | docstore | docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: |
-| Import, mean of 47 batches of up to 1,000 rows | 62.3 ms | 20.9 ms | 13.8 ms | 1.5× |
-| Sync, mean of 851 batches of about 50 changes | 6.75 ms | 13.0 ms | 2.74 ms | 4.8× |
-| One edit | 0.416 ms | 1.14 ms | 0.326 ms | 3.5× |
-| Sprint close, 1,054 issues in one batch | 157 ms | 63.8 ms | 44.9 ms † | 1.4× |
-| The 50 latest issues, read again after every 10th sync batch | 1.53 ms | 0.574 ms | 0.576 ms | 1.0× ‡ |
+| Import, mean of 47 batches of up to 1,000 rows | 57.8 ms | 21.5 ms | 12.6 ms | 1.7× |
+| Sync, mean of 851 batches of about 50 changes | 6.25 ms | 13.2 ms | 2.55 ms | 5.2× |
+| One edit | 0.391 ms | 2.79 ms | 0.336 ms | 8.3× |
+| Sprint close, 1,054 issues in one batch | 134 ms | 71.1 ms | 45.8 ms | 1.6× |
+| The 50 latest issues, read again after every 10th sync batch | 1.42 ms | 0.554 ms | 0.503 ms | 1.1× |
 
-Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 4.8 to 10.3, commit 9be92034. Full results: [2026-11-22T16-08-00-apple-m2-pro](results/2026-11-22T16-08-00-apple-m2-pro.md).
-
-‡ These runs do not separate the two contenders (rank-sum test, 5% level).
-
-† The runs of a marked cell form two clusters, so its median hides two states.
+Medians of 5 runs per contender, in headless Chrome 157 on Apple M2 Pro, load average 4.5 to 7.2, commit 047eed40. Full results: [2026-11-23T03-32-22-apple-m2-pro](results/2026-11-23T03-32-22-apple-m2-pro.md).
 <!-- /bench:table -->
 
 The last row is a read: after every 10th sync batch, the 50 most recently updated issues are read again, as a list on screen would be.
 
-Warm, docstore answers 7 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. SQLite is faster on 2: the open issues by priority, by 16%, and the open issues per person, by 7%. The runs do not separate the two on the column a sprint close emptied and the deep window. Cold, docstore is faster than SQLite on 4 of the 11 goals and slower on 4, and it is the slowest of the three stores on 5: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three. The emptied column costs docstore the most: the deletes of the sprint close still sit above the settled runs, and the scan steps over each deleted entry until a compaction drops it. A deep window walks every index entry up to the window on docstore, whose index has no count to jump by: `offset` passes over them without copying a key or reading a document. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no statement once the schema exists, so its first query in a fresh tab also reads the schema. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
+Warm, docstore answers 5 of the 11 goals fastest, because a tab reads on its own main thread from its page cache. SQLite is faster on 4: the column a sprint close emptied, the open issues by priority, the deep window and the open issues per person. The runs do not separate the two on the issues per status and the title search. Cold, docstore is faster than SQLite on 4 of the 11 goals and slower on 6, and it is the slowest of the three stores on 5: a fresh tab loads from OPFS each 32 KB page its rows sit on, and the rows of one list are scattered over many pages. Open issues per person reads index entries alone, with no document, so cold it is the fastest of the three. The emptied column costs docstore the most: the deletes of the sprint close still sit above the settled runs, and the scan steps over each deleted entry until a compaction drops it. A deep window walks every index entry up to the window on docstore, whose index has no count to jump by: `offset` passes over them without copying a key or reading a document. IndexedDB keeps its cache in the browser process, which outlives the tab, so Dexie's cold column is a reload, not a browser restart. SQLite's open runs no statement once the schema exists, so its first query in a fresh tab also reads the schema. On writes, SQLite commits wait for the disk (`synchronous=FULL`, its default) where Dexie and docstore commit with Chrome's relaxed durability, and docstore commits a batch as one transaction per collection where Dexie and SQLite commit it whole.
 
 ### At 200,000 issues
 
