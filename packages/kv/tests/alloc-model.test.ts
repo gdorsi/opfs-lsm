@@ -11,9 +11,14 @@ import { checkedFile } from "../checked/engine-under-test.ts";
  * blocks side by side. The checked twin wraps this allocator without
  * checking its own reads and writes, so this test is what does.
  *
+ * With `KV_ALLOC_SEEDS` set, the seeds start at a random one, and a failure
+ * names each seed that broke. Replay one with `KV_ALLOC_FIRST`:
+ *
  *   KV_ALLOC_SEEDS=300 pnpm exec vitest run tests/alloc-model.test.ts
+ *   KV_ALLOC_FIRST=<seed> KV_ALLOC_SEEDS=1 pnpm exec vitest run tests/alloc-model.test.ts
  */
 const SEEDS = Number(process.env.KV_ALLOC_SEEDS ?? 20);
+const FIRST = Number(process.env.KV_ALLOC_FIRST ?? (process.env.KV_ALLOC_SEEDS ? 1 + Math.floor(Math.random() * 2 ** 30) : 1));
 const OPS = 1500;
 
 type Allocator = {
@@ -117,7 +122,7 @@ function run(seed: number): string | undefined {
 describe("the engine's allocator", () => {
   it("keeps its blocks apart, aligned and intact, and its heap tiled, with memory full or not", async () => {
     const broken: string[] = [];
-    for (let seed = 1; seed <= SEEDS; seed++) {
+    for (let seed = FIRST; seed < FIRST + SEEDS; seed++) {
       const why = run(seed);
       if (why) broken.push(`seed ${seed}: ${why}`);
       // A worker that never yields misses vitest's heartbeat, which fails a long sweep that passed.
