@@ -15,7 +15,7 @@ const KV = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const SHIPPED = join(KV, "wasm/engine.wasm");
 /** Where checked/build.ts writes. `KV_CHECKED_DIR` points the suites at another build, such as a planted bug's. */
 export const CHECKED_DIR = join(KV, "checked/.build");
-export const checkedFile = (name: "engine.wasm" | "alloc.wasm") => join(process.env.KV_CHECKED_DIR || CHECKED_DIR, name);
+export const checkedFile = (name: "engine.wasm" | "alloc.wasm" | "capped.wasm") => join(process.env.KV_CHECKED_DIR || CHECKED_DIR, name);
 
 export function openShipped(wasm: BufferSource = readFileSync(SHIPPED)): EngineExports {
   return new WebAssembly.Instance(new WebAssembly.Module(wasm), {}).exports as unknown as EngineExports;

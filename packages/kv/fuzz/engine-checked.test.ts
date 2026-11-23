@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { EngineExports } from "../src/store/engine.js";
-import { openChecked, openShipped, takeCheckedReports, type CheckedEngine } from "../checked/engine-under-test.ts";
+import { checkedFile, openChecked, openShipped, takeCheckedReports, type CheckedEngine } from "../checked/engine-under-test.ts";
 import {
   concat,
   DONE,
@@ -118,6 +119,22 @@ describe("the engine on its checked twin", () => {
     expect(open(fresh.exports)).toEqual([-10, 0, 0]);
     expect(open(shipped)).toEqual([-10, 0, 0]);
     expect(takeCheckedReports()).toEqual([]);
+  });
+
+  it("returns -10, never a trap, when memory cannot hold a session", () => {
+    const capped = new WebAssembly.Module(readFileSync(checkedFile("capped.wasm")));
+    const run = encoded(shipped, randomEntries(xorshift(1), 50, 1));
+    const statuses = new Set<number>();
+    for (const chunk of [256, 10_000, 65_536]) {
+      for (let n = 1; n <= 400; n++) {
+        const ex = new WebAssembly.Instance(capped, {}).exports as unknown as EngineExports;
+        const list = concat([u32s([n]), ...Array.from({ length: n }, () => u32s([1, run.byteLength])), u32s([0])]);
+        const ptr = ex.input_ptr(list.byteLength) >>> 0;
+        new Uint8Array(ex.memory.buffer, ptr, list.byteLength).set(list);
+        statuses.add(ex.merge_open(ptr, list.byteLength, 0, 1 << 20, chunk, 4096, 1 << 20));
+      }
+    }
+    expect([...statuses].sort()).toEqual([-10, 0]);
   });
 });
 

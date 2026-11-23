@@ -6,6 +6,8 @@
  *   shipped build's flags (engine/build.sh) minus `--noAssert`, plus the
  *   instrument transform and the function names.
  * - `alloc.wasm`, the allocator alone, for its model test.
+ * - `capped.wasm`, the shipped build with memory capped at 16 pages, for
+ *   the out-of-memory paths.
  *
  *   pnpm --filter @opfs-lsm/kv build:wasm-checked
  *
@@ -60,9 +62,11 @@ export async function buildChecked(root = KV, outDir = CHECKED_DIR): Promise<voi
   const twin = await compile(root, "engine/index.ts", ["--debug"], [Instrument]);
   // The engine's static data always takes a page, and the allocator counts on one. The cap lets the model fill memory.
   const alloc = await compile(root, "alloc-harness.ts", ["--noAssert", "--initialMemory", "1", "--maximumMemory", "64"]);
+  const capped = await compile(root, "engine/index.ts", ["--noAssert", "--maximumMemory", "16"]);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, "engine.wasm"), twin);
   writeFileSync(join(outDir, "alloc.wasm"), alloc);
+  writeFileSync(join(outDir, "capped.wasm"), capped);
 }
 
 function sourceHash(): string {
