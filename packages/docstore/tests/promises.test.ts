@@ -108,6 +108,8 @@ describe("names that Object.prototype also has", () => {
     ]) {
       expect(await codeOf(openDocStore(kv, s))).toBe("schema");
     }
+    // A literal key, unlike the computed one above, sets the prototype of collections.
+    expect(await codeOf(openDocStore(kv, defineSchema({ version: 1, collections: { __proto__: docs, docs } })))).toBe("schema");
     const v1 = defineSchema({ version: 1, collections: { docs: docs.index("byA", "a") }, drop: [name] });
     await (await openDocStore(kv, v1)).collection("docs").put({ id: "x", a: 1 });
     const c = (await openDocStore(kv, { ...v1, version: 2 })).collection("docs");

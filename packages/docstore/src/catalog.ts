@@ -112,6 +112,9 @@ function checkInclude(include: unknown, where: string): readonly string[] {
 export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
   if (!isObject(decl.collections)) badSchema("collections must be an object");
+  // A literal `__proto__` key sets the prototype instead of declaring a collection.
+  const proto: unknown = Object.getPrototypeOf(decl.collections);
+  if (proto !== Object.prototype && proto !== null) badSchema("collections must be a plain object; a __proto__ key is not a collection name");
   const collections = new Map<string, Map<string, IndexSpec>>();
   for (const [name, coll] of Object.entries(decl.collections)) {
     if (!isName(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
