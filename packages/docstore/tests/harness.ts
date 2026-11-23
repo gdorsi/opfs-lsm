@@ -1,4 +1,4 @@
-import { prefixBound, type BatchTx, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
+import { prefixBound, type Db, type Entry, type UpdateTx, type ViewSnapshot } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import { parseCatalog, type StoredCatalog } from "../src/catalog.js";
 import { CATALOG_KEY, ROOT, bytesEqual, collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
@@ -102,7 +102,11 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
     let last: UpdateRecord | undefined;
     const out = await kv.update(keys, (values, tx) => {
       const record = { reads: keys.length, puts: 0, deletes: 0 };
-      const counted: BatchTx = {
+      const counted: UpdateTx = {
+        read: (more) => {
+          record.reads += more.length;
+          return tx.read(more);
+        },
         put: (k, v) => {
           record.puts++;
           tx.put(k, v);

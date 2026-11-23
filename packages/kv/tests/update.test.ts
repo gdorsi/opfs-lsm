@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClosedError, prefixBound, type Db, type Range, type ViewSnapshot } from "../src/index.js";
+import { ClosedError, ConstraintError, prefixBound, type Db, type Range, type UpdateTx, type ViewSnapshot } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { CheckedBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
@@ -274,6 +274,122 @@ describe("update", () => {
       }),
     ).rejects.toThrow("boom");
     expect(await db.get(utf("k"))).toBeUndefined();
+    await db.close();
+  });
+});
+
+describe("update tx.read", () => {
+  /** A reader with a one-byte cache over an ingested run of 1,000 rows of 1 KiB, so `ptr` and the rows it names sit in different blocks. */
+  async function pointers(fs: MemoryFs) {
+    const writer = await open("w", fs);
+    for (let from = 0; from < 1_000; from += 250) {
+      await writer.batch((tx) => {
+        for (let i = from; i < from + 250; i++) tx.put(utf(`row/${String(i).padStart(4, "0")}`), new Uint8Array(1_024).fill(i % 251));
+      });
+    }
+    await writer.put(utf("ptr"), utf("row/0900"));
+    await ingest(writer);
+    await writer.close();
+    return openHarnessDb({ name: NAME, writerId: "r", fs, forceMemory: true, maxWalBytes, cacheBytes: 1 });
+  }
+
+  it("reads a key that a value names, running the body once more after everything it lacks has loaded", async () => {
+    const db = await pointers(new MemoryFs());
+    const runs: string[][] = [];
+    const seen = await db.update([utf("ptr")], (values, tx) => {
+      runs.push(values.map((v) => text(v)!));
+      const [row, absent] = tx.read([values[0]!, utf("row/none")]);
+      return [row?.[0], absent];
+    });
+    expect(seen).toEqual([900 % 251, undefined]);
+    expect(runs, "each run gets the values of its keys alone").toEqual([["row/0900"], ["row/0900"]]);
+    await db.close();
+  });
+
+  it("drops a run whose body swallowed the miss", async () => {
+    const db = await pointers(new MemoryFs());
+    await db.update([utf("ptr")], ([ptr], tx) => {
+      let outcome = "swallowed";
+      try {
+        tx.read([ptr!]);
+        outcome = "read";
+      } catch {
+        // a body must not catch it, but kv must not commit this run either way
+      }
+      tx.put(utf("outcome"), utf(outcome));
+    });
+    expect(text(await db.get(utf("outcome")))).toBe("read");
+    await db.close();
+  });
+
+  it("writes what it read once the block loads, and loses no increment to another handle", async () => {
+    const fs = new MemoryFs();
+    const db = await pointers(fs);
+    const other = await open("o", fs);
+    const bump = (handle: Db) =>
+      handle.update([utf("ptr")], ([ptr], tx) => {
+        const [row] = tx.read([ptr!]);
+        tx.put(ptr!, Uint8Array.of(row![0]! + 1));
+      });
+    await Promise.all([bump(db), bump(other), bump(db), bump(other)]);
+    await db.sync();
+    expect((await db.get(utf("row/0900")))![0]).toBe((900 % 251) + 4);
+    await other.close();
+    await db.close();
+  });
+
+  it("reads before the body's own ops, and commits like a put when the key is loaded", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.put(utf("k"), utf("old"));
+    const groups = watchWalGroups();
+    let runs = 0;
+    const seen = await db.update([], (_values, tx) => {
+      runs++;
+      tx.put(utf("k"), utf("new"));
+      return text(tx.read([utf("k")])[0]);
+    });
+    expect(seen).toBe("old");
+    expect(runs).toBe(1);
+    expect(groups).toEqual([1]);
+    expect(text(await db.get(utf("k")))).toBe("new");
+    await db.close();
+  });
+
+  it("rejects with the failure of a load that tx.read started", async () => {
+    class FailingFs extends MemoryFs {
+      failing = false;
+      override async open(path: string) {
+        const file = await super.open(path);
+        return (
+          file && {
+            ...file,
+            read: async (offset: number, length: number) => {
+              if (this.failing) throw new Error("disk");
+              return file.read(offset, length);
+            },
+          }
+        );
+      }
+    }
+    const fs = new FailingFs();
+    const db = await pointers(fs);
+    await db.put(utf("mem"), utf("row/0900"));
+    fs.failing = true;
+    await expect(db.update([utf("mem")], ([ptr], tx) => tx.read([ptr!]))).rejects.toThrow("disk");
+    fs.failing = false;
+    expect(await db.update([utf("mem")], ([ptr], tx) => tx.read([ptr!])[0]?.[0])).toBe(900 % 251);
+    await db.close();
+  });
+
+  it("refuses a read after the body returned, and a key over the limit", async () => {
+    const db = await open("a", new MemoryFs());
+    let saved!: UpdateTx;
+    await db.update([], (_values, tx) => {
+      saved = tx;
+      tx.put(utf("k"), utf("v"));
+    });
+    expect(() => saved.read([utf("k")])).toThrow(ConstraintError);
+    await expect(db.update([], (_values, tx) => tx.read([new Uint8Array(8 * 1024 + 1)]))).rejects.toThrow(ConstraintError);
     await db.close();
   });
 });

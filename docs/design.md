@@ -89,8 +89,7 @@ its end, fails with `CommitError`, whatever its header names.
 open. The append that opens it and the appends issued synchronously after it join it, and appends
 that arrive while it commits form the next group. A group is one `readwrite` transaction over `wal`:
 
-1. `add` each record of the group, in call order, with no key. The key generator of the store
-   assigns each its seq.
+1. `add` each record of the group, in call order, with no key: the store's key generator assigns its seq.
 2. Commit in a microtask, without waiting for the results of the adds.
 
 The records are the only writes. A group commits or aborts as a whole, and a failed group fails
@@ -110,7 +109,8 @@ since the read. Failing that, the update runs in one transaction that reads the 
 the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
 update issued while an append of its handle is in flight, or whose `body` wrote nothing. After a row
 loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
-runs its updates one at a time, in call order.
+runs its updates one at a time, in call order. `body` may read more keys, at the state it read `keys`
+at: one whose bytes are not loaded appends nothing, and `body` runs again once they are.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
