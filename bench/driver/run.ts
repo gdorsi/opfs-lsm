@@ -19,6 +19,9 @@ import { tabPlan } from "./tabs.ts";
  */
 const BACKING_STORE_GRACE_MS = 3000;
 
+/** Waits out the backing store's grace, so the next tab opens it cold. */
+export const waitBackingStoreCold = () => new Promise((resolve) => setTimeout(resolve, BACKING_STORE_GRACE_MS));
+
 export type RunOptions = {
   readonly origin: string;
   readonly headless: boolean;
@@ -70,7 +73,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
       for (const tab of tabs) await tab?.close();
       tabs = [undefined, undefined];
       await chrome.sharedWorkersGone(15_000); // the kv host must be gone, or "cold" is warm
-      await new Promise((resolve) => setTimeout(resolve, BACKING_STORE_GRACE_MS));
+      await waitBackingStoreCold();
     };
     for (const { phase, round, fresh, slot } of tabPlan(run.phases)) {
       if (fresh) await freshTabs();

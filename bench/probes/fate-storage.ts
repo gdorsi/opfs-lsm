@@ -31,7 +31,7 @@ import { BENCH_DIR, buildBench } from "../driver/build.ts";
 import { launchChrome } from "../driver/chrome.ts";
 import { DATA_DIR } from "../driver/data.ts";
 import { plan } from "../driver/plan.ts";
-import { readCatalog } from "../driver/run.ts";
+import { readCatalog, waitBackingStoreCold } from "../driver/run.ts";
 import { serve } from "../driver/serve.ts";
 
 type Kind = { calls: number; ms: number };
@@ -68,6 +68,7 @@ try {
           await tab.evaluate("__bench.closeStore()", 60_000);
           await tab.close();
           await chrome.sharedWorkersGone(15_000);
+          await waitBackingStoreCold();
           tab = await chrome.openTab(url);
         }
         const req: PhaseRequest = { workload: run.workload, contender: run.contender, size, rep: 0, phase, round: 0, seed: run.seed, dbName: "bench", carry };
