@@ -20,7 +20,7 @@
  * row being 0. No field starts with 00, so every bound holds both rows of a
  * group or neither.
  */
-import { CorruptDatabaseError, type Range } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type ChangeOp, type Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
@@ -147,6 +147,12 @@ export function hasPrefix(key: Uint8Array, prefix: Uint8Array): boolean {
   if (key.length < prefix.length) return false;
   for (let i = 0; i < prefix.length; i++) if (key[i] !== prefix[i]) return false;
   return true;
+}
+
+/** Whether a key starting with `prefix` falls in the range of `op`. */
+export function touches(op: Extract<ChangeOp, { type: "deleteRange" }>, prefix: Uint8Array): boolean {
+  const reachesPrefix = op.endExclusive === undefined || compareBytes(op.endExclusive, prefix) > 0;
+  return reachesPrefix && (compareBytes(op.start, prefix) <= 0 || hasPrefix(op.start, prefix));
 }
 
 export function keyString(key: Uint8Array): string {

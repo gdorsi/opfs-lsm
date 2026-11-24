@@ -2,7 +2,7 @@ import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp, typ
 import { parseCatalog } from "./catalog.js";
 import { decodeDocs, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, compareBytes, hasPrefix, idOf, rowPrefix, type CollectionId } from "./keys.js";
+import { CATALOG_KEY, bytesEqual, hasPrefix, idOf, rowPrefix, touches, type CollectionId } from "./keys.js";
 import type { JsonDoc } from "./schema.js";
 
 /** The documents of an event are parsed together on the first access to any `doc`, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
@@ -38,12 +38,6 @@ function docChange<T extends JsonDoc>(id: string, slot: number | undefined, docs
 function lazyDocs(puts: readonly Uint8Array[]): (slot: number) => StoredDoc {
   let docs: (StoredDoc | undefined)[] | undefined;
   return (slot) => (docs ??= decodeDocs(puts))[slot]!;
-}
-
-/** Whether a key starting with `prefix` falls in the range of `op`. */
-function touches(op: Extract<ChangeOp, { type: "deleteRange" }>, prefix: Uint8Array): boolean {
-  const reachesPrefix = op.endExclusive === undefined || compareBytes(op.endExclusive, prefix) > 0;
-  return reachesPrefix && (compareBytes(op.start, prefix) <= 0 || hasPrefix(op.start, prefix));
 }
 
 /** The id of collection `name` in catalog `bytes`, or undefined when the catalog lacks it or this library cannot read it. */
