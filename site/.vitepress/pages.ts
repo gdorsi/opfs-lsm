@@ -6,7 +6,7 @@ export const repoRoot = fileURLToPath(new URL("../../", import.meta.url)).split(
 
 const repository = JSON.parse(readFileSync(`${repoRoot}package.json`, "utf8")).repository.url as string;
 export const github = repository.replace(/^git\+/, "").replace(/\.git$/, "");
-export const base = `/${github.split("/").pop()}/`;
+export const base = "/";
 
 type Page = { label: string; source: string; route: string; sidebarSections?: boolean };
 type Section = { title: string; nav?: string; pages: Page[] };
