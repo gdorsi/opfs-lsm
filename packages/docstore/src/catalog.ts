@@ -161,7 +161,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
         if (unique && include !== undefined) badSchema(`${where}: a unique index cannot include fields`);
         specs.set(index, { kind: "sorted", on, unique, multi, ...(include === undefined ? {} : { include: checkInclude(include, where) }) });
       } else {
-        if (unique || multi || include !== undefined) badSchema(`${where}: a text index takes only by, which holds no array field, and text`);
+        if (unique || multi || include !== undefined) badSchema(`${where}: a text index cannot be unique, start with an array field or include fields`);
         specs.set(index, { kind: "text", on, text: checkField(text, where) });
       }
     }

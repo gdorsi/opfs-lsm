@@ -478,11 +478,7 @@ function collectBatch(
   } finally {
     open = false;
   }
-  if (
-    ret !== undefined &&
-    ret !== null &&
-    typeof (ret as { then?: unknown }).then === "function"
-  ) {
+  if (typeof (ret as { then?: unknown } | undefined)?.then === "function") {
     throw new ConstraintError("callback must not return a thenable");
   }
   if (failure) throw failure.error;
