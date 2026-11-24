@@ -52,22 +52,22 @@ export const WASM_HOOK = `(() => {
 export class PeakTracker {
   private heap: { -readonly [K in keyof HeapPeak]: HeapPeak[K] } | null = null;
   private wasm: number | null = null;
+  private total: number | null = null;
 
-  addHeap(s: HeapSample): void {
+  /** One sample of one worker or tab: its heap counters and its wasm memory, read together. */
+  add(s: HeapSample, wasmBytes: number): void {
     const h = (this.heap ??= { usedSize: 0, totalSize: 0, samples: 0 });
     h.usedSize = Math.max(h.usedSize, s.usedSize);
     h.totalSize = Math.max(h.totalSize, s.totalSize);
     h.samples++;
     if (s.embedderHeapUsedSize !== undefined) h.embedderHeapUsedSize = Math.max(h.embedderHeapUsedSize ?? 0, s.embedderHeapUsedSize);
     if (s.backingStorageSize !== undefined) h.backingStorageSize = Math.max(h.backingStorageSize ?? 0, s.backingStorageSize);
+    this.wasm = Math.max(this.wasm ?? 0, wasmBytes);
+    this.total = Math.max(this.total ?? 0, s.usedSize + (s.backingStorageSize ?? 0) + wasmBytes);
   }
 
-  addWasm(bytes: number): void {
-    this.wasm = Math.max(this.wasm ?? 0, bytes);
-  }
-
-  peak(): { heap: HeapPeak | null; wasmBytes: number | null } {
-    return { heap: this.heap && { ...this.heap }, wasmBytes: this.wasm };
+  peak(): { heap: HeapPeak | null; wasmBytes: number | null; totalBytes: number | null } {
+    return { heap: this.heap && { ...this.heap }, wasmBytes: this.wasm, totalBytes: this.total };
   }
 }
 
@@ -128,8 +128,10 @@ export function combine(workers: PeakTracker, tabs: PeakTracker, largestRenderer
   return {
     worker: sw.heap,
     workerWasmBytes: sw.wasmBytes,
+    workerTotalBytes: sw.totalBytes,
     tab: tab.heap,
     tabWasmBytes: tab.wasmBytes,
+    tabTotalBytes: tab.totalBytes,
     largestRendererBytes,
   };
 }

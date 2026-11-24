@@ -161,13 +161,12 @@ export async function launchChrome(opts: { headless: boolean; onProgress: (line:
 
     const sampleHeap = async (sessionId: string, into: PeakTracker) => {
       const heap = await cdp.send<HeapSample>("Runtime.getHeapUsage", {}, sessionId);
-      into.addHeap(heap);
       const wasm = await cdp.send<EvalReply>(
         "Runtime.evaluate",
         { expression: "globalThis.__benchWasm?.() ?? 0", returnByValue: true },
         sessionId,
       );
-      if (typeof wasm.result.value === "number") into.addWasm(wasm.result.value);
+      into.add(heap, typeof wasm.result.value === "number" ? wasm.result.value : 0);
     };
     const sampleFootprint = async () => {
       const renderers = (await chromeMemory(profile)).filter((p) => p.type === "renderer");

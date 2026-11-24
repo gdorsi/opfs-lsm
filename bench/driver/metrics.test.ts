@@ -289,17 +289,19 @@ suite("footprints", () => {
 });
 
 suite("memory", () => {
-  test("the SharedWorker total adds heap in use, backing store and wasm memory, with no phase", () => {
+  test("the worker total is the recorded one, not the sum of the separate peaks, with no phase", () => {
     const memory = {
       worker: { usedSize: 10, totalSize: 99, backingStorageSize: 20, samples: 1 },
       workerWasmBytes: 30,
+      workerTotalBytes: 45,
       tab: null,
       tabWasmBytes: null,
+      tabTotalBytes: null,
       largestRendererBytes: 500,
     };
     const m = measure([run([atRate(100)], { memory })]);
     const s = m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:workerTotal" })!;
-    assert.deepEqual(s.values, [60]);
+    assert.deepEqual(s.values, [45]);
     assert.equal(m.get({ workload: "kv/test", size: "small", contender: "kv/kv", metric: "mem:tabTotal" }), undefined);
   });
 });

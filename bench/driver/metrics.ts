@@ -265,11 +265,9 @@ const KINDS: { [K in Kind]: KindSpec } = {
     value: ({ run }, f) => {
       const m = run.memory;
       if (!m) return NaN;
-      const peak = (heap: typeof m.worker, wasm: number | null) =>
-        heap ? heap.usedSize + (heap.backingStorageSize ?? 0) + (wasm ?? 0) : NaN;
       switch (f as MemField) {
-        case "workerTotal": return peak(m.worker, m.workerWasmBytes);
-        case "tabTotal": return peak(m.tab, m.tabWasmBytes);
+        case "workerTotal": return m.workerTotalBytes ?? NaN;
+        case "tabTotal": return m.tabTotalBytes ?? NaN;
         case "largestRenderer": return m.largestRendererBytes ?? NaN;
       }
     },
