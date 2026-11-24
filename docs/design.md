@@ -301,13 +301,13 @@ acked before the call. The broadcast is an optimization. The WAL tail is the sou
 
 ### Installing a generation
 
-A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The
-installed generation never holds a seq past `appliedThrough`. If the tail names a generation the
-tab has not loaded, the tab loads the manifest and opens its runs outside the transaction, then
-reads the tail again. A flush or a compaction records the manifest's bytes in `meta.manifest`
-with its generation, and such a tail reads them: when the copy decodes to that generation, the
-tab opens the runs from it while it reads the manifest file. The load still fails without the
-file: a power loss can keep the copy and lose the file and its runs. Recovery never reads it.
+A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation
+never holds a seq past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the
+manifest and opens its runs outside the transaction, then reads the tail again. An open starts that load when the
+transaction names the generation, before it reads the records. A flush or a compaction records the manifest's bytes in
+`meta.manifest` with its generation, and such a tail reads them: when the copy decodes to that generation, the tab
+opens the runs from it while it reads the manifest file. The load still fails without the file: a power loss can keep
+the copy and lose the file and its runs. Recovery never reads it.
 
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.
@@ -346,7 +346,7 @@ Per database, the host keeps `pendingBytes`, the key and value bytes of the ops 
 folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any tab asked for until the last one closes, and each tab
 asks for at most 7/8 of its `memtableBytes`. Once an eighth of the limit waits, the host also flushes
-2 s after the last `rows` message, or 5 s after the first since a flush began, so an open replays a short tail.
+2 s after the last `rows` message, or 5 s after the first since a flush began or the last 5 s wait ended, so an open replays a short tail.
 
 `openDb` registers the tab with the host. The host then measures the uningested records, so a
 database left over the limit catches up on open. The count only decides when to flush. Every

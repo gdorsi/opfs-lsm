@@ -36,7 +36,7 @@ A persistence loads once, when you construct it. Other tabs' later updates reach
 
 ## Limits
 
-A failed write rejects the `flush()` or `destroy()` that waits for it.
+The next `flush()` or `destroy()` stores a write that failed again, as the whole doc state. It rejects when that write fails too, as the examples below do.
 
 ```ts
 const n = "x".repeat(9000);
