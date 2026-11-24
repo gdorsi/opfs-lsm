@@ -31,6 +31,8 @@ export class Backpressure {
   private askAt: number;
   /** The flush in flight, if any. */
   private flushing: Promise<boolean> | undefined;
+  /** The wait of the last held write, which the next held write goes after. */
+  private turn: Promise<void> | undefined;
 
   /**
    * `flush` asks the host to flush the WAL and loads what it published. It
@@ -49,23 +51,29 @@ export class Backpressure {
     if (!this.flushing && this.bytes() >= this.askAt) this.start();
   }
 
-  /** True at the hard cap. A write that finds room should not call `admit`: it would yield first. */
-  get full(): boolean {
-    return this.bytes() >= this.caps.hard;
-  }
-
   /**
-   * Before a write. At the hard cap, wait for the flush in flight, or start
-   * one, and look again. After a flush that failed or left the generation
-   * where it was, writes go on until the table has grown an eighth of the
-   * limit more, so a host that cannot help neither stops writes nor is asked
-   * on every one.
+   * Run `write`: now when the table has room and no earlier write waits, so
+   * its append starts in the turn it was called. Otherwise once the table has
+   * room, after every write held before it, in the turn the wait ends: a later
+   * write that found room would otherwise append first.
    */
-  async admit(): Promise<void> {
-    while (this.full) {
-      if (!this.flushing && this.bytes() < this.askAt) return;
-      await (this.flushing ?? this.start());
-    }
+  admit(): void | Promise<void>;
+  admit<T>(write: () => T | PromiseLike<T>): T | Promise<T>;
+  admit(write?: () => unknown): unknown {
+    // At the hard cap, wait for the flush in flight, or start one, and look
+    // again. After a flush that failed or left the generation where it was,
+    // writes go on until the table has grown an eighth of the limit more, so a
+    // host that cannot help neither stops writes nor is asked on every one.
+    const full = () => this.bytes() >= this.caps.hard && (this.flushing || this.bytes() >= this.askAt);
+    if (!this.turn && !full()) return write?.();
+    const room = async () => {
+      while (full()) await (this.flushing ?? this.start());
+    };
+    const turn = (this.turn = this.turn ? this.turn.then(room) : room());
+    return turn.then(() => {
+      if (this.turn === turn) this.turn = undefined;
+      return write?.();
+    });
   }
 
   private start(): Promise<boolean> {

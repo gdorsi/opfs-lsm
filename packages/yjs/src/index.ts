@@ -43,7 +43,9 @@ export class KvPersistence {
     doc.on("update", this.storeUpdate);
     doc.on("destroy", this.docDestroyed);
     // Content the doc held before this persistence was attached fires no update event.
-    if (doc.store.clients.size > 0) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
+    // That includes an update still waiting for the one it builds on.
+    const { clients, pendingStructs, pendingDs } = doc.store;
+    if (clients.size > 0 || pendingStructs || pendingDs) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
     this.whenSynced = this.load();
   }
 

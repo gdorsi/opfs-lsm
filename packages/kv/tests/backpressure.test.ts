@@ -52,7 +52,7 @@ describe("Backpressure", () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 69;
     gate.landed();
-    await gate.admit();
+    await gate.admit(() => undefined);
     expect(flushes).toHaveLength(0);
   });
 
@@ -62,7 +62,7 @@ describe("Backpressure", () => {
     gate.landed();
     table.bytes = 79;
     gate.landed();
-    await gate.admit();
+    await gate.admit(() => undefined);
     expect(flushes).toHaveLength(1);
   });
 
@@ -71,7 +71,7 @@ describe("Backpressure", () => {
     table.bytes = 70;
     gate.landed();
     table.bytes = 80;
-    const admitted = gate.admit();
+    const admitted = gate.admit(() => undefined);
     expect(await settlesWithin(admitted)).toBe(false);
     expect(flushes).toHaveLength(1);
 
@@ -84,7 +84,7 @@ describe("Backpressure", () => {
   it("starts a flush when the table jumps from under the soft cap to the hard one", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 200;
-    const admitted = gate.admit();
+    const admitted = gate.admit(() => undefined);
     expect(flushes).toHaveLength(1);
     table.bytes = 0;
     flushes[0]!.advance(true);
@@ -94,8 +94,8 @@ describe("Backpressure", () => {
   it("makes writers that wait together share one flush", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 90;
-    const first = gate.admit();
-    const second = gate.admit();
+    const first = gate.admit(() => undefined);
+    const second = gate.admit(() => undefined);
     expect(flushes).toHaveLength(1);
     table.bytes = 0;
     flushes[0]!.advance(true);
@@ -106,7 +106,7 @@ describe("Backpressure", () => {
   it("looks again when a flush moved the generation but the table is still full", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 90;
-    const admitted = gate.admit();
+    const admitted = gate.admit(() => undefined);
     flushes[0]!.advance(true);
     await sleep(5);
     expect(flushes).toHaveLength(2);
@@ -120,7 +120,7 @@ describe("Backpressure", () => {
   it("lets the write go when a flush leaves the generation where it was", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 90;
-    const admitted = gate.admit();
+    const admitted = gate.admit(() => undefined);
     flushes[0]!.advance(false);
     expect(await settlesWithin(admitted)).toBe(true);
   });
@@ -128,7 +128,7 @@ describe("Backpressure", () => {
   it("lets the write go when a flush fails", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 90;
-    const admitted = gate.admit();
+    const admitted = gate.admit(() => undefined);
     flushes[0]!.fail();
     expect(await settlesWithin(admitted)).toBe(true);
   });
@@ -136,18 +136,18 @@ describe("Backpressure", () => {
   it("asks again only after the table grew by an eighth of the limit past a flush that did not help", async () => {
     const { gate, table, flushes } = gateOf();
     table.bytes = 90;
-    const first = gate.admit();
+    const first = gate.admit(() => undefined);
     flushes[0]!.advance(false);
     await first;
 
     // 90 + (80 - 70) = 100 is where the next flush is asked for.
     table.bytes = 99;
-    await gate.admit();
+    await gate.admit(() => undefined);
     gate.landed();
     expect(flushes).toHaveLength(1);
 
     table.bytes = 100;
-    const again = gate.admit();
+    const again = gate.admit(() => undefined);
     expect(flushes).toHaveLength(2);
     flushes[1]!.advance(false);
     await again;

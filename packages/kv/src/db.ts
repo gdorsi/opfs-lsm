@@ -973,16 +973,6 @@ class DbImpl implements Db {
     this.broadcast({ seq, record }, opsBytes(ops));
   }
 
-  /**
-   * Wait out a full memtable before a write (`Backpressure`). Called only
-   * when it is full: a write with room must start its append in the turn it
-   * was called, or a `close` right after a `put` would beat the append.
-   */
-  private async admit(): Promise<void> {
-    await this.pressure.admit();
-    this.ensureOpen();
-  }
-
   /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
   private async relieve(): Promise<boolean> {
     const before = this.installed.generation;
@@ -998,14 +988,15 @@ class DbImpl implements Db {
    * reads before each attempt, and a `plan` that still misses appends
    * nothing and is retried. A tail that names a generation this tab lacks
    * appends nothing either: the tab loads it and tries again (`retrying`).
-   * It first waits out a full memtable (`admit`). Resolves with the
+   * It first waits out a full memtable (`Backpressure.admit`). Resolves with the
    * appended seq, undefined when `plan` chose no ops, and `plan`'s result.
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
-    if (this.pressure.full) await this.admit();
+    // Only its turn: the handle is checked open again below.
+    await this.pressure.admit();
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
@@ -1104,8 +1095,8 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return this.mem.appliedThrough;
-    if (this.pressure.full) await this.admit();
-    return this.commit(ops);
+    // After a close that came while it waited its turn, the append rejects with ClosedError.
+    return this.pressure.admit(() => this.commit(ops));
   }
 
   /**
@@ -1204,7 +1195,8 @@ class DbImpl implements Db {
       // With keys of `tx.read`, `got` is more than the values of `ks`, and `plan` reads those again.
       warmed = wanted === ks ? [at, got] : undefined;
     };
-    if (this.pressure.full) await this.admit();
+    // Only its turn: the handle is checked open again below.
+    await this.pressure.admit();
     await warm();
     this.ensureOpen();
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.

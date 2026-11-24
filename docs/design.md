@@ -171,7 +171,7 @@ seqs wrote, and the marks of the newly ingested records.
 |---|---|---|
 | below | Under 7/8 of the limit | None. |
 | requested | At 7/8 | The tab asks the host for one flush and keeps writing. |
-| waiting | At the limit | A write waits for that flush before it appends. |
+| waiting | At the limit | A write waits for that flush before it appends. A `put`, `delete` or `batch` called while one waits goes after it, so they append in call order. |
 
 One flush is in flight per tab. If the flush fails, or returns without moving the generation,
 the write goes on, and the tab asks again after the memtable grows by another 1/8 of the limit.

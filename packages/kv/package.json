@@ -75,6 +75,7 @@
     "formal:compact-preserve": "tsx formal/compact-preserve/check.ts",
     "formal:update-exact": "tsx formal/update-exact/check.ts",
     "formal:power-loss": "tsx formal/power-loss/check.ts",
+    "formal:reclaim-hold": "tsx formal/reclaim-hold/check.ts",
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },

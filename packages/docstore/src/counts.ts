@@ -61,7 +61,7 @@ export class CountDeltas {
   }
 }
 
-export type Bases = { readonly bases: readonly Entry[] } | { readonly unindexable: Uint8Array };
+export type Bases = { readonly bases: readonly Entry[] } | { readonly unindexable: Entry; readonly id: Uint8Array };
 
 /** How long the build reads before it lets the page run. */
 const SLICE_MS = 16;
@@ -72,8 +72,8 @@ const SLICE_MS = 16;
  * snapshot give base = C - D: the documents when the index was added,
  * whichever snapshot it is. So every build, and every rerun of one, writes
  * the same bytes. The documents of a group are spread over the whole id
- * order, so C needs every row of one snapshot. Returns instead the id of a
- * row the index cannot hold.
+ * order, so C needs every row of one snapshot. Returns instead a row the
+ * index cannot hold, with its id.
  */
 export async function readBases(snap: ViewSnapshot, plan: IndexPlan, rowPrefix: Uint8Array): Promise<Bases> {
   const groups = new Map<string, Tally>();
@@ -81,7 +81,7 @@ export async function readBases(snap: ViewSnapshot, plan: IndexPlan, rowPrefix: 
   for await (const row of snap.range(tupleBounds(rowPrefix))) {
     const id = row.key.subarray(rowPrefix.length);
     const entries = indexEntries(plan, id, decodeDoc(row.value));
-    if (!Array.isArray(entries)) return { unindexable: id };
+    if (!Array.isArray(entries)) return { unindexable: row, id };
     for (const e of entries) {
       const k = keyString(e.key);
       const g = groups.get(k);
