@@ -52,22 +52,14 @@ export class Backpressure {
   }
 
   /**
-   * True when a write has to go through `admit`: at the hard cap, or while an
-   * earlier write still waits. A write that is not held should not call
-   * `admit`: it would yield first.
+   * Run `write`: now when the table has room and no earlier write waits, so
+   * its append starts in the turn it was called. Otherwise once the table has
+   * room, after every write held before it, in the turn the wait ends: a later
+   * write that found room would otherwise append first.
    */
-  get held(): boolean {
-    return this.turn !== undefined || this.bytes() >= this.caps.hard;
-  }
-
-  /**
-   * Run `write` once the table has room, after every write that was held
-   * before it: a later write that found room would otherwise append first.
-   * `write` runs in the turn the wait ends, so no other write gets between.
-   */
-  admit<T>(write: () => T | PromiseLike<T>): Promise<T> {
-    const turn = this.turn ? this.turn.then(() => this.room()) : this.room();
-    this.turn = turn;
+  admit<T>(write: () => T): T | Promise<T> {
+    if (!this.turn && !this.full) return write();
+    const turn = (this.turn = this.turn ? this.turn.then(() => this.room()) : this.room());
     return turn.then(() => {
       if (this.turn === turn) this.turn = undefined;
       return write();
@@ -80,8 +72,12 @@ export class Backpressure {
    * writes go on until the table has grown an eighth of the limit more, so a
    * host that cannot help neither stops writes nor is asked on every one.
    */
+  private get full(): boolean {
+    return this.bytes() >= this.caps.hard;
+  }
+
   private async room(): Promise<void> {
-    while (this.bytes() >= this.caps.hard) {
+    while (this.full) {
       if (!this.flushing && this.bytes() < this.askAt) return;
       await (this.flushing ?? this.start());
     }
