@@ -45,6 +45,9 @@ export default defineWorkload({
         const reads = Math.min(ctx.params.ops, ids.length);
         let next = 0;
         const pick = () => ids[next++]!;
+        // kv shows another tab's write a moment after its ack, and at once after `sync`: without it the check below races the first tab's message.
+        const store = await ctx.store();
+        await ctx.time("sync", 0, () => store.sync(), 0);
         await getIds(ctx, reads, pick, "get", "first get");
       },
     },

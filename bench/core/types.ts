@@ -249,8 +249,11 @@ export type MemoryPeaks = {
   readonly worker: HeapPeak | null;
   /** Largest `memory.buffer.byteLength` of a wasm instance in a worker. Wasm memory never shrinks, so this is its peak. */
   readonly workerWasmBytes: number | null;
+  /** Largest used heap + backing storage + wasm memory one worker held in one sample. The peaks above can come from different workers and moments, so their sum can be memory no worker ever held. */
+  readonly workerTotalBytes: number | null;
   readonly tab: HeapPeak | null;
   readonly tabWasmBytes: number | null;
+  readonly tabTotalBytes: number | null;
   /**
    * Peak memory of the single largest renderer process (a worker's or a tab's). On macOS it is `phys_footprint_peak`,
    * the kernel's own peak since the process started, read before each tab closes and at the end of the run. Elsewhere it is
