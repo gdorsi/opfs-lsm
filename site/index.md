@@ -125,6 +125,16 @@ bench:
           - { measure: "First 50 todo issues, with assignee and labels", ours: 0.207 ms, theirs: 1.04 ms, ratio: 5.0× }
           - { measure: "An issue with its comments and their authors", ours: 0.0917 ms, theirs: 0.391 ms, ratio: 4.3× }
           - { measure: "The 50 most recently updated issues", ours: 0.492 ms, theirs: 1.06 ms, ratio: 2.2× }
+      - title: A board at 200,000 issues, 6 reads at once
+        versus: docstore against Dexie
+        stores: [docstore, Dexie]
+        setup: Timed to the last answer, medians of 5 runs on an Apple M5 Max
+        note: The 6 reads a project's board asks for as it opens. Cold, they end 1.1× sooner started together than one after the other, on both stores.
+        rows:
+          - { measure: "Started together, cold", ours: 8.10 ms, theirs: 15.7 ms, ratio: 1.9× }
+          - { measure: "One after the other, cold", ours: 9.32 ms, theirs: 17.6 ms, ratio: 1.9× }
+          - { measure: "Started together, warm", ours: 1.06 ms, theirs: 11.9 ms, ratio: 11× }
+          - { measure: "One after the other, warm", ours: 1.04 ms, theirs: 12.4 ms, ratio: 12× }
   - title: Against SQLite on OPFS
     theirs: SQLite
     groups:
@@ -173,6 +183,16 @@ bench:
           - { measure: "The 50 most recently updated issues", ours: 0.353 ms, theirs: 0.568 ms, ratio: 1.6× }
           - { measure: "Open issues per person, top 10", ours: 0.346 ms, theirs: 0.281 ms, ratio: 0.81× }
           - { measure: "First 20 issues whose title contains a word", ours: 0.169 ms, theirs: 0.207 ms, ratio: 1.2× }
+      - title: Its board, 6 reads at once
+        versus: docstore against SQLite on OPFS
+        stores: [docstore, SQLite on OPFS]
+        setup: The 6 reads a project's board asks for as it opens, timed to the last answer
+        note: Warm, docstore takes the same time either way. Each read is work on the tab's main thread, with nothing to wait for.
+        rows:
+          - { measure: "Started together, cold", ours: 7.02 ms, theirs: 8.59 ms, ratio: 1.2× }
+          - { measure: "One after the other, cold", ours: 7.49 ms, theirs: 8.65 ms, ratio: 1.2× }
+          - { measure: "Started together, warm", ours: 0.775 ms, theirs: 1.61 ms, ratio: 2.1× }
+          - { measure: "One after the other, warm", ours: 0.771 ms, theirs: 1.72 ms, ratio: 2.2× }
       - title: TanStack DB on demand
         versus: against its SQLite persistence
         stores: [opfs-lsm, SQLite]

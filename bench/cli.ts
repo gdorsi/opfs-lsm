@@ -31,6 +31,7 @@ import { TABLES } from "./docs-tables.ts";
 import type { BuildOutput } from "./driver/build.ts";
 import { BUDGETS, budgetProblems } from "./driver/budgets.ts";
 import { DATA_DIR, ensureTrace } from "./driver/data.ts";
+import { gitStamp } from "./driver/host.ts";
 import { BENCH_DIR } from "./driver/paths.ts";
 import { PAGE, readPublished, renderDocs, staleTables } from "./driver/docs.ts";
 import { plan, type PlannedRun } from "./driver/plan.ts";
@@ -126,6 +127,7 @@ async function run(o: {
   kv: KvOptions;
 }): Promise<number> {
   await ensureTrace();
+  const gitSha = gitStamp();
   const built = await build();
   if (o.check && !sizes(built, true)) return 1;
   const server = await serve({ "/": path.join(BENCH_DIR, ".out"), "/data/": DATA_DIR });
@@ -142,6 +144,7 @@ async function run(o: {
     console.log(`${runs.length} runs → ${path.relative(process.cwd(), resultsFile)}`);
     const records = await runPlan(runs, {
       origin: server.origin,
+      gitSha,
       headless: o.headless,
       resultsFile,
       phaseTimeoutMs: o.timeoutMs,
@@ -233,7 +236,7 @@ function smokeChecks(records: readonly RunRecord[]): string[] {
   return problems;
 }
 
-/** Opt-in ceiling on the worker's peak (the kv SharedWorker or a SQLite contender's dedicated worker): the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
+/** Opt-in ceiling on the worker's peak (the kv SharedWorker or a SQLite contender's dedicated worker): the largest JS heap in use + ArrayBuffer backing store + wasm memory that one worker held in one sample. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
 function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
   return measure(records)
     .all.filter((s) => s.at.metric === "mem:workerTotal" && s.summary.max > maxBytes)

@@ -212,6 +212,32 @@ describe("adding a count index to stored documents", () => {
     await kv.close();
   }, 30_000);
 
+  it("resumes a build cut between two commits of its base rows, and counts each group once", async () => {
+    // More groups than one commit of base rows holds.
+    const n = 9_000;
+    const name = freshName();
+    const first = await openKv(name);
+    const rows = (await openDocStore(first, v1)).collection("rows");
+    for (let i = 0; i < n; i += 1_000) await rows.putMany(Array.from({ length: 1_000 }, (_, k) => ({ ...row(i + k), a: i + k })));
+    // The index is added and the first base rows commit; the next commit never runs.
+    const held = gate(first, "update", 2);
+    const running = openDocStore(held.db, v2a).catch(() => undefined);
+    await held.arrived(3);
+    const committed = await keysUnder(first, await storedPrefix(first, "rows", "perA"));
+    expect(committed).toBeGreaterThan(0);
+    expect(committed).toBeLessThan(n);
+    await first.close();
+    held.release();
+    await running;
+    const kv = await openKv(name);
+    expect(await stateOf(kv, "perA")).toBe("building");
+    const c = (await openDocStore(kv, v2a)).collection("rows");
+    expect(await c.count({ index: "perA" })).toBe(n);
+    for (const a of [0, 1, 4_321, n - 1]) expect(await c.count({ index: "perA", eq: [a] })).toBe(1);
+    expect(await keysUnder(kv, await storedPrefix(kv, "rows", "perA"))).toBe(n);
+    await kv.close();
+  }, 30_000);
+
   it("writes nothing under the old prefix when another handle redefines the index before the build commits", async () => {
     const { name, docs } = await loaded();
     const deeper = defineSchema({ version: 3, collections: { rows: deeperPerA } });

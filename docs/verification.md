@@ -17,7 +17,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `power-loss-chrome` (see [Lose IndexedDB commits in real Chrome](#lose-indexeddb-commits-in-real-chrome)), then `kill-chrome --minutes 10` |
 | `update`, the header of a WAL row (`rowValid`, `encodeOps`, `decodeOps`), or how a tab lands its own append (`commit`, `landed`) | `formal:update-exact`, then `tests/update.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. A change to the row format also takes the decoder row below. |
 | Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
-| Point get versus SST, including tombstones (`pointGet`, `readKey`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
+| Point get versus SST, including tombstones (`pointGet`, `keysReader`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `packages/kv/engine/merge.ts` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`, the `bottom` of `planCompaction`) | `formal:compact-preserve`, `pnpm --filter @opfs-lsm/kv test`, plus `drive bench kv/` for a real post-ingest get |
 | `destroyDb`, the `opfs-lsm-destroyed` row, the open lock, recovery rule 0, or the host's opens that never create | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `drive destroy`, then `power-loss-chrome --destroy`, then `kill-chrome --minutes 10` |
@@ -216,10 +216,10 @@ pnpm --filter @opfs-lsm/kv formal:kv
 Exit 0. The log ends with `All 6 formal checks passed`. Each check prints a `PASS` line:
 
 - `PASS NoLostAcks`, after two `broken variant caught` lines (orders that record the flush before its manifest is on disk)
-- `PASS WalOverSst` (on real `pointGet`)
+- `PASS WalOverSst` (on real `pointGet`: every memtable row, run and mark, then every pair of levels with each run cold, with its layout loaded, or with its page loaded)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, a delete drops only in a bottom merge, outputs claim the base manifest's marks only), after three `broken variant caught` lines
-- `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after four `broken variant caught` lines
+- `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after five `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eighteen `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it. It keeps the WAL database, the `opfs-lsm-destroyed` row and OPFS as three stores with no order between them.
 - `PASS RemoveClean` (`destroyDb` from every crash state leaves no WAL database and no file, and an open after it reads empty)
 - `PASS WalLost` (after every recovery and a flush, losing only the WAL database changes no read: a row a crash left behind never empties a database born after it)
@@ -227,7 +227,7 @@ Exit 0. The log ends with `All 6 formal checks passed`. Each check prints a `PAS
 
 The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:update-exact`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions, destroys and `destroyDb` removals. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about four minutes. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
-The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `4dd0479f51ecb203df53c23451ce0e630be38070`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
+The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `62d21186a6647604860ff7f0da4e9fb3b96b4b64`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
 `pendingBytes` is outside the model. A pass says nothing about the ingest trigger, which the unit tests check (see [Pick the check](#pick-the-check)).
 
@@ -268,7 +268,7 @@ The tanstack-db suite includes a differential test (`packages/tanstack-db/tests/
 
 Every decoder of on-disk or IndexedDB bytes is fuzzed against the rules of [the corruption research note](research/corruption-hardening-test-suite.md) ("Decisions", techniques 7, 8 and 10):
 
-- Everywhere: corrupt or truncated bytes never hang, crash, panic in wasm, read out of bounds (in TypeScript, a `RangeError` from a `DataView`), allocate from a length field, or loop. An error is the documented one: `CorruptDatabaseError`, or `CommitError("corrupt wal row ...")` for a WAL row.
+- Everywhere: corrupt or truncated bytes never hang, crash, trap in wasm, read out of bounds (in TypeScript, a `RangeError` from a `DataView`), allocate from a length field, or loop. An error is the documented one: `CorruptDatabaseError`, or `CommitError("corrupt wal row ...")` for a WAL row.
 - Where a CRC is checked (manifests, and runs in the SharedWorker's compaction decode), changed bytes throw. They never decode, and never become lost data.
 - Where none is (a tab's run reads, block scans, WAL rows and `meta`), a wrong answer is allowed. Tabs keep skipping the SST CRC.
 

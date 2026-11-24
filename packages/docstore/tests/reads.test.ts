@@ -643,6 +643,32 @@ describe("a list in eq", () => {
     expect((await d.queryIds({ index: "one", reverse: true, after: last.next! })).ids).toEqual(["1"]);
   });
 
+  it("visits every result once when a cursor under a longer listed value passes kv's key limit at an escaped U+0000", async () => {
+    const { c } = await docs();
+    const long = "y".repeat(100);
+    const s = "s".repeat(8083);
+    // Under `long`, the cursor of "c" passes 8 KiB, and its last byte inside the limit is the FF that escapes
+    // the U+0000 of its b. The key of "k" shares every byte before that one, and ends at the limit.
+    await c.putMany([
+      { id: "c", a: "x", b: `${s}\u0000` },
+      { id: "k", a: long, b: s },
+      { id: "z", a: long, b: "a" },
+    ]);
+    for (const reverse of [false, true]) {
+      const q = { index: "two", eq: [["x", long]], reverse } as const;
+      const all = reverse ? ["c", "k", "z"] : ["z", "k", "c"];
+      expect((await c.queryIds(q)).ids).toEqual(all);
+      const seen: string[] = [];
+      for (let after: Cursor | undefined; ; ) {
+        const page = await c.queryIds({ ...q, limit: 1, ...(after ? { after } : {}) });
+        seen.push(...page.ids);
+        if (!page.next) break;
+        after = page.next;
+      }
+      expect(seen).toEqual(all);
+    }
+  });
+
   it("gives kv's error for a value too long for a key", async () => {
     const { c } = await docs();
     const long = "s".repeat(300_000);

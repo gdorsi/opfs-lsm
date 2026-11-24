@@ -206,7 +206,7 @@ Importing `@opfs-lsm/kv` adds **19.9 kB** of JavaScript to your main bundle (gzi
 | --- | ---: | ---: | --- |
 | Main-thread JS | 19.9 kB | 58.3 kB | at import |
 | SharedWorker chunk | 13.6 kB | 41.4 kB | on the first `openDb` |
-| wasm engine | 6.6 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| wasm engine | 6.5 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
 | **Total after open** | **40.0 kB** | **116.1 kB** | |
 
-For comparison, Dexie is 31.4 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.9 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.9 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

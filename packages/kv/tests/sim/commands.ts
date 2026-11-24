@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import { ClosedError, type Db, type Entry } from "../../src/index.js";
+import { ClosedError, type ChangeEvent, type ChangeOp, type Db, type Entry } from "../../src/index.js";
 import {
   openHarnessDb,
   destroyHarnessDb,
@@ -14,7 +14,7 @@ import {
 import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
 import { loadGeneration } from "../../src/store/generation.js";
 import { compareBytes } from "../../src/bytes.js";
-import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange } from "./oracle.js";
+import { applyOps, Oracle, Reader, show, type OracleEntry, type OracleOp, type OracleRange, type ViewCheck } from "./oracle.js";
 import { compactHost } from "../compact-host.js";
 
 /**
@@ -28,6 +28,27 @@ export class Model {
   readonly reader = new Reader(this.oracle);
   /** Makes every written value distinct, so a read maps back to the write. */
   private nextValue = 1;
+  /** Values reads handed out since the last read command, each with the bytes it had. */
+  private handed: [Uint8Array, Uint8Array][] = [];
+
+  /** Keep a value a read handed out, to check at the next read command. */
+  hand<T extends Uint8Array | undefined>(value: T): T {
+    if (value) this.handed.push([value, value.slice()]);
+    return value;
+  }
+
+  /**
+   * Every value a read hands out is a copy the caller may change (README,
+   * "Reads and writes"): the commands since did not change it, and the
+   * caller changing it now changes nothing a later read returns.
+   */
+  scribble(): void {
+    for (const [value, was] of this.handed) {
+      if (compareBytes(value, was) !== 0) throw new Error(`a value a read handed out changed to ${show(value)}, was ${show(was)}`);
+      value.fill(0xee);
+    }
+    this.handed = [];
+  }
 
   value(spec: ValueSpec): Uint8Array {
     const head = utf(`v${this.nextValue++}.`);
@@ -51,8 +72,8 @@ export class Sut {
   private gate: { readonly opened: Promise<void>; readonly open: () => void } | undefined;
   readonly host = new EngineHost(() => this.hostFs(), SIM_HOST_LIMITS);
   db!: Db;
-  /** Seqs `changes` announced. The handle is the only writer, so each is one of its own appends. */
-  readonly appended: number[] = [];
+  /** Appends `changes` announced. The handle is the only writer, so each is one of its own. */
+  readonly appended: Extract<ChangeEvent, { kind: "append" }>[] = [];
 
   constructor(
     readonly name: string,
@@ -75,7 +96,7 @@ export class Sut {
       rowPostMs: 0,
     });
     db.changes((e) => {
-      if (e.kind === "append") this.appended.push(e.seq);
+      if (e.kind === "append") this.appended.push(e);
     });
     this.db = db;
   }
@@ -157,6 +178,9 @@ type ValueSpec = { readonly size: number; readonly fill: string };
 const valueArb: fc.Arbitrary<ValueSpec> = fc.record({
   size: fc.oneof(
     { weight: 6, arbitrary: fc.integer({ min: 0, max: 24 }) },
+    // Around the bounds of the pooled copies (65 bytes to 1 KiB).
+    { weight: 3, arbitrary: fc.constantFrom(64, 65, 1024, 1025) },
+    { weight: 2, arbitrary: fc.integer({ min: 65, max: 1024 }) },
     { weight: 2, arbitrary: fc.integer({ min: 3_000, max: 6_000 }) },
     { weight: 1, arbitrary: fc.constant(64 * 1024) },
   ),
@@ -179,12 +203,13 @@ const opArb: fc.Arbitrary<OpSpec> = fc.oneof(
   { weight: 1, arbitrary: deleteRangeArb },
 );
 
-type RangeSpec = { start?: number; end?: number; limit?: number; contains?: string; reverse?: boolean };
+type RangeSpec = { start?: number; end?: number; limit?: number; offset?: number; contains?: string; reverse?: boolean };
 const rangeArb: fc.Arbitrary<RangeSpec> = fc.record(
   {
     start: keyArb,
     end: keyArb,
     limit: fc.integer({ min: 0, max: 4 }),
+    offset: fc.integer({ min: 0, max: 3 }),
     contains: fc.constantFrom("a", "b", "v1", "."),
     reverse: fc.boolean(),
   },
@@ -196,18 +221,51 @@ function rangeOf(spec: RangeSpec): OracleRange {
     ...(spec.start !== undefined ? { start: KEYS[spec.start]! } : {}),
     ...(spec.end !== undefined ? { endExclusive: KEYS[spec.end]! } : {}),
     ...(spec.limit !== undefined ? { limit: spec.limit } : {}),
+    ...(spec.offset !== undefined ? { offset: spec.offset } : {}),
     ...(spec.contains !== undefined ? { valueContains: [utf(spec.contains)] } : {}),
     ...(spec.reverse ? { reverse: true } : {}),
   };
 }
 
+/** `values` is `snap.rangeValues`, `join` is `snap.rangeJoin` to the key `joinKey` picks. */
 type ReadSpec =
   | { readonly kind: "get"; readonly key: number }
-  | { readonly kind: "range" | "count"; readonly range: RangeSpec };
+  | { readonly kind: "getMany"; readonly keys: readonly number[]; readonly decode: boolean }
+  | { readonly kind: "range" | "count" | "values" | "join"; readonly range: RangeSpec };
+const getManyArb = fc.record({
+  kind: fc.constant("getMany" as const),
+  keys: fc.array(keyArb, { maxLength: 4 }),
+  decode: fc.boolean(),
+});
 const readArb: fc.Arbitrary<ReadSpec> = fc.oneof(
   fc.record({ kind: fc.constant("get" as const), key: keyArb }),
-  fc.record({ kind: fc.constantFrom("range" as const, "count" as const), range: rangeArb }),
+  getManyArb,
+  fc.record({ kind: fc.constantFrom("range" as const, "count" as const, "values" as const, "join" as const), range: rangeArb }),
 );
+
+/** The key a `join` read joins an entry to, or none: picked by the value's length. */
+function joinKey(entry: { readonly value: Uint8Array }): Uint8Array | undefined {
+  return KEYS[entry.value.length % (KEYS.length + 1)];
+}
+
+/** What a read command runs mid-read: a write, or host work. */
+type Interleave = { readonly kind: "write"; readonly op: OpSpec } | { readonly kind: "ingest" | "flush" | "compact" };
+const interleaveArb: fc.Arbitrary<Interleave> = fc.oneof(
+  { weight: 3, arbitrary: opArb.map((op) => ({ kind: "write" as const, op })) },
+  { weight: 1, arbitrary: fc.constantFrom<Interleave>({ kind: "ingest" }, { kind: "flush" }, { kind: "compact" }) },
+);
+
+async function interleave(m: Model, r: Sut, what: Interleave): Promise<void> {
+  if (what.kind === "write") {
+    const ops = opsOf(m, [what.op]);
+    return write(m, r, ops, () => writeOps(r.db, ops));
+  }
+  if (what.kind === "ingest") {
+    r.release();
+    await ingest(r.db);
+  } else if (what.kind === "flush") await r.host.ingest(r.name);
+  else await r.settle();
+}
 
 const keyName = (i: number) => show(KEYS[i]!);
 function opName(op: OpSpec): string {
@@ -221,6 +279,12 @@ function opName(op: OpSpec): string {
   }
 }
 const rangeName = (r: RangeSpec) => JSON.stringify(r);
+const interleaveName = (what: Interleave) => (what.kind === "write" ? opName(what.op) : what.kind);
+function readName(x: ReadSpec): string {
+  if (x.kind === "get") return `get ${keyName(x.key)}`;
+  if (x.kind === "getMany") return `getMany[${x.keys.map(keyName).join(", ")}]${x.decode ? " decode" : ""}`;
+  return `${x.kind} ${rangeName(x.range)}`;
+}
 
 // --- Writes.
 
@@ -253,17 +317,36 @@ function writeOps(db: Db, ops: readonly OracleOp[]): Promise<number> {
   return db.batch((tx) => applyOps(tx, ops));
 }
 
-/** Run a write and check it appended exactly one record at the next seq, or none for no ops. */
+/**
+ * Run a write and check it appended exactly one record at the next seq, or
+ * none for no ops, and that its `changes` event carries its ops. Then the
+ * caller reuses the values' buffers, which the write copied (README, "Batches").
+ */
 async function write(m: Model, r: Sut, ops: readonly OracleOp[], run: () => Promise<unknown>): Promise<void> {
   const before = r.appended.length;
   await run();
-  const seqs = r.appended.slice(before);
+  const events = r.appended.slice(before);
   if (ops.length === 0) {
-    expect(seqs, "a write with no ops appends nothing").toEqual([]);
+    expect(events, "a write with no ops appends nothing").toEqual([]);
     return;
   }
-  expect(seqs, "one append at the next seq").toEqual([m.oracle.head + 1]);
+  const seq = m.oracle.head + 1;
+  expect(events.map((e) => e.seq), "one append at the next seq").toEqual([seq]);
+  expect(events[0]!.ops.map(showOp), "the append event's ops").toEqual(ops.map((op) => showOp(resolved(op, seq))));
   m.reader.acked(m.oracle.append(ops));
+  for (const op of ops) if (op.type === "put") op.value.fill(0xdd);
+}
+
+/** `op` as its change event reports it: a range delete's `through` below its seq. */
+function resolved(op: OracleOp, seq: number): ChangeOp {
+  if (op.type !== "deleteRange") return op;
+  const { through, ...bounds } = op;
+  return { ...bounds, through: Math.min(through ?? Number.MAX_SAFE_INTEGER, seq - 1) };
+}
+
+function showOp(op: ChangeOp): string {
+  if (op.type === "deleteRange") return `deleteRange ${show(op.start)}..${op.endExclusive ? show(op.endExclusive) : ""} through ${op.through}`;
+  return op.type === "put" ? `put ${show(op.key)}=${show(op.value)}(${op.value.length}B)` : `del ${show(op.key)}`;
 }
 
 class BatchCmd implements Cmd {
@@ -299,7 +382,10 @@ type UpdateAction = "keep" | "del" | "put";
 
 /**
  * `update` reads `keys` and writes in one transaction, so it reads the prefix
- * just before its own seq. The body reads the last `late` keys with `tx.read`.
+ * just before its own seq. The body reads the last `late` keys with `tx.read`,
+ * writes `more` ops to any key after the ones `actions` picks, and returns a
+ * value, or throws: then the update rejects with that error and writes
+ * nothing (README, "Read-modify-write").
  */
 class UpdateCmd implements Cmd {
   constructor(
@@ -307,9 +393,12 @@ class UpdateCmd implements Cmd {
     private readonly actions: readonly UpdateAction[],
     private readonly value: ValueSpec,
     private readonly late: number,
+    private readonly more: readonly OpSpec[],
+    private readonly throws: boolean,
   ) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
+    m.scribble();
     const keys = this.keys.map((k) => KEYS[k]!);
     const first = keys.slice(0, Math.max(0, keys.length - this.late));
     const ops: OracleOp[] = [];
@@ -318,14 +407,26 @@ class UpdateCmd implements Cmd {
       if (action === "put") ops.push({ type: "put", key, value: m.value(this.value) });
       else if (action === "del") ops.push({ type: "del", key });
     });
+    ops.push(...opsOf(m, this.more));
     let seen: readonly (Uint8Array | undefined)[] = [];
-    await write(m, r, ops, () =>
+    const failure = new Error("the body threw");
+    const result = {};
+    const run = () =>
       r.db.update(first, (got, tx) => {
-        seen = [...got, ...tx.read(keys.slice(first.length))].map((v) => (v ? new Uint8Array(v) : undefined));
+        seen = [...got, ...tx.read(keys.slice(first.length))];
         applyOps(tx, ops);
-      }),
-    );
-    const at = ops.length > 0 ? m.oracle.head - 1 : undefined;
+        if (this.throws) throw failure;
+        return result;
+      });
+    if (this.throws) {
+      const before = r.appended.length;
+      await expect(run(), "update rejects with what its body threw").rejects.toBe(failure);
+      expect(r.appended.length, "an update whose body threw appends nothing").toBe(before);
+    } else {
+      await write(m, r, ops, async () => expect(await run(), "update resolves with what its body returned").toBe(result));
+    }
+    seen.forEach((v) => m.hand(v));
+    const at = ops.length > 0 && !this.throws ? m.oracle.head - 1 : undefined;
     if (at !== undefined) {
       keys.forEach((k, i) => {
         expect(seen[i], `update read ${show(k)} at seq ${at}`).toEqual(m.oracle.valueAt(k, at));
@@ -336,7 +437,10 @@ class UpdateCmd implements Cmd {
       v.finish();
     }
   }
-  toString = () => `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}] late ${this.late}`;
+  toString = () =>
+    `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}] late ${this.late}` +
+    (this.more.length ? ` then ${this.more.map(opName).join("; ")}` : "") +
+    (this.throws ? " throws" : "");
 }
 
 // --- Reads.
@@ -351,66 +455,117 @@ class GetCmd implements Cmd {
   constructor(private readonly key: number) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
-    m.reader.get(KEYS[this.key]!, await r.db.get(KEYS[this.key]!));
+    m.scribble();
+    m.reader.get(KEYS[this.key]!, m.hand(await r.db.get(KEYS[this.key]!)));
   }
   toString = () => `get ${keyName(this.key)}`;
 }
 
-class RangeCmd implements Cmd {
-  constructor(private readonly range: RangeSpec) {}
+/** A read of several keys, so the same writes. With `decode`, a decode that copies the stored bytes. */
+type ManyReader = Pick<Db, "getMany">;
+async function getMany(m: Model, from: ManyReader, check: ViewCheck, spec: Extract<ReadSpec, { kind: "getMany" }>): Promise<void> {
+  const keys = spec.keys.map((k) => KEYS[k]!);
+  const got = spec.decode ? await from.getMany(keys, (bytes) => bytes.slice()) : await from.getMany(keys);
+  expect(got.length, "getMany returns a value per key").toBe(keys.length);
+  keys.forEach((k, i) => check.get(k, m.hand(got[i])));
+}
+
+class GetManyCmd implements Cmd {
+  constructor(private readonly spec: Extract<ReadSpec, { kind: "getMany" }>) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
-    const range = rangeOf(this.range);
-    m.reader.range(range, await collect(r.db.range(range)));
+    m.scribble();
+    const check = m.reader.view();
+    await getMany(m, r.db, check, this.spec);
+    check.finish();
   }
-  toString = () => `range ${rangeName(this.range)}`;
+  toString = () => readName(this.spec);
+}
+
+/** A range, with `during` run before entry `at` of it: the scan reads one state, from the first `next()` on. */
+class RangeCmd implements Cmd {
+  constructor(
+    private readonly range: RangeSpec,
+    private readonly at: number,
+    private readonly during: Interleave | undefined,
+  ) {}
+  check = () => true;
+  async run(m: Model, r: Sut): Promise<void> {
+    m.scribble();
+    const range = rangeOf(this.range);
+    const check = m.reader.view();
+    const it = r.db.range(range)[Symbol.asyncIterator]();
+    const out: OracleEntry[] = [];
+    for (let i = 0; ; i++) {
+      if (i === this.at && this.during) await interleave(m, r, this.during);
+      const next = await it.next();
+      if (next.done) break;
+      out.push({ key: next.value.key, value: m.hand(next.value.value) });
+    }
+    check.range(range, out);
+    check.finish();
+  }
+  toString = () => `range ${rangeName(this.range)}` + (this.during ? ` with ${interleaveName(this.during)} before entry ${this.at}` : "");
 }
 
 class CountCmd implements Cmd {
   constructor(private readonly range: RangeSpec) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
+    m.scribble();
     const range = rangeOf(this.range);
     m.reader.count(range, await r.db.count(range));
   }
   toString = () => `count ${rangeName(this.range)}`;
 }
 
-/** Reads in one view, with an optional write acked mid-view that the view must not see. */
+/** Reads in one view, with `during` run before read `at`: a write acked mid-view or host work, which the view must not see. */
 class ViewCmd implements Cmd {
   constructor(
     private readonly reads: readonly ReadSpec[],
-    private readonly writeAt: number | undefined,
-    private readonly op: OpSpec,
+    private readonly at: number | undefined,
+    private readonly during: Interleave,
   ) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
+    m.scribble();
     const check = m.reader.view();
     await r.db.view(async (snap) => {
       check.seq(snap.seq);
       for (let i = 0; i <= this.reads.length; i++) {
-        if (i === this.writeAt) {
-          const ops = opsOf(m, [this.op]);
-          await write(m, r, ops, () => writeOps(r.db, ops));
-        }
+        if (i === this.at) await interleave(m, r, this.during);
         const read = this.reads[i];
         if (!read) continue;
         if (read.kind === "get") {
-          check.get(KEYS[read.key]!, await snap.get(KEYS[read.key]!));
+          check.get(KEYS[read.key]!, m.hand(await snap.get(KEYS[read.key]!)));
+        } else if (read.kind === "getMany") {
+          await getMany(m, snap, check, read);
         } else if (read.kind === "count") {
           const range = rangeOf(read.range);
           check.count(range, await snap.count(range));
+        } else if (read.kind === "values") {
+          const range = rangeOf(read.range);
+          const entries = await snap.rangeValues(range, (bytes) => bytes.slice());
+          check.range(range, entries.map((e) => ({ key: e.key, value: m.hand(e.value) })));
+        } else if (read.kind === "join") {
+          const range = rangeOf(read.range);
+          const joins = await snap.rangeJoin(range, joinKey);
+          check.range(range, joins.map(({ entry }) => ({ key: entry.key, value: m.hand(entry.value) })));
+          for (const { entry, joined } of joins) {
+            const key = joinKey(entry);
+            if (key) check.get(key, m.hand(joined));
+            else expect(joined, "rangeJoin joins nothing when keyOf returns undefined").toBeUndefined();
+          }
         } else {
           const range = rangeOf(read.range);
-          check.range(range, await collect(snap.range(range)));
+          check.range(range, (await collect(snap.range(range))).map((e) => ({ key: e.key, value: m.hand(e.value) })));
         }
       }
     });
     check.finish();
   }
   toString = () =>
-    `view[${this.reads.map((x) => (x.kind === "get" ? `get ${keyName(x.key)}` : `${x.kind} ${rangeName(x.range)}`)).join("; ")}]` +
-    (this.writeAt !== undefined ? ` with ${opName(this.op)} before read ${this.writeAt}` : "");
+    `view[${this.reads.map(readName).join("; ")}]` + (this.at !== undefined ? ` with ${interleaveName(this.during)} before read ${this.at}` : "");
 }
 
 // --- Coordination and lifecycle.
@@ -589,15 +744,20 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
         fc.array(fc.constantFrom<UpdateAction>("keep", "del", "put"), { minLength: 1, maxLength: 3 }),
         valueArb,
         fc.nat({ max: 3 }),
+        fc.array(opArb, { maxLength: 2 }),
+        fc.oneof({ weight: 4, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
       )
-      .map(([keys, actions, value, late]) => new UpdateCmd(keys, actions, value, late)),
+      .map(([keys, actions, value, late, more, throws]) => new UpdateCmd(keys, actions, value, late, more, throws)),
     keyArb.map((k) => new GetCmd(k)),
     keyArb.map((k) => new GetCmd(k)),
-    rangeArb.map((range) => new RangeCmd(range)),
+    getManyArb.map((spec) => new GetManyCmd(spec)),
+    fc
+      .tuple(rangeArb, fc.nat({ max: 3 }), fc.option(interleaveArb, { nil: undefined, freq: 2 }))
+      .map(([range, at, during]) => new RangeCmd(range, at, during)),
     rangeArb.map((range) => new CountCmd(range)),
     fc
-      .tuple(fc.array(readArb, { minLength: 1, maxLength: 4 }), fc.option(fc.nat({ max: 4 }), { nil: undefined }), opArb)
-      .map(([reads, at, op]) => new ViewCmd(reads, at, op)),
+      .tuple(fc.array(readArb, { minLength: 1, maxLength: 4 }), fc.option(fc.nat({ max: 4 }), { nil: undefined }), interleaveArb)
+      .map(([reads, at, during]) => new ViewCmd(reads, at, during)),
     fc.constant(new SyncCmd()),
     fc.constant(new IngestCmd()),
     fc.constant(new IngestCmd()),

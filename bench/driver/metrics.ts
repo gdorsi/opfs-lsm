@@ -80,6 +80,8 @@ export type Measures = {
   readonly kvOptions: readonly string[];
   /** The distinct seeds of the runs without an error, ascending. */
   readonly seeds: readonly number[];
+  /** The runs that ended in an error and feed no series, as "workload size contender" with their count. */
+  readonly failed: ReadonlyMap<string, number>;
 };
 
 export type Direction = "higher" | "lower";
@@ -265,11 +267,9 @@ const KINDS: { [K in Kind]: KindSpec } = {
     value: ({ run }, f) => {
       const m = run.memory;
       if (!m) return NaN;
-      const peak = (heap: typeof m.worker, wasm: number | null) =>
-        heap ? heap.usedSize + (heap.backingStorageSize ?? 0) + (wasm ?? 0) : NaN;
       switch (f as MemField) {
-        case "workerTotal": return peak(m.worker, m.workerWasmBytes);
-        case "tabTotal": return peak(m.tab, m.tabWasmBytes);
+        case "workerTotal": return m.workerTotalBytes ?? NaN;
+        case "tabTotal": return m.tabTotalBytes ?? NaN;
         case "largestRenderer": return m.largestRendererBytes ?? NaN;
       }
     },
@@ -415,5 +415,9 @@ export function measure(records: readonly RunRecord[]): Measures {
     if (!r.error && overrides.length > 0) kvOptions.add(overrides.map(([option, bytes]) => `${option} ${bytes}`).join(", "));
   }
   const seeds = [...new Set(records.filter((r) => !r.error).map((r) => r.params.seed))].sort((x, y) => x - y);
-  return { all, get: (at) => byKey.get(keyOf(at)), kvOptions: [...kvOptions], seeds };
+  const failed = new Map<string, number>();
+  for (const r of records) {
+    if (r.error) failed.set(`${r.workload} ${r.size} ${r.contender}`, (failed.get(`${r.workload} ${r.size} ${r.contender}`) ?? 0) + 1);
+  }
+  return { all, get: (at) => byKey.get(keyOf(at)), kvOptions: [...kvOptions], seeds, failed };
 }

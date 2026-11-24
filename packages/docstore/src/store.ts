@@ -54,18 +54,23 @@ export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise
   const declared = normalizeSchema(schema);
   // A plain read first: the readwrite transaction runs only when the catalog has to change.
   const read = await kv.get(CATALOG_KEY);
-  const readCatalog = read && parseCatalog(read);
+  let known: { bytes: Uint8Array; catalog: StoredCatalog } | undefined;
+  try {
+    const readCatalog = read && parseCatalog(read);
+    if (readCatalog && !reconcile(readCatalog, declared)) known = { bytes: read!, catalog: readCatalog };
+  } catch {
+    // The read can lag another tab's catalog write: the transaction, at the head, throws for good.
+  }
   const { bytes, catalog } =
-    readCatalog && !reconcile(readCatalog, declared)
-      ? { bytes: read!, catalog: readCatalog }
-      : await kv.update([CATALOG_KEY], ([stored], tx) => {
-          const current = stored && parseCatalog(stored);
-          const next = reconcile(current, declared);
-          if (!next) return { bytes: stored!, catalog: current! };
-          const out = encodeCatalog(next);
-          tx.put(CATALOG_KEY, out);
-          return { bytes: out, catalog: next };
-        });
+    known ??
+    (await kv.update([CATALOG_KEY], ([stored], tx) => {
+      const current = stored && parseCatalog(stored);
+      const next = reconcile(current, declared);
+      if (!next) return { bytes: stored!, catalog: current! };
+      const out = encodeCatalog(next);
+      tx.put(CATALOG_KEY, out);
+      return { bytes: out, catalog: next };
+    }));
   const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared), schema.collections);
   store.startJobs();
   await store.declaredBuilds();
@@ -222,9 +227,20 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
-    for (;;) {
+    for (let synced = false; ; ) {
       const bound = this.bound;
-      const plan = await planner(collectionOf(bound, name));
+      let plan: WritePlan<R>;
+      try {
+        plan = await planner(collectionOf(bound, name));
+      } catch (err) {
+        // The planner reads this handle's state, which can lag another tab's write: its error holds once it has read every write acked before the call.
+        if (synced) throw err;
+        await this.kv.sync();
+        // A catalog write that a flush folded reaches the feed as a gap, which does not say what it wrote.
+        this.adopt(await this.kv.get(CATALOG_KEY));
+        synced = true;
+        continue;
+      }
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
         if (!catalog) {
           tx.put(CATALOG_KEY, encodeCatalog(reconcile(undefined, this.declared)!));

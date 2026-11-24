@@ -24,6 +24,8 @@ export const waitBackingStoreCold = () => new Promise((resolve) => setTimeout(re
 
 export type RunOptions = {
   readonly origin: string;
+  /** The tree the page was built from, read before the build: a commit or an edit made while the suite runs must not name it. */
+  readonly gitSha: string;
   readonly headless: boolean;
   readonly resultsFile: string;
   readonly phaseTimeoutMs: number;
@@ -112,7 +114,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
     size: run.size,
     rep: run.rep,
     params: meta?.params ?? { entries: 0, keyBytes: 0, valueBytes: 0, compressibility: 0, batch: 0, ops: 0, seed: run.seed },
-    host: hostInfo(chromeVersion, opts.headless),
+    host: hostInfo(chromeVersion, opts.headless, opts.gitSha),
     ...(meta?.engine && Object.keys(opts.kv).length > 0 ? { kv: opts.kv } : {}),
     phases: rounds.flatMap(([first, ...later]) => (!first ? [] : later.length > 0 ? [{ ...first, laterRounds: later }] : [first])),
     ...(memory ? { memory } : {}),

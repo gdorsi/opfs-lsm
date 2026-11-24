@@ -91,8 +91,10 @@ describe("changes", () => {
     await c.put({ id: "2", a: 2 });
     await kv.batch((tx) => tx.deleteRange({ start: rows }));
     await c.put({ id: "3", a: 3 });
-    await settled(() => expect(summary(events)).toEqual(["+2", "gap", "+3"]));
-    expect(await c.get("1")).toBeUndefined();
+    await kv.batch((tx) => tx.deleteRange({ start: concat(rows, utf8.encode("3")), endExclusive: concat(rows, utf8.encode("4")) }));
+    await c.put({ id: "4", a: 4 });
+    await settled(() => expect(summary(events)).toEqual(["+2", "gap", "+3", "gap", "+4"]));
+    expect(await c.getMany(["1", "3"])).toEqual([undefined, undefined]);
   });
 
   it("ignores the entries of the indexes and the other collections", async () => {

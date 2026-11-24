@@ -26,5 +26,5 @@ The whole-client persister, `createAsyncStoragePersister`, is not supported. It 
 
 ## Limits
 
-- A query whose serialized entry is over about 8 MiB rejects with `ConstraintError`. `persistQuery` and `persistQueryByKey` reject to the caller. `persisterFn` writes in the background, so there the error is an unhandled rejection and the query still resolves with its data.
+- A query whose storage key, `prefix` plus query hash, is over about 8 KiB, or whose serialized entry is over about 8 MiB, rejects with `ConstraintError`. `persistQuery` and `persistQueryByKey` reject to the caller. `persisterFn` writes in the background, so there the error is an unhandled rejection and the query still resolves with its data. A key over 8 KiB is never found, so `persisterFn` calls `queryFn` every time.
 - A storage key or serialized entry with a lone surrogate rejects, because it cannot round-trip through UTF-8. The default `JSON.stringify` escapes lone surrogates, so only a custom `serialize` or `prefix` can produce one.

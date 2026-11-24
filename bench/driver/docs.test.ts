@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe as suite, test } from "node:test";
 import type { MainThread, PhaseResult, RunRecord } from "../core/types.ts";
-import { LEGACY_DIRTY, readPublished, renderDocs, staleTables, type Published, type Table } from "./docs.ts";
+import { readPublished, renderDocs, staleTables, type Published, type Table } from "./docs.ts";
 import { measure } from "./metrics.ts";
 
 const HOST = { chrome: "Chrome/157.0.8103.79", headless: true, os: "", cpu: "Test CPU", cores: 1, loadAvg1: 2, node: "", gitSha: "abc1234" };
@@ -248,18 +248,6 @@ suite("readPublished", () => {
     const stamp = "2026-01-04T00-00-00-seed";
     write(stamp, runsOf("kv/kv", [200, 200], { params: { ...run("kv/kv", 1).params, seed: 7 } }));
     assert.throws(() => readPublished(stamp, dir), /used seed 7\. Publish a run on the default seed 1/);
-  });
-
-  test("the legacy list holds only the three runs published before the rule, so it can only shrink", () => {
-    const before = ["2026-11-17T20-16-52-apple-m5-max", "2026-11-17T20-27-42-apple-m5-max", "2026-11-17T20-29-34-apple-m5-max"];
-    assert.deepEqual([...LEGACY_DIRTY].filter((stamp) => !before.includes(stamp)), []);
-  });
-
-  test("a legacy stamp loads, and its table prints the commit with -dirty", () => {
-    for (const legacy of LEGACY_DIRTY) {
-      write(legacy, dirty);
-      assert.match(renderDocs(PAGE, [{ ...TABLE, file: legacy }], () => readPublished(legacy, dir)).split("\n").find((l) => l.startsWith("Medians"))!, /commit abc1234-dirty\./);
-    }
   });
 
   test("a failed run is neither a series nor a published run", () => {

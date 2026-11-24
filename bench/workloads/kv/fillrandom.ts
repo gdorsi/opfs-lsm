@@ -96,20 +96,23 @@ export default defineWorkload({
       timed: true,
       async run(ctx) {
         const limit = PAGE_DELETED;
-        const store = await ctx.store();
-        let start = ctx.model.key(0);
+        // The model knows where a cursor would stand: each page starts after the last id of the one before.
+        const pages: { start: Uint8Array; ids: number[] }[] = [];
+        let from = 0;
         let want = ctx.model.nextLive(0);
-        for (let page = 0; page < Math.ceil(ctx.params.ops / limit) && want !== undefined; page++) {
-          const values = await ctx.time("page", 0, () => store.range(start, undefined, limit), 1);
-          // Between calls: the next page starts after the last key this one returned, as a cursor does.
-          for (const v of values) {
-            const id = ctx.model.verifyAny(v);
-            ctx.check(id === want, `page ${page}: got id ${id}, want ${want}`);
-            want = ctx.model.nextLive(id + 1);
-            start = ctx.model.key(id + 1);
-          }
-          ctx.check(values.length === limit || want === undefined, `page ${page}: ${values.length} of ${limit} values, id ${want} is live`);
+        while (pages.length < Math.ceil(ctx.params.ops / limit) && want !== undefined) {
+          const ids: number[] = [];
+          for (; ids.length < limit && want !== undefined; want = ctx.model.nextLive(want + 1)) ids.push(want);
+          pages.push({ start: ctx.model.key(from), ids });
+          from = ids.at(-1)! + 1;
         }
+        const store = await ctx.store();
+        const got: Uint8Array[][] = [];
+        for (const { start } of pages) got.push(await ctx.time("page", 0, () => store.range(start, undefined, limit), 1));
+        pages.forEach(({ ids }, page) => {
+          ctx.check(got[page]!.length === ids.length, `page ${page}: ${got[page]!.length} values, want ${ids.length}`);
+          ids.forEach((id, k) => ctx.model.verify(id, got[page]![k]));
+        });
       },
     },
     {
