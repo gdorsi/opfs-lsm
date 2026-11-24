@@ -82,6 +82,8 @@ export default defineContender({
         return request<Uint8Array[]>(s.getAll(boundFrom(from), limit));
       },
       count: (start, endExclusive) => request(store("readonly").count(IDBKeyRange.bound(k(start), k(endExclusive), false, true))),
+      // A transaction opened after another connection's commit reads it.
+      sync: async () => {},
       async update(key, f) {
         const s = store("readwrite");
         const old = await request<Uint8Array | undefined>(s.get(k(key)));
