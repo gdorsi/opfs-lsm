@@ -179,7 +179,7 @@ describe("generation recorded in IndexedDB", () => {
 
     const o = observedFs(inner);
     o.holdNextManifestRead();
-    const tails = vi.fn();
+    const tails = vi.fn<() => void>();
     const open = TabWal.open;
     TabWal.open = async (...args) => {
       const wal = await open(...args);
