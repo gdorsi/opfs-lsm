@@ -7,7 +7,8 @@
 const FNV_OFFSET = 2166136261;
 const FNV_PRIME = 16777619;
 
-function fnv1a(data: Uint8Array): number {
+/** The hash of `key` that every run's filter is probed with, so a read of several runs hashes its key once. */
+export function bloomHash(data: Uint8Array): number {
   let h = FNV_OFFSET;
   for (let i = 0; i < data.byteLength; i++) {
     h ^= data[i] ?? 0;
@@ -36,10 +37,10 @@ export type BloomFilter = {
  * each operand V8 takes the remainder of two integers. Without it the
  * remainder is of two doubles, which costs several times the rest of the probe.
  */
-export function bloomMightContain(filter: BloomFilter, key: Uint8Array): boolean {
+export function bloomMightContain(filter: BloomFilter, hash: number): boolean {
   const { bits } = filter;
   const m = (bits.byteLength * 8) >>> 0;
-  let h = fnv1a(key);
+  let h = hash;
   const h2 = mix(h) | 1;
   for (let i = 0; i < filter.hashCount; i++) {
     const bit = h % m;

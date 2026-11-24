@@ -74,8 +74,8 @@ await db.get(key);                    // => undefined
 // get and getMany read memory and SST files. They never touch
 // IndexedDB.
 
-// Every value a read returns is a copy you may change. A copy of
-// 65 bytes to 1 KiB shares its ArrayBuffer with other copies, as
+// Every key and value a read returns is a copy you may change. A copy
+// of 65 bytes to 1 KiB shares its ArrayBuffer with other copies, as
 // Node's Buffer pool does: read it through byteOffset, a multiple
 // of 8, and byteLength. Posting or storing it clones the whole
 // shared buffer, and transferring that buffer detaches the other

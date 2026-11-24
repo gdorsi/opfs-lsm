@@ -2,7 +2,7 @@ import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
-import { bloomMightContain, type BloomFilter } from "./bloom.js";
+import { bloomHash, bloomMightContain, type BloomFilter } from "./bloom.js";
 import { filterCursor, Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
@@ -90,14 +90,15 @@ export class SstReader {
 
   /**
    * The record for `key`, where it is in its page, as `findInBlock` gives
-   * it. Misses at most twice on a cold run: layout, then the page.
+   * it. Misses at most twice on a cold run: layout, then the page. `hash` is
+   * `bloomHash(key)`, which a read of several runs computes once.
    */
-  get(key: Uint8Array): Maybe<RecordWalker | undefined> {
+  get(key: Uint8Array, hash = bloomHash(key)): Maybe<RecordWalker | undefined> {
     const meta = this.meta();
     if (meta instanceof Miss) return meta;
     const { index } = meta;
     if (meta.entryCount === 0 || compareBytes(key, index.last) > 0) return undefined;
-    if (!bloomMightContain(meta.bloom, key)) return undefined;
+    if (!bloomMightContain(meta.bloom, hash)) return undefined;
     const b = findBlock(index, key);
     if (b < 0) return undefined;
     const p = pageOfBlock(index, b);

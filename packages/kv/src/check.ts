@@ -76,12 +76,22 @@ function assertBuffer(bytes: Uint8Array, label: string): void {
   }
 }
 
-export function checkKey(bytes: Uint8Array): CheckedKey {
+function assertKey(bytes: Uint8Array): void {
   assertBuffer(bytes, "key");
   if (bytes.byteLength > LIMITS.keyBytes) {
     throw new ConstraintError(`key longer than ${LIMITS.keyBytes} bytes`);
   }
+}
+
+export function checkKey(bytes: Uint8Array): CheckedKey {
+  assertKey(bytes);
   return new Uint8Array(bytes) as CheckedKey;
+}
+
+/** A checked copy of a key a write keeps, from the pool its values come from: a key over 64 bytes would otherwise get a buffer of its own. */
+function storedKey(bytes: Uint8Array): CheckedKey {
+  assertKey(bytes);
+  return copyIn(bytes) as CheckedKey;
 }
 
 export function checkValue(bytes: Uint8Array): CheckedValue {
@@ -109,8 +119,8 @@ export function opsBytes(ops: readonly CheckedOp[]): number {
 }
 
 function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): CheckedOp {
-  const start = checkKey(op.start ?? new Uint8Array(0));
-  const end = op.endExclusive && checkKey(op.endExclusive);
+  const start = storedKey(op.start ?? new Uint8Array(0));
+  const end = op.endExclusive && storedKey(op.endExclusive);
   if (end && compareBytes(start, end) >= 0) {
     throw new ConstraintError("deleteRange needs start below endExclusive");
   }
@@ -141,10 +151,10 @@ export class CheckedBatch {
     }
     switch (op.type) {
       case "put":
-        this.ops.push({ type: "put", key: checkKey(op.key), value: checkValue(op.value) });
+        this.ops.push({ type: "put", key: storedKey(op.key), value: checkValue(op.value) });
         break;
       case "del":
-        this.ops.push({ type: "del", key: checkKey(op.key) });
+        this.ops.push({ type: "del", key: storedKey(op.key) });
         break;
       case "deleteRange":
         this.ops.push(checkDeleteRange(op));

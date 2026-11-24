@@ -15,6 +15,7 @@ import {
 } from "./cursor.js";
 import type { Seq } from "../seq.js";
 import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
+import { bloomHash } from "./bloom.js";
 import { RecordWalker } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
 import { levelOf } from "./levels.js";
@@ -120,8 +121,9 @@ export function latestSstEntry(
   key: Uint8Array,
 ): Maybe<RecordWalker | undefined> {
   let first: Miss | undefined;
+  let hash: number | undefined;
   for (const level of levels) {
-    const hit = level.get(key);
+    const hit = level.get(key, (hash ??= bloomHash(key)));
     if (hit instanceof Miss) {
       // An older level's load runs on: a retry that reaches it joins it, and a read that never does neither waits for it nor fails with it.
       if (first) hit.ready.catch(() => undefined);
@@ -164,10 +166,11 @@ export class RunLevel {
     return lo;
   }
 
-  get(key: Uint8Array): Maybe<RecordWalker | undefined> {
+  /** `hash` is `bloomHash(key)`. */
+  get(key: Uint8Array, hash?: number): Maybe<RecordWalker | undefined> {
     const r = this.seek("largest", key);
     if (r >= this.runs.length || compareBytes(this.runs[r]!.range.smallest, key) > 0) return undefined;
-    return this.runs[r]!.get(key);
+    return this.runs[r]!.get(key, hash);
   }
 
   /** `marks` is the read point the scan judges by. */
@@ -453,8 +456,9 @@ export async function countOf(step: ScanStep): Promise<number> {
 
 /** Whether a level before `level` holds `key`. */
 function shadowed(levels: readonly RunLevel[], level: number, key: Uint8Array): Maybe<boolean> {
+  const hash = bloomHash(key);
   for (let l = 0; l < level; l++) {
-    const hit = levels[l]!.get(key);
+    const hit = levels[l]!.get(key, hash);
     if (hit instanceof Miss) return hit;
     if (hit) return true;
   }
