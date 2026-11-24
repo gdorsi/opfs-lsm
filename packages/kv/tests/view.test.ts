@@ -5,6 +5,7 @@ import {
   __resetMemoryFsForTests,
   ingest,
 } from "../src/testing.js";
+import type { ReadFs } from "../src/opfs/async-fs.js";
 
 const NAME = "view-test";
 const enc = new TextEncoder();
@@ -159,6 +160,42 @@ describe("getMany", () => {
     }
     expect(await reads[4]!()).toEqual(["in the memtable", "in a run"]);
     expect(await db.getMany([])).toEqual([]);
+    await db.close();
+  });
+
+  it("reads every key at one state while a page loads, though a flush moves its rows meanwhile", async () => {
+    const writer = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w1", maxWalBytes: 1 << 30 });
+    await writer.put(enc.encode("run"), enc.encode("1"));
+    await ingest(writer);
+    await writer.close();
+    let gate: Promise<void> | undefined;
+    let open!: () => void;
+    const gated = (fs: ReadFs): ReadFs => ({
+      read: (path, offset, length) => fs.read(path, offset, length),
+      list: (dir) => fs.list(dir),
+      open: async (path) => {
+        const file = await fs.open(path);
+        return (
+          file && {
+            size: file.size,
+            read: async (offset, length) => {
+              await gate;
+              return file.read(offset, length);
+            },
+            close: () => file.close(),
+          }
+        );
+      },
+    });
+    const db = await openHarnessDb({ name: NAME, forceMemory: true, writerId: "w2", maxWalBytes: 1 << 30, wrapFs: gated });
+    await db.put(enc.encode("mem"), enc.encode("1"));
+    gate = new Promise<void>((resolve) => (open = resolve));
+    const keys = [enc.encode("run"), enc.encode("mem")];
+    const read = db.getMany(keys, (bytes) => dec.decode(bytes));
+    await ingest(db);
+    open();
+    expect(await read).toEqual(["1", "1"]);
+    expect(await db.getMany(keys, (bytes) => dec.decode(bytes))).toEqual(["1", "1"]);
     await db.close();
   });
 
