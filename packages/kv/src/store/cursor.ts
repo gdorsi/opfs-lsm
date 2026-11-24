@@ -1,4 +1,4 @@
-import { compareFrom, containsAll, copyOut } from "../bytes.js";
+import { compareFrom, containsAll, copyOut, sharedPrefix } from "../bytes.js";
 import type { Entry } from "../db.js";
 import { asSeq, type Seq } from "../seq.js";
 
@@ -130,11 +130,7 @@ export class BlockEntry {
 
   /** How many leading bytes of `key` every record of this block shares with it, at most the block's prefix. */
   prefixShared(key: Uint8Array): number {
-    const { prefix } = this;
-    const n = Math.min(prefix.length, key.length);
-    let i = 0;
-    while (i < n && prefix[i] === key[i]) i++;
-    return i;
+    return sharedPrefix(this.prefix, key);
   }
 }
 
@@ -173,8 +169,8 @@ export function entryOf(e: LayerEntry): Entry {
 }
 
 export type ScanBounds = {
-  readonly start?: Uint8Array;
-  readonly endExclusive?: Uint8Array;
+  readonly start?: Uint8Array | undefined;
+  readonly endExclusive?: Uint8Array | undefined;
 };
 
 /**

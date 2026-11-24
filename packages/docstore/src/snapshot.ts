@@ -1,6 +1,6 @@
 import { CorruptDatabaseError, type Decode, type Entry, type Range, type ViewSnapshot } from "@opfs-lsm/kv";
 import { readableTarget, type BoundCollection } from "./catalog.js";
-import { JsonBatch, decodeDoc, fieldsBatch } from "./derive.js";
+import { JsonBatch, decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import {
   compareBytes,
@@ -42,16 +42,9 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   count(q: CountQuery<T, Ix>): Promise<number>;
 }
 
-function limitOf(limit: unknown): number | undefined {
-  if (limit === undefined) return undefined;
-  if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1) return limit;
-  throw new DocStoreError("query", "limit must be a positive integer");
-}
-
-function offsetOf(offset: unknown): number {
-  if (offset === undefined) return 0;
-  if (typeof offset === "number" && Number.isInteger(offset) && offset >= 0) return offset;
-  throw new DocStoreError("query", "offset must be a non-negative integer");
+function intOf(v: unknown, min: number, name: string): number | undefined {
+  if (v === undefined || (typeof v === "number" && Number.isInteger(v) && v >= min)) return v;
+  throw new DocStoreError("query", `${name} must be an integer of at least ${min}`);
 }
 
 /** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
@@ -62,14 +55,6 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
 }
 
 const nothing = () => undefined;
-
-/** What `queryEntries` needs of an entry's value, decoded from the bytes where kv holds them. A covering entry's fields are parsed in a batch. */
-const ENTRY_VALUE: { readonly [K in Exclude<EntryTarget["kind"], "covering">]: Decode<unknown> } = {
-  rows: nothing,
-  sorted: nothing,
-  text: nothing,
-  unique: idOf,
-};
 
 type Merge = ScanPlan & { readonly reverse: boolean; readonly offset: number; readonly want: number | undefined };
 
@@ -199,8 +184,9 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     const { target, limit, range } = plan;
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
-    const fields = target.kind === "covering" ? fieldsBatch() : undefined;
-    const decode = fields ? fields.add : ENTRY_VALUE[target.kind as keyof typeof ENTRY_VALUE];
+    const fields = target.kind === "covering" ? new JsonBatch<Record<string, unknown>>() : undefined;
+    // A covering entry's fields are parsed in a batch, a unique entry holds its id, and any other entry has no value to read.
+    const decode: Decode<unknown> = fields ? fields.add : target.kind === "unique" ? idOf : nothing;
     const page = await this.scan(plan, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
     const next = trimPage(page, (h) => h.key, limit);
     if (fields) {
@@ -248,9 +234,9 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   /** `peek` extra entries tell whether another page follows. `range` is the query's one range, when it has one. */
   private plan(q: CountQuery<T, Ix>, peek: number) {
     const input = q as QueryInput;
-    const limit = limitOf(input.limit);
+    const limit = intOf(input.limit, 1, "limit");
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    const offset = offsetOf(input.offset);
+    const offset = intOf(input.offset, 0, "offset") ?? 0;
     const { ranges, repeats } = scanPlan(target, input);
     const want = limit && limit + peek;
     const range: Range | undefined = ranges.length === 1 ? { ...ranges[0]!.range, ...(want && { limit: want }), ...(offset && { offset }) } : undefined;

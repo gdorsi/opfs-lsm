@@ -288,6 +288,13 @@ export async function reclaimRuns(
   }
 }
 
+/** `loadGeneration` of a recorded generation, which nothing may remove: a manifest that is gone throws. */
+export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<GenerationMeta> {
+  const meta = await loadGeneration(fs, recorded);
+  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
+  return meta;
+}
+
 /**
  * The runs of the recorded generation. A manifest past it is left by a
  * crash between publishing it and recording it: the next ingest or
@@ -297,9 +304,7 @@ export async function reclaimRuns(
  * against it.
  */
 export async function liveRuns(fs: ReadFs, recorded: Generation): Promise<string[]> {
-  const meta = await loadGeneration(fs, recorded);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
-  return meta.runs.map((run) => run.path);
+  return (await loadRecorded(fs, recorded)).runs.map((run) => run.path);
 }
 
 /** Every run file on disk, from the `l<n>/` directories. */

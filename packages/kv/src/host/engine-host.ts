@@ -1,6 +1,6 @@
 import { checkDbName, type DbName } from "../check.js";
 import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
-import { IdBWal, uningestedBytes } from "../idb/wal.js";
+import { openExistingWal, uningestedBytes, type IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
@@ -106,7 +106,7 @@ export class EngineHost {
     const dbName = checkDbName(name);
     let db = this.dbs.get(dbName);
     if (!db) {
-      db = new HostedDb(dbName, this.fsFactory, this.overrides);
+      db = hostedDb(dbName, this.fsFactory, this.overrides);
       this.dbs.set(dbName, db);
     }
     return db;
@@ -175,52 +175,48 @@ export class EngineHost {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-class HostedDb {
+function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) {
   /** The fs IO of every operation, for stats. */
-  private readonly io = emptyIoCounters();
-  private readonly counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
-  private readonly publishTurn = serial();
-  private readonly foldTurn = serial();
+  const io = emptyIoCounters();
+  const counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
+  const publishTurn = serial();
+  const foldTurn = serial();
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
-  private nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
-  private watching: IngestWatch | undefined = undefined;
+  let nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
+  let watching: IngestWatch | undefined;
   /**
    * The generation this host last published or found intact, so `reconcile`
    * checks a recorded manifest's runs once, not on every flush. A tab that
    * records another generation makes the host check again.
    */
-  private trusted: Trusted = undefined;
+  let trusted: Trusted;
   /** Set while `destroy` waits for the locks, so a compaction pass stops at its next step. */
-  private destroying = false;
+  let destroying = false;
   /** What this host knows of the reserve file (docs/reserve.md). Only `step` moves it. */
-  private reserve: Reserve = { kind: "unknown" };
+  let reserve: Reserve = { kind: "unknown" };
   /** Run compaction passes until no request arrives during one. */
-  private readonly compact = coalesced(() =>
-    withLock(compactLock(this.name), () => this.compactPass()),
-  );
+  const compact = coalesced(() => withLock(compactLock(name), compactPass));
 
-  constructor(
-    private readonly name: DbName,
-    private readonly fsFactory: FsFactory,
-    private readonly overrides: HostOverrides,
-  ) {}
+  function failed(what: string, err: unknown): void {
+    console.error(`opfs-lsm: ${what} of ${name} failed`, err);
+  }
 
-  private budget(): HostBudget {
-    const asked = this.watching?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
-    return { ...hostBudget(asked), ...this.overrides };
+  function currentBudget(): HostBudget {
+    const asked = watching?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
+    return { ...hostBudget(asked), ...overrides };
   }
 
   /** The folder as it is now. Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
-  private async folder(): Promise<CountingFs | undefined> {
-    const inner = await this.fsFactory(this.name);
-    return inner && new CountingFs(inner, this.io);
+  async function folder(): Promise<CountingFs | undefined> {
+    const inner = await fsFactory(name);
+    return inner && new CountingFs(inner, io);
   }
 
   /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
-  private async stores(): Promise<Stores | undefined> {
-    const wal = await IdBWal.openExisting(this.name);
+  async function openStores(): Promise<Stores | undefined> {
+    const wal = await openExistingWal(name);
     if (!wal) return undefined;
-    const fs = await this.folder().catch((err: unknown) => {
+    const fs = await folder().catch((err: unknown) => {
       wal.close();
       throw err;
     });
@@ -229,10 +225,10 @@ class HostedDb {
     return undefined;
   }
 
-  /** `fn` on the stores of one operation, or `gone()` when the database is not there. */
-  private async withStores<T>(fn: (stores: Stores) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
-    const stores = await this.stores();
-    if (!stores) return gone();
+  /** `fn` on the stores of one operation, rejecting when the database is not there. */
+  async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
+    const stores = await openStores();
+    if (!stores) throw destroyed();
     try {
       return await fn(stores);
     } finally {
@@ -240,8 +236,8 @@ class HostedDb {
     }
   }
 
-  async stats(): Promise<HostStats> {
-    const stores = await this.stores();
+  async function stats(): Promise<HostStats> {
+    const stores = await openStores();
     if (!stores) throw destroyed();
     let recorded: Generation;
     try {
@@ -259,24 +255,24 @@ class HostedDb {
       byLevel.set(level, entry);
     }
     return structuredClone({
-      fs: this.io,
-      ...this.counts,
+      fs: io,
+      ...counts,
       generation: latest?.generation ?? GENERATION_NONE,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
       memory: engineMemory(),
     });
   }
 
-  async ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
-    const { generation } = await this.fold();
-    const compaction = this.compact();
+  async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
+    const { generation } = await fold();
+    const compaction = compact();
     if (!waitForCompaction) {
       compaction.catch(() => undefined);
       return { generation };
     }
     await compaction;
     return {
-      generation: await this.withWal(
+      generation: await withWal(
         async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
         () => Promise.reject(destroyed()),
       ),
@@ -293,53 +289,52 @@ class HostedDb {
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    * A fold that published a run tells the tabs, whoever asked for it.
    */
-  private fold(): Promise<IngestResult> {
-    return this.foldTurn(() => this.foldRuns());
+  function fold(): Promise<IngestResult> {
+    return foldTurn(foldRuns);
   }
 
-  private async foldRuns(): Promise<IngestResult> {
-    const head = await this.withWal(
+  async function foldRuns(): Promise<IngestResult> {
+    const head = await withWal(
       async (wal) => (await wal.meta()).head,
       () => Promise.reject(destroyed()),
     );
     // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
-    const watched = this.watching;
+    const watched = watching;
     const heard = watched?.pendingBytes ?? 0;
     let foldedBytes = 0;
     let pastStop = false;
     try {
       for (;;) {
-        const budget = this.budget();
+        const budget = currentBudget();
         // Taken before the attempt, so an install that lands during it is not missed.
-        const installed = this.installSignal();
-        const chunk = await this.withRoom(() =>
-          this.exclusive(() =>
-            this.withStores(
+        const installed = installSignal();
+        const chunk = await withRoom(() =>
+          exclusive(() =>
+            withStores(
               async ({ wal, fs }) => {
-                const folded = await ingestChunk(wal, fs, head, this.trusted, {
+                const folded = await ingestChunk(wal, fs, head, trusted, {
                   maxBytes: budget.flushRunBytes,
                   l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
                 });
                 // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-                await unlessHeld(this.name, () => reclaimManifests(fs, folded.generation));
+                await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
                 return folded;
               },
-              () => Promise.reject(destroyed()),
             ),
           ),
         );
         recycleEngine(budget.wasmRecycleBytes);
         pastStop = false;
-        this.trusted = chunk.generation;
+        trusted = chunk.generation;
         if (chunk.kind === "stopped") {
-          this.counts.l0Stops += 1;
-          pastStop = (await this.waitForInstall(installed)) === "idle";
+          counts.l0Stops += 1;
+          pastStop = (await waitForInstall(installed)) === "idle";
           continue;
         }
         foldedBytes += chunk.foldedBytes;
-        this.counts.foldedBytes += chunk.foldedBytes;
-        if (chunk.kind === "folded") this.counts.flushes += 1;
-        const watch = this.watching;
+        counts.foldedBytes += chunk.foldedBytes;
+        if (chunk.kind === "folded") counts.flushes += 1;
+        const watch = watching;
         if (watch) {
           watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
           watch.triggerAt = watch.maxWalBytes;
@@ -353,22 +348,22 @@ class HostedDb {
         }
       }
     } finally {
-      if (foldedBytes > 0) announceGeneration(this.name);
+      if (foldedBytes > 0) announceGeneration(name);
     }
   }
 
   /** A promise for the next compaction install. */
-  private installSignal(): Promise<void> {
-    if (!this.nextInstall) {
+  function installSignal(): Promise<void> {
+    if (!nextInstall) {
       let resolve!: () => void;
-      this.nextInstall = { settled: new Promise<void>((r) => (resolve = r)), resolve };
+      nextInstall = { settled: new Promise<void>((r) => (resolve = r)), resolve };
     }
-    return this.nextInstall.settled;
+    return nextInstall.settled;
   }
 
-  private installLanded(): void {
-    const next = this.nextInstall;
-    this.nextInstall = undefined;
+  function installLanded(): void {
+    const next = nextInstall;
+    nextInstall = undefined;
     next?.resolve();
   }
 
@@ -378,50 +373,50 @@ class HostedDb {
    * failed): the flush then goes on, since waiting longer would wait for
    * nothing.
    */
-  private async waitForInstall(installed: Promise<void>): Promise<"installed" | "idle"> {
-    const ended = this.compact().then(
+  async function waitForInstall(installed: Promise<void>): Promise<"installed" | "idle"> {
+    const ended = compact().then(
       () => "idle" as const,
       () => "idle" as const,
     );
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
-  watch(policy: WatchPolicy): void {
-    const watch = this.watching ?? this.startWatch(policy);
+  function addWatcher(policy: WatchPolicy): void {
+    const watch = watching ?? startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
     watch.compactionMemoryBytes = Math.min(watch.compactionMemoryBytes, policy.compactionMemoryBytes);
     watch.reserveBytes = Math.max(watch.reserveBytes, policy.reserveBytes);
     // `destroyDb` may have removed the file since this host last looked.
-    this.reserve = step(this.reserve, { kind: "watch" }).next;
+    reserve = step(reserve, { kind: "watch" }).next;
     watch.triggerAt = watch.maxWalBytes;
-    void this.withWal(
+    void withWal(
       (wal) => uningestedBytes(wal, watch.maxWalBytes),
       () => 0,
     ).then(
       (waiting) => {
         watch.pendingBytes = Math.max(watch.pendingBytes, waiting);
-        this.maybeIngest(watch);
-        this.quiet(watch);
+        maybeIngest(watch);
+        quiet(watch);
       },
       (err: unknown) => {
         if (isClosedDatabase(err)) return;
-        console.error(`opfs-lsm: reading the WAL of ${this.name} failed`, err);
+        failed("reading the WAL", err);
       },
     );
   }
 
-  unwatch(): void {
-    const watch = this.watching;
+  function removeWatcher(): void {
+    const watch = watching;
     if (!watch || --watch.watchers > 0) return;
     watch.bus?.close();
     clearTimeout(watch.idle);
     clearTimeout(watch.due);
-    this.watching = undefined;
-    this.reserve = step(this.reserve, { kind: "last-unwatch" }).next;
+    watching = undefined;
+    reserve = step(reserve, { kind: "last-unwatch" }).next;
   }
 
-  private startWatch(policy: WatchPolicy): IngestWatch {
+  function startWatch(policy: WatchPolicy): IngestWatch {
     const watch: IngestWatch = {
       maxWalBytes: policy.maxWalBytes,
       compactionMemoryBytes: policy.compactionMemoryBytes,
@@ -435,21 +430,21 @@ class HostedDb {
       due: undefined,
     };
     if (typeof BroadcastChannel !== "undefined") {
-      watch.bus = new BroadcastChannel(layersChannel(this.name));
+      watch.bus = new BroadcastChannel(layersChannel(name));
       watch.bus.onmessage = (ev: MessageEvent<BusMessage>) => {
         const msg = ev.data;
         if (msg.kind === "rows") {
           watch.pendingBytes += msg.bytes;
-          this.maybeIngest(watch);
-          this.quiet(watch);
+          maybeIngest(watch);
+          quiet(watch);
         } else if (msg.kind === "full-pull") {
-          void this.onReserve({ kind: "pull" }).catch(() => undefined);
+          void onReserve({ kind: "pull" }).catch(() => undefined);
         } else if (msg.kind === "full-done") {
-          void this.answered().catch(() => undefined);
+          void answered().catch(() => undefined);
         }
       };
     }
-    this.watching = watch;
+    watching = watch;
     return watch;
   }
 
@@ -459,18 +454,18 @@ class HostedDb {
    * tail even after a writer that never paused. Each row restarts the quiet
    * wait, not the due one, and a watch the last tab left gets neither.
    */
-  private quiet(watch: IngestWatch): void {
+  function quiet(watch: IngestWatch): void {
     clearTimeout(watch.idle);
-    if (this.watching !== watch) return;
+    if (watching !== watch) return;
     watch.idle = setTimeout(() => {
-      this.maybeIngest(watch, true);
+      maybeIngest(watch, true);
       // No flush will end a pass on a quiet database, and the reserve is written at the end of one.
-      if (watch.state === "idle" && this.reserve.kind !== "held") this.compact().catch(() => undefined);
-    }, this.overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+      if (watch.state === "idle" && reserve.kind !== "held") compact().catch(() => undefined);
+    }, overrides.idleFlushMs ?? IDLE_FLUSH_MS);
     watch.due ??= setTimeout(() => {
       watch.due = undefined;
-      this.maybeIngest(watch, true);
-    }, this.overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
+      maybeIngest(watch, true);
+    }, overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
   }
 
   /**
@@ -478,27 +473,27 @@ class HostedDb {
    * quiet database (`idle`) flushes at a share of the limit, unless a
    * failed flush raised the trigger.
    */
-  private maybeIngest(watch: IngestWatch, idle = false): void {
+  function maybeIngest(watch: IngestWatch, idle = false): void {
     const trigger =
       idle && watch.triggerAt === watch.maxWalBytes ? watch.maxWalBytes / IDLE_FLUSH_SHARE : watch.triggerAt;
-    if (watch.state !== "idle" || watch.pendingBytes < trigger || this.watching !== watch) return;
+    if (watch.state !== "idle" || watch.pendingBytes < trigger || watching !== watch) return;
     watch.state = "ingesting";
     clearTimeout(watch.due);
     watch.due = undefined;
     void (async () => {
       try {
-        await this.fold();
-        this.compact().catch(() => undefined);
+        await fold();
+        compact().catch(() => undefined);
       } catch (err) {
         // A database `destroyDb` removed is not a failure.
-        if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
+        if (!(err instanceof ClosedError)) failed("ingest", err);
         watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
       } finally {
         watch.state = "idle";
       }
-      this.maybeIngest(watch);
+      maybeIngest(watch);
       // What arrived during the ingest waits for the next quiet stretch.
-      this.quiet(watch);
+      quiet(watch);
     })();
   }
 
@@ -511,26 +506,25 @@ class HostedDb {
    * follow it like any new generation, and the runs a tab still holds
    * go once it lets go, at a later reclaim.
    */
-  async destroy(): Promise<void> {
-    this.destroying = true;
+  async function destroy(): Promise<void> {
+    destroying = true;
     try {
-      await withLock(compactLock(this.name), () =>
-        this.exclusive(() =>
-          this.withStores(
+      await withLock(compactLock(name), () =>
+        exclusive(() =>
+          withStores(
             async ({ wal, fs }) => {
               await recordEmpty(wal, fs, undefined);
-              this.trusted = GENERATION_NONE;
-              if (this.watching) this.watching.pendingBytes = 0;
-              await unlessHeld(this.name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
-              await this.reclaim(fs, wal);
+              trusted = GENERATION_NONE;
+              if (watching) watching.pendingBytes = 0;
+              await unlessHeld(name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
+              await reclaim(fs, wal);
             },
-            () => Promise.reject(destroyed()),
           ),
         ),
       );
     } finally {
-      this.destroying = false;
-      announceGeneration(this.name);
+      destroying = false;
+      announceGeneration(name);
     }
   }
 
@@ -539,24 +533,23 @@ class HostedDb {
    * the recorded one did not load, or because its open found a manifest to
    * adopt.
    */
-  async repair(): Promise<void> {
-    await this.exclusive(() =>
-      this.withStores(
+  async function repair(): Promise<void> {
+    await exclusive(() =>
+      withStores(
         async ({ wal, fs }) => {
-          this.trusted = (await reconcile(wal, fs, undefined)).generation;
+          trusted = (await reconcile(wal, fs, undefined)).generation;
         },
-        () => Promise.reject(destroyed()),
       ),
     );
   }
 
-  private exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    return this.publishTurn(() => withLock(ingestLock(this.name), fn));
+  function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return publishTurn(() => withLock(ingestLock(name), fn));
   }
 
   /** `fn` on the WAL database for one operation, or `gone()` when it does not exist. */
-  private async withWal<T>(fn: (wal: IdBWal) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
-    const wal = await IdBWal.openExisting(this.name);
+  async function withWal<T>(fn: (wal: IdBWal) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
+    const wal = await openExistingWal(name);
     if (!wal) return gone();
     try {
       return await fn(wal);
@@ -570,28 +563,28 @@ class HostedDb {
    * and `destroyDb` takes it before it removes the folder. Each step opens
    * the WAL database again, and the pass stops quietly once it is gone.
    */
-  private async compactPass(): Promise<void> {
-    const fs = await this.folder();
+  async function compactPass(): Promise<void> {
+    const fs = await folder();
     if (!fs) return;
     let installed = false;
     let steps = 0;
     try {
-      for (let i = 0; i < MAX_COMPACTION_STEPS && !this.destroying; i++) {
-        const meta = await this.withWal((wal) => wal.meta(), () => undefined);
+      for (let i = 0; i < MAX_COMPACTION_STEPS && !destroying; i++) {
+        const meta = await withWal((wal) => wal.meta(), () => undefined);
         if (!meta) return;
         const base = await loadGeneration(fs, meta.generation ?? GENERATION_NONE);
         // Gone when a flush installed a newer generation since: plan again.
         if (!base) continue;
-        const budget = this.budget();
-        const merged = await this.withRoom(() => mergeNextStep(fs, budget, base, meta.top));
+        const budget = currentBudget();
+        const merged = await withRoom(() => mergeNextStep(fs, budget, base, meta.top));
         recycleEngine(budget.wasmRecycleBytes);
-        if (!merged) return await this.settle(base, meta.head);
-        const landed = await this.withRoom(() =>
-          this.exclusive(() =>
-            this.withWal(
+        if (!merged) return await settle(base, meta.head);
+        const landed = await withRoom(() =>
+          exclusive(() =>
+            withWal(
               async (wal) => {
-                this.trusted = await installStep(fs, wal, merged, this.trusted);
-                await this.reclaim(fs, wal);
+                trusted = await installStep(fs, wal, merged, trusted);
+                await reclaim(fs, wal);
                 return true;
               },
               () => false,
@@ -601,19 +594,19 @@ class HostedDb {
         if (!landed) return;
         installed = true;
         steps += 1;
-        this.counts.compactionSteps += 1;
-        this.installLanded();
-        announceGeneration(this.name);
+        counts.compactionSteps += 1;
+        installLanded();
+        announceGeneration(name);
       }
     } finally {
       // A pass cut off at the step limit asks for another, which queues behind
       // the lock's waiters; a step that threw never reached the limit.
-      if (steps === MAX_COMPACTION_STEPS && !this.destroying) this.compact().catch(() => undefined);
+      if (steps === MAX_COMPACTION_STEPS && !destroying) compact().catch(() => undefined);
       // A pass that installed nothing sweeps once, for the files an earlier
       // pass had to leave. Last, so it never delays a merge that a full L0
       // waits for, and best-effort: the next pass sweeps again.
-      if (!installed && !this.destroying) {
-        await this.exclusive(() => this.withWal((wal) => this.sweepIdle(fs, wal), () => undefined)).catch(() => undefined);
+      if (!installed && !destroying) {
+        await exclusive(() => withWal((wal) => sweepIdle(fs, wal), () => undefined)).catch(() => undefined);
       }
     }
   }
@@ -622,11 +615,11 @@ class HostedDb {
    * Run a write. When the browser refuses it and the reserve is released
    * for it, run it once more: a flush then resumes from `ingestedThrough`.
    */
-  private async withRoom<T>(write: () => Promise<T>): Promise<T> {
+  async function withRoom<T>(write: () => Promise<T>): Promise<T> {
     try {
       return await write();
     } catch (err) {
-      if (codeOfError(err) !== "quota" || !(await this.refused())) throw err;
+      if (codeOfError(err) !== "quota" || !(await refused())) throw err;
       return write();
     }
   }
@@ -636,10 +629,10 @@ class HostedDb {
    * True when the reserve was released for it. Resolves once the file is
    * gone, whoever removed it.
    */
-  async refused(): Promise<boolean> {
-    if (!this.watching?.reserveBytes) return false;
-    const head = await this.head();
-    return head !== undefined && this.onReserve({ kind: "refused", head });
+  async function refused(): Promise<boolean> {
+    if (!watching?.reserveBytes) return false;
+    const head = await walHead();
+    return head !== undefined && onReserve({ kind: "refused", head });
   }
 
   /**
@@ -647,24 +640,24 @@ class HostedDb {
    * asked again, only here: by then a flush holds what they wrote and
    * compaction has dropped what it could.
    */
-  private async settle(base: GenerationMeta, head: Seq): Promise<void> {
-    const watch = this.watching;
+  async function settle(base: GenerationMeta, head: Seq): Promise<void> {
+    const watch = watching;
     if (!watch) return;
     try {
-      await this.onReserve({ kind: "settle", through: base.through, head, target: watch.reserveBytes });
+      await onReserve({ kind: "settle", through: base.through, head, target: watch.reserveBytes });
     } catch (err) {
-      console.error(`opfs-lsm: writing the reserve of ${this.name} failed`, err);
+      failed("writing the reserve", err);
     }
   }
 
   /** The handlers settled, so every write of theirs is at or below the head read now. */
-  private async answered(): Promise<void> {
-    const head = await this.head();
-    if (head !== undefined) await this.onReserve({ kind: "done", head });
+  async function answered(): Promise<void> {
+    const head = await walHead();
+    if (head !== undefined) await onReserve({ kind: "done", head });
   }
 
-  private head(): Promise<Seq | undefined> {
-    return this.withWal(
+  function walHead(): Promise<Seq | undefined> {
+    return withWal(
       async (wal) => (await wal.meta()).head,
       () => undefined,
     );
@@ -677,25 +670,25 @@ class HostedDb {
    * that changes nothing takes no lock, unless it is a refused write: a
    * release in flight has the state ahead of the file.
    */
-  private onReserve(event: ReserveEvent): Promise<boolean> {
-    const first = step(this.reserve, event);
-    if (event.kind !== "refused" && first.next === this.reserve && first.effect.kind === "none") return Promise.resolve(false);
-    return this.exclusive(async () => {
-      const fs = await this.folder();
+  function onReserve(event: ReserveEvent): Promise<boolean> {
+    const first = step(reserve, event);
+    if (event.kind !== "refused" && first.next === reserve && first.effect.kind === "none") return Promise.resolve(false);
+    return exclusive(async () => {
+      const fs = await folder();
       if (!fs) return false;
       let released = false;
       for (let next: ReserveEvent | undefined = event; next; ) {
-        const moved = step(this.reserve, next);
-        this.reserve = moved.next;
+        const moved = step(reserve, next);
+        reserve = moved.next;
         released ||= moved.effect.kind === "release";
-        next = await this.act(fs, moved.effect);
+        next = await act(fs, moved.effect);
       }
       return released;
     });
   }
 
   /** Run `effect`, and return the event that says how it went. */
-  private async act(fs: AsyncFs, effect: ReserveEffect): Promise<ReserveEvent | undefined> {
+  async function act(fs: AsyncFs, effect: ReserveEffect): Promise<ReserveEvent | undefined> {
     switch (effect.kind) {
       case "none":
         return undefined;
@@ -710,24 +703,24 @@ class HostedDb {
         return undefined;
       case "release":
         await removeReserve(fs);
-        await this.postOffer(fs);
+        await postOffer(fs);
         return undefined;
       case "offer":
-        await this.postOffer(fs);
+        await postOffer(fs);
         return undefined;
       case "flush":
-        this.ingest(false).catch((err: unknown) => {
-          if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${this.name} failed`, err);
+        ingest(false).catch((err: unknown) => {
+          if (!(err instanceof ClosedError)) failed("ingest", err);
         });
         return undefined;
     }
   }
 
   /** Tell the tabs the browser refused a write. The handle that holds the full lock answers (`Db.onStorageFull`). */
-  private async postOffer(fs: AsyncFs): Promise<void> {
-    const watch = this.watching;
+  async function postOffer(fs: AsyncFs): Promise<void> {
+    const watch = watching;
     if (!watch?.bus) return;
-    const bytes = await this.withWal(
+    const bytes = await withWal(
       async (wal) => {
         const recorded = await loadGeneration(fs, (await wal.meta()).generation ?? GENERATION_NONE);
         return (recorded?.runs ?? []).reduce((n, run) => n + run.bytes, 0);
@@ -752,10 +745,10 @@ class HostedDb {
    * generation (`holdingFiles`): the next pass tries again (design.md,
    * "Loading a generation under churn").
    */
-  private async reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
-    await unlessHeld(this.name, async () => {
-      const { generation } = await reconcile(wal, fs, this.trusted);
-      this.trusted = generation;
+  async function reclaim(fs: AsyncFs, wal: IdBWal): Promise<void> {
+    await unlessHeld(name, async () => {
+      const { generation } = await reconcile(wal, fs, trusted);
+      trusted = generation;
       await sweep(fs, generation);
     });
   }
@@ -767,13 +760,36 @@ class HostedDb {
    * It needs no reconcile for the one it did check: `sweep` reads that
    * manifest before it removes anything, and stops if it is gone.
    */
-  private async sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
-    await unlessHeld(this.name, async () => {
+  async function sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
+    await unlessHeld(name, async () => {
       const generation = (await wal.meta()).generation ?? GENERATION_NONE;
-      if (generation === this.trusted) await sweep(fs, generation);
+      if (generation === trusted) await sweep(fs, generation);
     });
   }
+
+  return {
+    stats,
+    ingest,
+    watch: addWatcher,
+    unwatch: removeWatcher,
+    refused,
+    repair,
+    destroy,
+    // Reached by tests/compact-host.ts, which takes the host's turns.
+    foldTurn,
+    exclusive,
+    withStores,
+    compact,
+    get trusted() {
+      return trusted;
+    },
+    set trusted(next: Trusted) {
+      trusted = next;
+    },
+  };
 }
+
+type HostedDb = ReturnType<typeof hostedDb>;
 
 /** Reads the manifest of `generation` first, so a missing one throws before any file goes. */
 async function sweep(fs: AsyncFs, generation: Generation): Promise<void> {

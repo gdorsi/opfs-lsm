@@ -20,7 +20,7 @@
  * row being 0. No field starts with 00, so every bound holds both rows of a
  * group or neither.
  */
-import { CorruptDatabaseError, type Range } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type ChangeOp, type Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
@@ -68,11 +68,11 @@ export function indexPrefix(collection: CollectionId, index: IndexId): Uint8Arra
   return Uint8Array.of(ROOT, collection >> 8, collection & 0xff, index);
 }
 
-/** Up to this many UTF-16 units `utf8Bytes` encodes into `scratch`. */
+/** Up to this many UTF-16 units `idBytes` encodes into `scratch`. */
 const SCRATCH_UNITS = 1024;
 const scratch = new Uint8Array(SCRATCH_UNITS * 3);
 
-/** Past this many UTF-16 units `encodeInto` beats the loop in `utf8Bytes`. */
+/** Past this many UTF-16 units `encodeInto` beats the loop in `idBytes`. */
 const ASCII_LOOP_MAX = 64;
 
 /**
@@ -82,7 +82,7 @@ const ASCII_LOOP_MAX = 64;
  * more than encoding a short string, so any other string that fits is
  * encoded into `scratch` and copied out.
  */
-function utf8Bytes(s: string): Uint8Array {
+export function idBytes(s: string): Uint8Array {
   const n = s.length;
   if (n <= ASCII_LOOP_MAX) {
     let i = 0;
@@ -95,10 +95,6 @@ function utf8Bytes(s: string): Uint8Array {
   }
   if (n > SCRATCH_UNITS) return utf8.encode(s);
   return scratch.slice(0, utf8.encodeInto(s, scratch).written);
-}
-
-export function idBytes(id: DocId): Uint8Array {
-  return utf8Bytes(id);
 }
 
 /** `concat(prefix, idBytes(id))`, encoded into `scratch` and copied once. */
@@ -153,6 +149,12 @@ export function hasPrefix(key: Uint8Array, prefix: Uint8Array): boolean {
   return true;
 }
 
+/** Whether a key starting with `prefix` falls in the range of `op`. */
+export function touches(op: Extract<ChangeOp, { type: "deleteRange" }>, prefix: Uint8Array): boolean {
+  const reachesPrefix = op.endExclusive === undefined || compareBytes(op.endExclusive, prefix) > 0;
+  return reachesPrefix && (compareBytes(op.start, prefix) <= 0 || hasPrefix(op.start, prefix));
+}
+
 export function keyString(key: Uint8Array): string {
   return String.fromCharCode.apply(null, key as unknown as number[]);
 }
@@ -190,14 +192,14 @@ function wordsOf(text: string): string[] {
 
 /** A text entry's value. Words hold no space, so a typed word occurs in it iff it occurs inside one word. */
 export function textValue(text: string): Uint8Array {
-  return utf8Bytes(wordsOf(text).join(" "));
+  return idBytes(wordsOf(text).join(" "));
 }
 
 /** kv keeps an entry iff its value contains every pattern: every typed word occurs inside a word of the text. */
 function matchPatterns(match: string): Uint8Array[] {
   const words = wordsOf(match);
   if (words.length === 0) badQuery("match has no words");
-  return words.map(utf8Bytes);
+  return words.map(idBytes);
 }
 
 export type ScanTarget =
@@ -324,7 +326,7 @@ function indexBounds(p: Uint8Array, q: QueryInput): [Uint8Array, Uint8Array] {
 /** The id is raw UTF-8 with no terminator, so the keys equal to `x` end at `x ++ 00`. */
 function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [Uint8Array, Uint8Array] {
   const at = (v: unknown) =>
-    typeof v === "string" && v.isWellFormed() ? concat(prefix, utf8Bytes(v)) : badQuery("an id bound must be a well-formed string");
+    typeof v === "string" && v.isWellFormed() ? concat(prefix, idBytes(v)) : badQuery("an id bound must be a well-formed string");
   if (eq.length === 1) {
     const k = at(eq[0]);
     return [k, after(k)];
@@ -340,11 +342,6 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
 
 /** `64 CC CC II`, the prefix of every key of an index. */
 const INDEX_PREFIX = 4;
-
-/** The base row of a group, from its count row. */
-export function baseKey(group: Uint8Array): Uint8Array {
-  return after(group);
-}
 
 export function isBaseKey(key: Uint8Array, arity: number): boolean {
   return skipTuple(key, arity, INDEX_PREFIX) !== key.length;

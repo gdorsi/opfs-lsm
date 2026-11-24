@@ -359,7 +359,7 @@ function walkBlock(b: BlockBytes): SstEntry[] {
 /** One data block, decoded as `decodeSst` decodes it. */
 export function decodeBlock(block: Uint8Array): SstEntry[] {
   const view = new DataView(block.buffer, block.byteOffset, block.byteLength);
-  return walkBlock(blockBytes(block, view, 0, { offset: 0, length: block.byteLength }));
+  return walkBlock(blockBytes(block, view, 0, block.byteLength));
 }
 
 export function decodeSst(buf: Uint8Array): SstEntry[] {
@@ -376,7 +376,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   );
   const out: SstEntry[] = [];
   for (const ix of index) {
-    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart, ix)));
+    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart + ix.offset, ix.length)));
   }
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst entry count mismatch");

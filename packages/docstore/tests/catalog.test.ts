@@ -304,7 +304,13 @@ describe("normalizeSchema", () => {
     ["include of no fields", { version: 1, collections: { a: { x: { by: "b", include: [] } } } }],
     ["include of 17 fields", { version: 1, collections: { a: { x: { by: "b", include: Array.from({ length: 17 }, (_, i) => `f${i}`) } } } }],
     ["include that is not a list", { version: 1, collections: { a: { x: { by: "b", include: "c" } } } }],
+    // oxlint-disable-next-line no-sparse-arrays
+    ["include with a hole", { version: 1, collections: { a: { x: { by: "b", include: ["c", ,] } } } }],
+    // oxlint-disable-next-line no-sparse-arrays
+    ["by with a hole", { version: 1, collections: { a: { x: { by: ["b", ,] } } } }],
     ["a drop that is not an array", { version: 1, collections: {}, drop: "a" }],
+    // oxlint-disable-next-line no-sparse-arrays
+    ["a drop with a hole", { version: 1, collections: {}, drop: ["a", ,] }],
     ["a dropped name with a dash", { version: 1, collections: {}, drop: ["a-b"] }],
     ["a collection both declared and dropped", { version: 1, collections: { a: {} }, drop: ["a"] }],
   ])("refuses %s with code schema", (_, decl) => {

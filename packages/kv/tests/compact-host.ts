@@ -1,4 +1,3 @@
-import { ClosedError } from "../src/errors.js";
 import type { EngineHost } from "../src/host/engine-host.js";
 import { unlessHeld } from "../src/host/protocol.js";
 import { reconcile } from "../src/recover.js";
@@ -9,21 +8,18 @@ import { reclaimManifests } from "../src/store/generation.js";
  * that found nothing to fold does, then compact until the levels are in
  * shape. Folds no WAL. Removes no run file here: that needs the compaction
  * lock, and the compaction pass does it under it. It takes the host's turns
- * the way the host's own folds do, so it reads the host's private members.
+ * the way the host's own folds do, so it reads the members the host exposes for it.
  */
 export async function compactHost(host: EngineHost, name: string): Promise<void> {
   const db = host["db"](name);
-  await db["foldTurn"](() =>
-    db["exclusive"](() =>
-      db["withStores"](
-        async ({ wal, fs }) => {
-          const { generation } = await reconcile(wal, fs, db["trusted"]);
-          db["trusted"] = generation;
-          await unlessHeld(name, () => reclaimManifests(fs, generation));
-        },
-        () => Promise.reject(new ClosedError("database was destroyed")),
-      ),
+  await db.foldTurn(() =>
+    db.exclusive(() =>
+      db.withStores(async ({ wal, fs }) => {
+        const { generation } = await reconcile(wal, fs, db.trusted);
+        db.trusted = generation;
+        await unlessHeld(name, () => reclaimManifests(fs, generation));
+      }),
     ),
   );
-  await db["compact"]();
+  await db.compact();
 }

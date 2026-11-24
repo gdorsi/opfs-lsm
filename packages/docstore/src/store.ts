@@ -26,11 +26,11 @@ import {
   CATALOG_KEY,
   after,
   bytesEqual,
-  compareBytes,
   collectionPrefix,
   idOf,
   indexPrefix,
   keyString,
+  touches,
   type CollectionId,
   type IndexId,
 } from "./keys.js";
@@ -172,10 +172,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     let next = event.seq === this.syncedAt + 1 ? this.bound : undefined;
     for (const op of event.ops) {
       if (op.type === "deleteRange") {
-        const covers =
-          compareBytes(op.start, CATALOG_KEY) <= 0 &&
-          (op.endExclusive === undefined || compareBytes(op.endExclusive, CATALOG_KEY) > 0);
-        if (covers) next = undefined;
+        if (touches(op, CATALOG_KEY)) next = undefined;
         continue;
       }
       if (!bytesEqual(op.key, CATALOG_KEY)) continue;

@@ -487,121 +487,43 @@ type Group = {
  *
  * Only `TabWal.open`, which only `openDb` calls, creates the database.
  */
-export class IdBWal {
-  constructor(
-    readonly dbName: DbName,
-    protected connection: IDBDatabase,
-  ) {}
+export type IdBWal = {
+  readonly dbName: DbName;
+  /** The connection. A `TabWal` replaces it after a quota abort. */
+  readonly db: IDBDatabase;
+  close(): void;
+  meta(): Promise<WalMeta>;
+};
 
-  /** A connection to `opfs-lsm-wal/<dbName>`. */
-  get db(): IDBDatabase {
-    return this.connection;
-  }
+function metaOf(db: IDBDatabase): Promise<WalMeta> {
+  return readMeta(db.transaction([WAL_STORE, META_STORE], "readonly"));
+}
 
-  /** The host's open: undefined when `opfs-lsm-wal/<name>` does not exist. Creates nothing. */
-  static async openExisting(dbName: DbName): Promise<IdBWal | undefined> {
-    const db = await openDatabase(idbName(dbName), {});
-    return db && new IdBWal(dbName, db);
-  }
+export function idbWal(dbName: DbName, db: IDBDatabase): IdBWal {
+  return { dbName, db, close: () => db.close(), meta: () => metaOf(db) };
+}
 
-  close(): void {
-    this.db.close();
-  }
-
-  async meta(): Promise<WalMeta> {
-    return readMeta(this.db.transaction([WAL_STORE, META_STORE], "readonly"));
-  }
+/** The host's open: undefined when `opfs-lsm-wal/<name>` does not exist. Creates nothing. */
+export async function openExistingWal(dbName: DbName): Promise<IdBWal | undefined> {
+  const db = await openDatabase(idbName(dbName), {});
+  return db && idbWal(dbName, db);
 }
 
 /**
  * A tab's connection: it reads the tail and appends. Each tab keeps its own
  * memtable in memory. Ack = transaction complete.
  */
-export class TabWal extends IdBWal {
+export type TabWal = IdBWal & {
   /** WAL records this handle committed. `readStats` in `@opfs-lsm/kv/testing` reports it, and the bench reads it from an `openDb` handle. */
-  appendedRecords = 0;
+  appendedRecords: number;
   /** Encoded bytes of those records. */
-  appendedBytes = 0;
-  /** The group whose transaction is open, from its creation to its end. */
-  private open: Group | undefined = undefined;
-  /** Appends that arrived after `open` went inactive: the next group. */
-  private queued: GroupEntry[] = [];
-  private closing = false;
-  /**
-   * Set while the connection is replaced after a quota abort. No write
-   * transaction starts meanwhile: Firefox refuses writes on a connection
-   * that saw one.
-   */
-  private recovering: Promise<void> | undefined = undefined;
-
-  private constructor(
-    dbName: DbName,
-    db: IDBDatabase,
-    private readonly onAskedToClose: (() => void) | undefined,
-    private readonly makeRoom: (() => Promise<void>) | undefined,
-  ) {
-    super(dbName, db);
-  }
-
-  /**
-   * The tab's open, the one open that creates the database. The connection
-   * closes when another context upgrades or deletes the database
-   * (`destroyDb`), then `onAskedToClose` runs, so the handle closes itself.
-   * `makeRoom` has the host release the reserve. With it, an append the
-   * browser refuses for lack of space runs once more.
-   */
-  static async open(dbName: DbName, onAskedToClose?: () => void, makeRoom?: () => Promise<void>): Promise<TabWal> {
-    const db = await openDatabase(idbName(dbName), { create: createWalStores, ...(onAskedToClose ? { onAskedToClose } : {}) });
-    return new TabWal(dbName, db!, onAskedToClose, makeRoom);
-  }
-
-  /**
-   * What follows a transaction the browser aborted for lack of space: with
-   * `release`, the host releases the reserve, then the connection is
-   * replaced. The appends that failed together share one recovery, so one
-   * call to the host. False when it failed.
-   */
-  private recover(release: boolean): Promise<boolean> {
-    const makeRoom = release ? this.makeRoom : undefined;
-    this.recovering ??= (async () => {
-      await makeRoom?.();
-      await this.reconnect();
-    })().finally(() => {
-      this.recovering = undefined;
-      this.next();
-    });
-    return this.recovering.then(
-      () => true,
-      () => false,
-    );
-  }
-
-  private async reconnect(): Promise<void> {
-    const fresh = await openDatabase(idbName(this.dbName), this.onAskedToClose ? { onAskedToClose: this.onAskedToClose } : {});
-    if (!fresh) throw new ClosedError("database was destroyed");
-    const spent = this.connection;
-    this.connection = fresh;
-    // Its transactions in flight still finish.
-    spent.close();
-  }
-
-  /** Closes the connection once the groups already started or queued commit. */
-  override close(): void {
-    this.closing = true;
-    if (!this.open && !this.recovering) this.db.close();
-  }
-
+  appendedBytes: number;
   /**
    * The tail after `since`, from one readonly transaction, with the
    * `manifest` copy when the recorded generation is not `held`. `started`
    * hears the generation before the records are read.
    */
-  async tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
-    // The reads are the result. Waiting for `complete` as well is one more trip.
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readonly");
-    return readTail(tx, since, held, started);
-  }
-
+  tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail>;
   /**
    * In one readwrite transaction, read the tail after `since`, let `decide`
    * choose a batch, and append it under the next seq. `decide` runs
@@ -611,30 +533,111 @@ export class TabWal extends IdBWal {
    * after the host released the reserve, and then rejects with
    * `StorageFullError`.
    */
-  async appendAfter<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
-    while (this.recovering) await this.recovering.catch(() => undefined);
+  appendAfter<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined>;
+  /**
+   * Append `record` (`encodeOps`) under the key IndexedDB assigns, by group
+   * commit: the append that opens a group's transaction and the ones issued
+   * synchronously after it join it, and appends that arrive while it
+   * commits form the next group.
+   * A group is one readwrite transaction with one `add` per record, so each
+   * record keeps its own seq, and the records commit or abort together.
+   * Each caller resolves when its group commits, in seq order; a failed
+   * group rejects every caller in it. The key generator is one past the
+   * head (`passKeyGenerator`), and an aborted transaction gives its keys
+   * back, so committed seqs stay gapless. A group the browser refuses for
+   * lack of space commits once more, as it was, after the host released
+   * the reserve, and then rejects every caller with `StorageFullError`.
+   */
+  append(record: ArrayBuffer): Promise<Seq>;
+};
+
+/**
+ * The tab's open, the one open that creates the database. The connection
+ * closes when another context upgrades or deletes the database
+ * (`destroyDb`), then `onAskedToClose` runs, so the handle closes itself.
+ * `makeRoom` has the host release the reserve. With it, an append the
+ * browser refuses for lack of space runs once more.
+ */
+async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?: () => Promise<void>): Promise<TabWal> {
+  let connection = (await openDatabase(idbName(dbName), { create: createWalStores, ...(onAskedToClose ? { onAskedToClose } : {}) }))!;
+  /** The group whose transaction is open, from its creation to its end. */
+  let open: Group | undefined;
+  /** Appends that arrived after `open` went inactive: the next group. */
+  let queued: GroupEntry[] = [];
+  let closing = false;
+  /**
+   * Set while the connection is replaced after a quota abort. No write
+   * transaction starts meanwhile: Firefox refuses writes on a connection
+   * that saw one.
+   */
+  let recovering: Promise<void> | undefined;
+
+  /**
+   * What follows a transaction the browser aborted for lack of space: with
+   * `release`, the host releases the reserve, then the connection is
+   * replaced. The appends that failed together share one recovery, so one
+   * call to the host. False when it failed.
+   */
+  function recover(release: boolean): Promise<boolean> {
+    const room = release ? makeRoom : undefined;
+    recovering ??= (async () => {
+      await room?.();
+      await reconnect();
+    })().finally(() => {
+      recovering = undefined;
+      next();
+    });
+    return recovering.then(
+      () => true,
+      () => false,
+    );
+  }
+
+  async function reconnect(): Promise<void> {
+    const fresh = await openDatabase(idbName(dbName), onAskedToClose ? { onAskedToClose } : {});
+    if (!fresh) throw new ClosedError("database was destroyed");
+    const spent = connection;
+    connection = fresh;
+    // Its transactions in flight still finish.
+    spent.close();
+  }
+
+  /** Closes the connection once the groups already started or queued commit. */
+  function close(): void {
+    closing = true;
+    if (!open && !recovering) connection.close();
+  }
+
+  async function tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
+    // The reads are the result. Waiting for `complete` as well is one more trip.
+    const tx = connection.transaction([WAL_STORE, META_STORE], "readonly");
+    return readTail(tx, since, held, started);
+  }
+
+  async function appendAfter<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
+    while (recovering) await recovering.catch(() => undefined);
     try {
-      return await this.appendOnce(since, decide);
+      return await appendOnce(since, decide);
     } catch (err) {
       if (!isQuota(err)) throw err;
       let cause = err;
-      if (this.makeRoom && (await this.recover(true))) {
+      if (makeRoom && (await recover(true))) {
         try {
-          return await this.appendOnce(since, decide);
+          return await appendOnce(since, decide);
         } catch (again) {
           if (!isQuota(again)) throw again;
           cause = again;
         }
       }
-      await this.recover(false);
+      await recover(false);
       throw storageFull(cause);
     }
   }
 
-  private async appendOnce<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
+  async function appendOnce<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
     let tx: IDBTransaction;
     try {
-      tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+      tx = connection.transaction([WAL_STORE, META_STORE], "readwrite");
     } catch {
       // As in `commitGroup`: the connection closed, here by a `close` that waited out a recovery.
       throw new ClosedError("database is closed");
@@ -660,55 +663,41 @@ export class TabWal extends IdBWal {
     // tab before it commits: one more round trip per write.
     tx.commit();
     await done;
-    this.appendedRecords += 1;
-    this.appendedBytes += record.byteLength;
+    wal.appendedRecords += 1;
+    wal.appendedBytes += record.byteLength;
     return { seq, ops: decision.ops, record, result: decision.result };
   }
 
-  /**
-   * Append `record` (`encodeOps`) under the key IndexedDB assigns, by group
-   * commit: the append that opens a group's transaction and the ones issued
-   * synchronously after it join it, and appends that arrive while it
-   * commits form the next group.
-   * A group is one readwrite transaction with one `add` per record, so each
-   * record keeps its own seq, and the records commit or abort together.
-   * Each caller resolves when its group commits, in seq order; a failed
-   * group rejects every caller in it. The key generator is one past the
-   * head (`passKeyGenerator`), and an aborted transaction gives its keys
-   * back, so committed seqs stay gapless. A group the browser refuses for
-   * lack of space commits once more, as it was, after the host released
-   * the reserve, and then rejects every caller with `StorageFullError`.
-   */
-  append(record: ArrayBuffer): Promise<Seq> {
+  function append(record: ArrayBuffer): Promise<Seq> {
     return new Promise((resolve, reject) => {
       const entry: GroupEntry = { record, resolve, reject };
-      if (this.open?.joinable) this.join(this.open, entry);
-      else if (this.open || this.recovering) this.queued.push(entry);
-      else this.commitGroup([entry]);
+      if (open?.joinable) join(open, entry);
+      else if (open || recovering) queued.push(entry);
+      else commitGroup([entry]);
     });
   }
 
-  private join(group: Group, entry: GroupEntry): void {
+  function join(group: Group, entry: GroupEntry): void {
     group.adds.push({ entry, add: group.tx.objectStore(WAL_STORE).add(entry.record) });
   }
 
-  private commitGroup(entries: GroupEntry[], retried = false): void {
+  function commitGroup(entries: GroupEntry[], retried = false): void {
     let tx: IDBTransaction;
     try {
-      tx = this.db.transaction(WAL_STORE, "readwrite");
+      tx = connection.transaction(WAL_STORE, "readwrite");
     } catch {
       // Only a connection that closed refuses a transaction here: another
       // context's upgrade or delete, or the browser, closed it while these
       // appends queued.
       const err = new ClosedError("database is closed");
-      this.open = undefined;
+      open = undefined;
       for (const entry of entries) entry.reject(err);
-      this.next();
+      next();
       return;
     }
     // A retried group takes no new append: it is the refused group, as it was.
     const group: Group = { tx, adds: [], joinable: !retried };
-    this.open = group;
+    open = group;
     // A microtask, so the appends issued synchronously after this one join.
     // Without the commit, Chrome waits for the adds' success events to
     // reach the tab before it commits: one more round trip per group.
@@ -716,48 +705,65 @@ export class TabWal extends IdBWal {
       group.joinable = false;
       tx.commit();
     });
-    for (const entry of entries) this.join(group, entry);
+    for (const entry of entries) join(group, entry);
     txDone(tx).then(
       () => {
         for (const { entry } of group.adds) {
-          this.appendedRecords += 1;
-          this.appendedBytes += entry.record.byteLength;
+          wal.appendedRecords += 1;
+          wal.appendedBytes += entry.record.byteLength;
         }
-        this.finish(group);
+        finish(group);
         for (const { entry, add } of group.adds) entry.resolve(asSeq(add.result as number));
       },
       (err: unknown) => {
         if (!isQuota(err)) {
-          this.finish(group);
+          finish(group);
           for (const { entry } of group.adds) entry.reject(err);
           return;
         }
-        const retry = !retried && this.makeRoom !== undefined;
+        const retry = !retried && makeRoom !== undefined;
         const refused = group.adds.map(({ entry }) => entry);
         // `open` stays this group meanwhile, so the appends that arrive queue behind it and keep their order.
-        void this.recover(retry).then((ready) => {
-          if (retry && ready) return this.commitGroup(refused, true);
-          this.finish(group);
+        void recover(retry).then((ready) => {
+          if (retry && ready) return commitGroup(refused, true);
+          finish(group);
           for (const entry of refused) entry.reject(storageFull(err));
         });
       },
     );
   }
 
-  private finish(group: Group): void {
-    if (this.open === group) this.open = undefined;
-    this.next();
+  function finish(group: Group): void {
+    if (open === group) open = undefined;
+    next();
   }
 
   /** Start the next group from the queue, or close when `close` waits on it. */
-  private next(): void {
-    if (this.open || this.recovering) return;
-    const entries = this.queued;
-    this.queued = [];
-    if (entries.length > 0) this.commitGroup(entries);
-    else if (this.closing) this.db.close();
+  function next(): void {
+    if (open || recovering) return;
+    const entries = queued;
+    queued = [];
+    if (entries.length > 0) commitGroup(entries);
+    else if (closing) connection.close();
   }
+
+  const wal: TabWal = {
+    dbName,
+    get db() {
+      return connection;
+    },
+    meta: () => metaOf(connection),
+    close,
+    appendedRecords: 0,
+    appendedBytes: 0,
+    tail,
+    appendAfter,
+    append,
+  };
+  return wal;
 }
+
+export const TabWal = { open: openTabWal };
 
 /**
  * Pair the WAL with manifest `generation`, whose runs hold the log
