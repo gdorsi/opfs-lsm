@@ -1,10 +1,12 @@
 # Coalescing cold page reads
 
+Status: shipped for run files opened through OPFS, as design.md, "Reading a run" describes. One
+choice changed since. Pages that fill three quarters of a span now share its buffer, where this
+note chose a copy per page.
+
 Date: 2026-11-11. Chrome 157 headless, macOS arm64, Apple M5 Max. The machine ran other work
 during every measurement. The strategy comparisons alternate their variants inside one run,
 which cancels that noise. The before and after of the bench suite alternates whole runs.
-
-Status: implemented for run files opened through OPFS.
 
 ## Question
 
@@ -53,6 +55,8 @@ as 4 MiB and 16 MiB (21 ms against 22 to 27 ms).
 **A copy per page.** Views into one span buffer are about 2 to 4 ms faster on 14.4 MB, but the
 page cache charges each page its own bytes and evicts page by page. A view keeps the whole
 span alive, so an evicted page would free nothing. While a span lands, its bytes exist twice.
+Commit `4372408e` (2026-11-21) later let pages that fill three quarters of a span share its
+buffer. No measurement of that bound is recorded.
 
 **A batch is every read issued before the microtask queue goes quiet** (two turns with no new
 read). When the run's metadata is cold as well, the gets all wake on the same promise and reach
@@ -92,6 +96,7 @@ Dexie's get-bulk was 98.6k ops/s in the clean run of issue 139, where docstore w
 ## Not measured
 
 - Firefox and Safari.
-- Range scans. A cursor awaits each page before it asks for the next, so its reads are alone
-  in their batches and take the old path.
+- Range scans. On 2026-11-11 a cursor awaited each page before it asked for the next, so its
+  reads were alone in their batches. Scans now read ahead, and those reads share spans. See
+  [scan-read-ahead.md](scan-read-ahead.md).
 - The peak of the extra memory while spans land.

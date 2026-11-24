@@ -1,10 +1,11 @@
 # Reading ahead in scans
 
+Status: shipped. A scan past its first page asks for the pages ahead in a window that doubles up
+to 32 pages, as design.md, "Reading a run" describes.
+
 Date: 2026-11-16. Chrome 157 headless, macOS arm64, Apple M5 Max. The machine ran other work
 during every measurement, with a load average of 4 to 18. Each comparison is 5 interleaved runs per
 contender, and before and after are separate sessions of the same selection.
-
-Status: implemented.
 
 ## Question
 
@@ -59,11 +60,12 @@ Other scans, ops/s:
 | `kv/fillseq` seeks of 10 and 100 keys | no measurable difference | | |
 | `table/todos`, `tanstack-ondemand/queries` on kv | no measurable difference | | |
 
-## LinearLite: the board and threads
+## A faster read slowed later LinearLite steps
 
-The first `linearlite/browse` runs on docstore after the change showed the board phase at 61 to
+The `linearlite/browse` workload ran on docstore. The bench dropped it later the same day
+(`c627b29e`). Its first runs after the change showed the board phase at 61 to
 109 ms against 43 to 45 ms before, and threads at 181 to 584 ms against 75 to 101 ms, in three
-sessions that alternated before and after. Neither phase reads from disk: every page it needs is
+sessions that alternated before and after. Neither phase read from disk: every page it needed was
 already cached. A CPU profile from the cold open on put the time in TanStack DB's filters,
 `evaluateLike` first: the search phase's queries.
 
@@ -75,8 +77,8 @@ the jump the adapter still had 39 demands and 1,296 rows, against 7 demands and 
 The board and threads paid for them: each new query filtered three times the rows, and each
 eviction walked them against every demand.
 
-A user pauses between screens, so the bench now starts each browse phase once the page is idle
-([bench/README.md](../../bench/README.md)). With that wait, 3 runs each:
+A user pauses between screens, so the workload was changed to start each browse phase once the
+page was idle. With that wait, 3 runs each:
 
 | step | before | after |
 |---|---:|---:|
@@ -108,12 +110,18 @@ would count as reuse, and one pass would move every page it read into the main q
 
 ## What is left
 
+`yjs/whiteboard-session` and `pages/type` left the bench with the other app workloads
+(`c627b29e`). The rest of the gap to y-indexeddb on 2026-11-16:
+
 - kv's open: 6.0 ms on a cold tab. y-indexeddb opens its database inside the workspace step, which
   takes 1.8 ms in all. See [open-path-round-trips.md](open-path-round-trips.md).
-- Yjs replays every stored update, because the session never pauses for the 1 s merge.
+- Yjs replayed every stored update, because the session never paused for the 1 s merge.
+- `pages/type` reopen was Automerge's own load, 94 to 96 ms of about 130 ms at `small` and 1.2 s
+  of 1.7 s at `large`. Both stores were level, and read-ahead did not move it.
+
+Still true of the code on 2026-11-24:
+
 - A deeper level opens its runs one at a time as a scan reaches them. Reading the next run's layout
-  ahead is not done. The board's data is in L0, where every run is opened at the start.
+  ahead is not done. The board's data was in L0, where every run is opened at the start.
 - The TanStack DB adapter's eviction checks every held row against every demand, so its cost
   grows with both. Queries TanStack has not yet dropped keep their demands.
-- `pages/type` reopen is Automerge's own load, 94 to 96 ms of about 130 ms at `small` and 1.2 s
-  of 1.7 s at `large`. Both stores are level, and read-ahead does not move it.

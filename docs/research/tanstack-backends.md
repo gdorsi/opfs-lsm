@@ -1,17 +1,21 @@
 # TanStack DB backends under one app model
 
-linearlite-tanstackdb is moving to a headless model, and the bench will run that model on three persistence backends:
+Status: reference. A spike that compared three persistence backends, and no backend was chosen from it. The seam it informed is the `Backend` interface in `examples/linearlite-tanstackdb/src/model/backend.ts`, with `transact`, the counts and `anchor` as backend members. Its IndexedDB and SQLite backends, and a bench family that ran the model on docstore and SQLite, existed from 2026-11-14 to 2026-11-16. Since then kv is the only backend, and the bench measures packages, not the app.
+
+Date: 2026-11-13. TanStack DB 1.0.0-rc.1.5, headless Chrome 157 on an M5 Max, 3 reps. The spike's code was not kept.
+
+A throwaway spike measured three persistence backends for TanStack DB before the seam between linearlite-tanstackdb's headless model and its storage was designed:
 
 - opfs-lsm's `docstoreCollectionOptions`;
 - TanStack DB's IndexedDB persistence;
 - TanStack DB's SQLite persistence (`@tanstack/browser-db-sqlite-persistence`).
 
-This note records what a throwaway spike measured before the seam between the model and storage was designed. It covers what each backend can do, and what the model's operations cost on each.
+It covers what each backend can do, and what the model's operations cost on each. The bench now compares the same three storages on its own datasets, in the `tanstack`, `tanstack-ondemand` and `tanstack-live` families ([bench/README.md](../../bench/README.md#families)).
 
 ## Setup
 
 - **Data.** 100,000 seeded issue rows shaped like linearlite's stored issue. About 1% carry `pending: true`.
-- **Run.** One bench workload that built all three backends itself, 3 reps, TanStack DB 1.0.0-rc.1.5, headless Chrome 157 on an M5 Max.
+- **Run.** One bench workload that built all three backends itself, 3 reps.
 - **Durability.** SQLite ran with `synchronous=FULL` and again with `OFF`. IndexedDB and opfs-lsm use IndexedDB's default, which is relaxed on Chrome.
 
 ## Results
@@ -47,7 +51,7 @@ A live query `where eq(pending, true)` updates within 0.06 ms of the `update` on
 | SQLite, TanStack `groupBy` | 614–994 ms |
 | IndexedDB, TanStack `groupBy` | 140–303 ms, over rows already in memory |
 
-On the same engine, the TanStack `groupBy` path took about 20 times as long as the index count. So counting stays a backend member, and the bench reports which path each backend used. IndexedDB's count is fast because its eager open had already loaded every row, which took 0.85 to 1.0 s and 56 MB.
+On the same engine, the TanStack `groupBy` path took about 20 times as long as the index count. So counting stays a backend member. IndexedDB's count is fast because its eager open had already loaded every row, which took 0.85 to 1.0 s and 56 MB.
 
 ### Cold open to the first 50 rows
 
@@ -60,13 +64,13 @@ The time runs from the start of the phase on a fresh page, sorted by `modified` 
 | IndexedDB, eager, no index | 1.88–2.05 s |
 | IndexedDB, eager, `createIndex` on `modified` and `deleted` | 1.04–1.10 s |
 
-SQLite applies `ORDER BY` in SQL but `limit` in JavaScript, after it decodes every matching row. So a first page costs as much as the whole table. IndexedDB persistence is eager only, so it reads every row before the first query.
+SQLite applies `ORDER BY` in SQL but `limit` in JavaScript, after it decodes every matching row. So a first page costs as much as the whole table. The bench's SQLite contenders patch the adapter to send `LIMIT` ([bench/README.md](../../bench/README.md#families)). IndexedDB persistence is eager only, so it reads every row before the first query.
 
-## What the seam keeps
+## What the seam kept
 
-- **`transact(stream, items, merge)` stays a backend member.** opfs-lsm runs it as one kv transaction. IndexedDB reads from memory, then writes. SQLite loads, then writes.
-- **Counting stays per backend.**
-- **`locate` and the pressure callback exist only on opfs-lsm.** The model must work without them.
+- **`transact(store, items, merge)` is a backend member.** opfs-lsm runs it as one kv transaction. IndexedDB read from memory, then wrote. SQLite loaded, then wrote.
+- **Counting is per backend** (`watchCounts`, `watchTotal`).
+- **`locate` became `anchor`, which a backend may leave undefined.** The model then reads each deep window from the top. The pressure callback became `onStorageFull`.
 
 ## Limits
 
