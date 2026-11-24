@@ -101,43 +101,45 @@ function badSchema(message: string): never {
 }
 
 function checkField(field: unknown, where: string): string {
-  if (typeof field !== "string" || field.split(".").some((s) => s === "")) {
-    badSchema(`${where}: ${JSON.stringify(field)} is not a field such as "a.b"`);
+  if (typeof field !== "string" || field.split(".").includes("") || field.includes(ARRAY_MARK)) {
+    badSchema(`${where}: ${JSON.stringify(field)} is not a field such as "a.b", and only the first field of by can end in ${ARRAY_MARK}`);
   }
-  if (field.includes(ARRAY_MARK)) badSchema(`${where}: only the first field of by can end in ${ARRAY_MARK}, not ${JSON.stringify(field)}`);
   return field;
 }
 
 const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
 
 function checkInclude(include: unknown, where: string): readonly string[] {
-  if (!Array.isArray(include) || include.length === 0 || include.length > MAX_INCLUDE) {
-    badSchema(`${where}: include takes 1 to ${MAX_INCLUDE} fields`);
+  if (
+    !Array.isArray(include) ||
+    include.length === 0 ||
+    include.length > MAX_INCLUDE ||
+    new Set(include).size !== include.length ||
+    include.some((f) => typeof f !== "string" || f === "" || f.includes(".") || f.includes(ARRAY_MARK))
+  ) {
+    badSchema(`${where}: include takes 1 to ${MAX_INCLUDE} different top-level fields`);
   }
-  for (const f of include) {
-    if (typeof f !== "string" || f === "" || f.includes(".") || f.includes(ARRAY_MARK)) {
-      badSchema(`${where}: include takes top-level fields, not ${JSON.stringify(f)}`);
-    }
-  }
-  if (new Set(include).size !== include.length) badSchema(`${where}: include repeats a field`);
   return [...include];
+}
+
+function checkName(name: string, what: string): void {
+  if (!isName(name)) badSchema(`${what}: the name must match ${NAME} and not name an Object.prototype member`);
 }
 
 export function normalizeSchema(decl: Schema): DeclaredSchema {
   if (!Number.isInteger(decl.version) || decl.version < 1) badSchema("version must be an integer >= 1");
-  if (!isObject(decl.collections)) badSchema("collections must be an object");
   // A literal `__proto__` key sets the prototype instead of declaring a collection.
-  const proto: unknown = Object.getPrototypeOf(decl.collections);
-  if (proto !== Object.prototype && proto !== null) badSchema("collections must be a plain object; a __proto__ key is not a collection name");
+  const proto: unknown = isObject(decl.collections) && Object.getPrototypeOf(decl.collections);
+  if (proto !== Object.prototype && proto !== null) badSchema("collections must be a plain object: a __proto__ key is not a collection name");
   const collections = new Map<string, Map<string, IndexSpec>>();
   for (const [name, coll] of Object.entries(decl.collections)) {
-    if (!isName(name)) badSchema(`collection name ${JSON.stringify(name)} must match ${NAME} and not name an Object.prototype member`);
+    checkName(name, `collection "${name}"`);
     const indexes: unknown = coll?.indexes;
     if (!isObject(indexes)) badSchema(`collection "${name}" was not made by collection()`);
     const specs = new Map<string, IndexSpec>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;
-      if (!isName(index)) badSchema(`${where}: the name must match ${NAME} and not name an Object.prototype member`);
+      checkName(index, where);
       if (!isObject(d)) badSchema(`${where} must be an object`);
       for (const key of Object.keys(d)) {
         if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
@@ -161,22 +163,16 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
         if (unique && include !== undefined) badSchema(`${where}: a unique index cannot include fields`);
         specs.set(index, { kind: "sorted", on, unique, multi, ...(include === undefined ? {} : { include: checkInclude(include, where) }) });
       } else {
-        if (unique) badSchema(`${where}: a text index cannot be unique`);
-        if (multi) badSchema(`${where}: a text index cannot start with an array field`);
-        if (include !== undefined) badSchema(`${where}: a text index cannot include fields`);
+        if (unique || multi || include !== undefined) badSchema(`${where}: a text index takes only by, which holds no array field, and text`);
         specs.set(index, { kind: "text", on, text: checkField(text, where) });
       }
     }
     collections.set(name, specs);
   }
-  const drop = new Set<string>();
-  if (decl.drop !== undefined && !Array.isArray(decl.drop)) badSchema("drop must be an array of collection names");
-  for (const name of decl.drop ?? []) {
-    if (typeof name !== "string" || !NAME.test(name)) badSchema(`drop: ${JSON.stringify(name)} must match ${NAME}`);
-    if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
-    drop.add(name);
-  }
-  return { version: decl.version, collections, drop };
+  const drop: unknown = decl.drop === undefined ? [] : decl.drop;
+  if (!Array.isArray(drop) || drop.some((name) => typeof name !== "string" || !NAME.test(name))) badSchema(`drop must be an array of collection names matching ${NAME}`);
+  for (const name of drop) if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
+  return { version: decl.version, collections, drop: new Set(drop) };
 }
 
 /** The indexes `query` reads. A count index is left out: it has no entries. */
