@@ -1,6 +1,6 @@
 import { CorruptDatabaseError, type Decode, type Entry, type Range, type ViewSnapshot } from "@opfs-lsm/kv";
 import { readableTarget, type BoundCollection } from "./catalog.js";
-import { JsonBatch, decodeDoc, fieldsBatch } from "./derive.js";
+import { JsonBatch, decodeDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import {
   compareBytes,
@@ -184,7 +184,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     const { target, limit, range } = plan;
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
-    const fields = target.kind === "covering" ? fieldsBatch() : undefined;
+    const fields = target.kind === "covering" ? new JsonBatch<Record<string, unknown>>() : undefined;
     // A covering entry's fields are parsed in a batch, a unique entry holds its id, and any other entry has no value to read.
     const decode: Decode<unknown> = fields ? fields.add : target.kind === "unique" ? idOf : nothing;
     const page = await this.scan(plan, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
