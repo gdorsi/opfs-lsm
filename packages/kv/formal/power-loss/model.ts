@@ -110,6 +110,8 @@ export type Variant = {
   readonly destroyFilesFirst?: boolean;
   /** Rule 3 may fall back to a manifest numbered at or below `destroyedTop`. */
   readonly fallBehindDestroy?: boolean;
+  /** Rule 3 takes the newest manifest numbered past `destroyedTop`, intact or not. */
+  readonly fallBackToBroken?: boolean;
   /** Destroy commits at the default durability, so its removes can reach the disk first. */
   readonly destroyRelaxed?: boolean;
   /** `destroyDb` deletes the WAL database and writes no row. */
@@ -337,7 +339,7 @@ export class Sys implements Disk {
       if (!pick && this.v.noFallback) throw new Stuck(`manifest ${generation} is gone`);
     }
     const fallback = this.v.fallBehindDestroy ? numbers : numbers.filter((n) => n > idb.destroyedTop);
-    pick ??= fallback.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
+    pick ??= fallback.map((n) => this.manifest(n)).find((m) => (this.v.fallBackToBroken ? m !== undefined : this.intact(m))) ?? ZERO;
     const floor = this.highestThrough(pick.through);
     const past = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);
     const nextTop = Math.max(idb.top, top, pick.gen);
