@@ -347,8 +347,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
         if (ops >= BACKFILL_OPS) break;
       }
       if (rows.length === 0) {
-        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "ready" }));
-        return;
+        return this.settle(collection, index, { kind: "ready" });
       }
 
       const unique = plan.target.kind === "unique";
@@ -387,11 +386,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
         },
       );
       if (out === RETRY) continue;
-      if (out) {
-        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "failed", reason: out.reason, ids: out.ids }));
-        this.startJobs();
-        return;
-      }
+      if (out) return this.settle(collection, index, { kind: "failed", ...out });
       from = rows.at(-1)!.key;
     }
   }
@@ -439,11 +434,14 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
           return true;
         });
       }
-      if (done) {
-        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "ready" }));
-        return;
-      }
+      if (done) return this.settle(collection, index, { kind: "ready" });
     }
+  }
+
+  /** Moves a building index to `state`. A failed one drops its entries, which a sweep removes. */
+  private async settle(collection: CollectionId, index: IndexId, state: Parameters<typeof settleIndex>[3]): Promise<void> {
+    await this.editCatalog((c) => settleIndex(c, collection, index, state));
+    if (state.kind === "failed") this.startJobs();
   }
 
   private async sweep(p: DroppedPrefix): Promise<void> {
