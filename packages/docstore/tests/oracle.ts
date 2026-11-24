@@ -1,11 +1,16 @@
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { compareCodePoints, compareScalar, compareTuple } from "./order.js";
 
-/** An index as the oracle reads it, written from the schema rules rather than from the stored layout. */
+/**
+ * An index as the oracle reads it, written from the schema rules rather than
+ * from the stored layout. A count index counts the entries that a sorted
+ * index on the same fields would hold, or a multi index with `multi`.
+ */
 export type ModelIndex =
   | { readonly kind: "unique"; readonly on: readonly string[] }
   | { readonly kind: "sorted" | "multi"; readonly on: readonly string[]; readonly include?: readonly string[] }
-  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string };
+  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string }
+  | { readonly kind: "count"; readonly on: readonly string[]; readonly multi: boolean };
 
 type Doc = { readonly id: string; readonly [key: string]: unknown };
 type Hit = { readonly id: string; readonly values: readonly Scalar[]; readonly doc: Doc };
@@ -38,7 +43,7 @@ function entries(doc: Doc, ix: ModelIndex): Scalar[][] {
     if (text !== null && typeof text !== "string") return [];
   }
   const rest = values.slice(1) as Scalar[];
-  if (ix.kind === "multi") {
+  if (ix.kind === "multi" || (ix.kind === "count" && ix.multi)) {
     const first = Array.isArray(values[0]) ? (values[0] as Scalar[]) : [values[0] as Scalar];
     const distinct: Scalar[] = [];
     for (const v of first) if (!distinct.some((d) => compareScalar(d, v) === 0)) distinct.push(v);
@@ -59,6 +64,12 @@ function inBound(v: Scalar, q: QueryInput): boolean {
   if (q.lt !== undefined && compareScalar(v, q.lt) >= 0) return false;
   if (q.lte !== undefined && compareScalar(v, q.lte) > 0) return false;
   return true;
+}
+
+/** The rows `ix` keeps in kv: one per entry, or for a count index with no base rows, one per group that holds a document. */
+export function storedRows(docs: readonly Doc[], ix: ModelIndex): number {
+  const hits = indexOrder(docs, ix);
+  return ix.kind === "count" ? new Set(hits.map((h) => JSON.stringify(h.values))).size : hits.length;
 }
 
 /**

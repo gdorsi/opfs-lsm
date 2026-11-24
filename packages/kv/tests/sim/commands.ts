@@ -297,16 +297,21 @@ class BulkCmd implements Cmd {
 
 type UpdateAction = "keep" | "del" | "put";
 
-/** `update` reads `keys` and writes in one transaction, so it reads the prefix just before its own seq. */
+/**
+ * `update` reads `keys` and writes in one transaction, so it reads the prefix
+ * just before its own seq. The body reads the last `late` keys with `tx.read`.
+ */
 class UpdateCmd implements Cmd {
   constructor(
     private readonly keys: readonly number[],
     private readonly actions: readonly UpdateAction[],
     private readonly value: ValueSpec,
+    private readonly late: number,
   ) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
     const keys = this.keys.map((k) => KEYS[k]!);
+    const first = keys.slice(0, Math.max(0, keys.length - this.late));
     const ops: OracleOp[] = [];
     keys.forEach((key, i) => {
       const action = this.actions[i % this.actions.length];
@@ -315,8 +320,8 @@ class UpdateCmd implements Cmd {
     });
     let seen: readonly (Uint8Array | undefined)[] = [];
     await write(m, r, ops, () =>
-      r.db.update(keys, (got, tx) => {
-        seen = got.map((v) => (v ? new Uint8Array(v) : undefined));
+      r.db.update(first, (got, tx) => {
+        seen = [...got, ...tx.read(keys.slice(first.length))].map((v) => (v ? new Uint8Array(v) : undefined));
         applyOps(tx, ops);
       }),
     );
@@ -331,7 +336,7 @@ class UpdateCmd implements Cmd {
       v.finish();
     }
   }
-  toString = () => `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}]`;
+  toString = () => `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}] late ${this.late}`;
 }
 
 // --- Reads.
@@ -583,8 +588,9 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
         fc.array(keyArb, { minLength: 1, maxLength: 3 }),
         fc.array(fc.constantFrom<UpdateAction>("keep", "del", "put"), { minLength: 1, maxLength: 3 }),
         valueArb,
+        fc.nat({ max: 3 }),
       )
-      .map(([keys, actions, value]) => new UpdateCmd(keys, actions, value)),
+      .map(([keys, actions, value, late]) => new UpdateCmd(keys, actions, value, late)),
     keyArb.map((k) => new GetCmd(k)),
     keyArb.map((k) => new GetCmd(k)),
     rangeArb.map((range) => new RangeCmd(range)),

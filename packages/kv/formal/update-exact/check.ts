@@ -367,7 +367,7 @@ function sourceSync(): string[] {
   need("db.ts", /const seq = await this\.wal\.append\(record\);\s*await this\.landed\(seq, rowValid\(validAt, seq\) \? ops : \[\], record\);/, "the writer lands its row with the ops rowValid gives it");
   need(
     "db.ts",
-    /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*const next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(!this\.appending && !this\.beaten\) \{\s*const planned = plan\(\);\s*if \(!\(planned instanceof Miss\) && planned\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*\}\s*const out = await this\.write\(plan, warm\);/,
+    /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*const next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(!this\.appending && !this\.beaten\) \{\s*const planned = plan\(\);\s*(?:\/\/[^\n]*\n\s*)*if \(planned instanceof Miss\) planned\.ready\.catch\(\(\) => undefined\);\s*else if \(planned\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*\}\s*const out = await this\.write\(plan, warm\);/,
     "update takes appliedThrough + 1, reads and runs body with no await in between, appends no row with an append of its handle in flight, resolves only when rowValid holds, and runs the transaction otherwise",
   );
   need("db.ts", /const turn = this\.updating\.then\(\(\) => this\.updateOnce\(ks, body\)\);\s*this\.updating = turn\.catch\(\(\) => undefined\);/, "the updates of one handle run one at a time");

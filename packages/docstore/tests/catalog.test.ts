@@ -13,7 +13,7 @@ import {
   type StoredCatalog,
 } from "../src/catalog.js";
 import { DocStoreError } from "../src/errors.js";
-import type { IndexId } from "../src/keys.js";
+import type { CollectionId, IndexId } from "../src/keys.js";
 
 type Collections = Record<string, Record<string, object>>;
 
@@ -38,11 +38,12 @@ function codeOf(f: () => unknown): string {
   return "no error";
 }
 
-const markReady = (c: StoredCatalog, collection: string, index: IndexId) => settleIndex(c, collection, index, { kind: "ready" });
-const markFailed = (c: StoredCatalog, collection: string, index: IndexId, reason: "unique" | "value", ids: string[]) =>
+const markReady = (c: StoredCatalog, collection: CollectionId, index: IndexId) => settleIndex(c, collection, index, { kind: "ready" });
+const markFailed = (c: StoredCatalog, collection: CollectionId, index: IndexId, reason: "unique" | "value", ids: string[]) =>
   settleIndex(c, collection, index, { kind: "failed", reason, ids });
 
 const idOf = (c: StoredCatalog, coll: string, index: string) => c.collections[coll]!.indexes[index]!.id as IndexId;
+const collOf = (c: StoredCatalog, coll: string) => c.collections[coll]!.id as CollectionId;
 
 const v1: Collections = { todos: { byA: { by: "a" }, byB: { by: "b" } }, notes: { byC: { by: "c" } } };
 
@@ -128,7 +129,7 @@ describe("reconcile", () => {
 
   it("rebuilds a failed index under a new id at the next version, without dropping its prefix twice", () => {
     const c1 = open(open(undefined, 1, v1), 2, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } });
-    const failed = markFailed(c1, "todos", idOf(c1, "todos", "u"), "unique", ["1", "2"])!;
+    const failed = markFailed(c1, collOf(c1, "todos"), idOf(c1, "todos", "u"), "unique", ["1", "2"])!;
     const c3 = open(failed, 3, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } });
     expect(c3.collections["todos"]!.indexes["u"]!.state).toEqual({ kind: "building" });
     expect(idOf(c3, "todos", "u")).not.toBe(idOf(c1, "todos", "u"));
@@ -162,10 +163,28 @@ describe("stored bytes", () => {
     expect(parseCatalog(encodeCatalog(c))).toEqual(c);
   });
 
+  it("has format 4 while it holds a count index, in any state or collection, and format 2 otherwise", () => {
+    const counted = { ...v1, todos: { ...v1["todos"], perA: { by: "a", count: true } } };
+    const c1 = open(undefined, 1, v1);
+    expect(c1.format).toBe(2);
+    const c2 = open(c1, 2, counted);
+    expect(c2.format).toBe(4);
+    expect(parseCatalog(encodeCatalog(c2))).toEqual(c2);
+    const failed = markFailed(c2, collOf(c2, "todos"), idOf(c2, "todos", "perA"), "value", ["1"])!;
+    expect(failed.format).toBe(4);
+    expect(clearCollection(c2, "todos").format).toBe(4);
+    // A collection this schema leaves out keeps its count index.
+    expect(open(c2, 3, { notes: v1["notes"]! }).format).toBe(4);
+    expect(open(c2, 3, v1).format).toBe(2);
+    expect(open(c2, 3, { notes: v1["notes"]! }, ["todos"]).format).toBe(2);
+    expect(open(undefined, 1, counted).format).toBe(4);
+  });
+
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 5 } as unknown as StoredCatalog)))).toBe("schema");
     expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
@@ -184,24 +203,33 @@ describe("transitions", () => {
   const byD = idOf(c2, "todos", "byD");
 
   it("marks a building index ready once", () => {
-    const ready = markReady(c2, "todos", byD)!;
+    const ready = markReady(c2, collOf(c2, "todos"), byD)!;
     expect(ready.collections["todos"]!.indexes["byD"]!.state).toEqual({ kind: "ready" });
-    expect(markReady(ready, "todos", byD)).toBeUndefined();
-    expect(markReady(c2, "todos", idOf(c2, "todos", "byA"))).toBeUndefined();
-    expect(markReady(c2, "nope", byD)).toBeUndefined();
+    expect(markReady(ready, collOf(ready, "todos"), byD)).toBeUndefined();
+    expect(markReady(c2, collOf(c2, "todos"), idOf(c2, "todos", "byA"))).toBeUndefined();
+    expect(markReady(c2, 99 as CollectionId, byD)).toBeUndefined();
   });
 
   it("marks a building index failed once, with its reason and ids, and drops its prefix", () => {
-    const failed = markFailed(c2, "todos", byD, "value", ["7"])!;
+    const failed = markFailed(c2, collOf(c2, "todos"), byD, "value", ["7"])!;
     expect(failed.collections["todos"]!.indexes["byD"]!.state).toEqual({ kind: "failed", reason: "value", ids: ["7"] });
     expect(failed.dropped).toEqual([{ collection: c2.collections["todos"]!.id, index: byD }]);
-    expect(markFailed(failed, "todos", byD, "value", ["7"])).toBeUndefined();
-    expect(markReady(failed, "todos", byD)).toBeUndefined();
+    expect(markFailed(failed, collOf(failed, "todos"), byD, "value", ["7"])).toBeUndefined();
+    expect(markReady(failed, collOf(failed, "todos"), byD)).toBeUndefined();
+  });
+
+  it("names an index by ids, so it leaves alone one that reuses the name and id in a collection declared again", () => {
+    const again = open(open(open(c2, 3, { notes: v1["notes"]! }, ["todos"]), 4, v1), 5, { ...v1, todos: { ...v1["todos"], byD: { by: "d" } } });
+    expect(idOf(again, "todos", "byD")).toBe(byD);
+    expect(again.collections["todos"]!.indexes["byD"]!.state).toEqual({ kind: "building" });
+    expect(markReady(again, collOf(c2, "todos"), byD)).toBeUndefined();
+    expect(markFailed(again, collOf(c2, "todos"), byD, "value", ["7"])).toBeUndefined();
+    expect(markReady(again, collOf(again, "todos"), byD)).toBeDefined();
   });
 
   it("clears a collection under a new id with its indexes ready, failed ones kept, and drops the old prefix", () => {
     const c3 = open(c2, 3, { ...v1, todos: { ...v1["todos"], byD: { by: "d" }, u: { by: "u", unique: true } } });
-    const withFailed = markFailed(c3, "todos", idOf(c3, "todos", "u"), "unique", ["1", "2"])!;
+    const withFailed = markFailed(c3, collOf(c3, "todos"), idOf(c3, "todos", "u"), "unique", ["1", "2"])!;
     const old = withFailed.collections["todos"]!;
     const cleared = clearCollection(withFailed, "todos");
     const todos = cleared.collections["todos"]!;
@@ -214,7 +242,7 @@ describe("transitions", () => {
   });
 
   it("removes a swept prefix once, telling a collection prefix from its index prefixes", () => {
-    const cleared = clearCollection(markFailed(c2, "todos", byD, "value", ["7"])!, "todos");
+    const cleared = clearCollection(markFailed(c2, collOf(c2, "todos"), byD, "value", ["7"])!, "todos");
     const coll = c2.collections["todos"]!.id;
     const once = removeDropped(cleared, { collection: coll })!;
     expect(once.dropped).toEqual([{ collection: coll, index: byD }]);
@@ -227,7 +255,7 @@ describe("bind", () => {
   it("lets a handle read only the ready indexes whose stored definition equals its own, and write every live one", () => {
     const c1 = open(undefined, 1, v1);
     const c2 = open(c1, 2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } } });
-    const failed = markFailed(c2, "todos", idOf(c2, "todos", "byD"), "value", ["9"])!;
+    const failed = markFailed(c2, collOf(c2, "todos"), idOf(c2, "todos", "byD"), "value", ["9"])!;
     const old = bind(encodeCatalog(failed), failed, declare(1, { ...v1, todos: { ...v1["todos"], byD: { by: "d" }, byE: { by: "e" } } }));
     const todos = old.collections.get("todos")!;
     expect(todos.readable.get("byA")).toMatchObject({ name: "byA", state: { kind: "ready" } });
@@ -285,7 +313,7 @@ describe("normalizeSchema", () => {
 
   it("names the option it does not know and the ones it does", () => {
     const decl = { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } };
-    expect(() => normalize(decl)).toThrow(/"uniqe".*by, unique, text/);
+    expect(() => normalize(decl)).toThrow(/"uniqe".*by, unique, text, include, count/);
   });
 
   it("says by is missing when an index has none", () => {
@@ -314,6 +342,24 @@ describe("normalizeSchema", () => {
       ["one", { kind: "sorted", by: ["a", "b"], unique: true }],
       ["s", { kind: "text", by: ["a"], unique: false, text: "t" }],
     ]);
+  });
+
+  it("stores a count index by its fields, the mark off an array field, and leaves it out of the indexes query reads", () => {
+    const specs = declare(1, { c: { perTag: { by: ["tags[]", "at"], count: true }, one: { by: "a" } } }).collections.get("c")!;
+    expect(specs.get("perTag")).toEqual({ kind: "count", on: ["tags", "at"], multi: true });
+    expect([...describeIndexes(specs).keys()]).toEqual(["one"]);
+  });
+
+  it("at a higher version rebuilds an index that becomes a count index, stops being one, or counts other fields", () => {
+    const at = (version: number, x: object, stored?: StoredCatalog) => open(stored, version, { c: { x } });
+    const sorted = at(1, { by: "a" });
+    const counted = at(2, { by: "a", count: true }, sorted);
+    expect(counted.collections["c"]!.indexes["x"]).toMatchObject({ spec: { kind: "count" }, state: { kind: "building" } });
+    expect(idOf(counted, "c", "x")).not.toBe(idOf(sorted, "c", "x"));
+    expect(idOf(at(3, { by: "a", count: true }, counted), "c", "x")).toBe(idOf(counted, "c", "x"));
+    expect(idOf(at(3, { by: "a[]", count: true }, counted), "c", "x")).not.toBe(idOf(counted, "c", "x"));
+    expect(idOf(at(3, { by: ["a", "b"], count: true }, counted), "c", "x")).not.toBe(idOf(counted, "c", "x"));
+    expect(at(3, { by: "a" }, counted).collections["c"]!.indexes["x"]!.spec.kind).toBe("sorted");
   });
 
   it("describes the fields an index includes, and only on an index that includes some", () => {

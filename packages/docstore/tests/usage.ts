@@ -1,6 +1,6 @@
 import * as v from "valibot";
 import { z } from "zod";
-import { collection, defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
+import { collection, defineSchema, type CountQuery, type DocStore, type IndexInfo, type Query } from "../src/index.js";
 
 type Todo = {
   id: string;
@@ -169,6 +169,79 @@ export const issueQueries: Query<Issue, (typeof issueSchema)["collections"]["iss
   // @ts-expect-error after a list of statuses the bound is a number: updatedAt
   { index: "byStatus", eq: ["p", ["todo"]], gte: "x" },
 ];
+
+const countedSchema = defineSchema({
+  version: 1,
+  collections: {
+    issues: collection<Issue>().index("byUpdated", "updatedAt").count("perStatus", ["projectId", "status"]).count("perProject", "projectId"),
+    notes: collection<Note>().count("perTag", "tags[]").count("perTagOwner", ["tags[]", "owner"]),
+  },
+});
+type CountedIssues = (typeof countedSchema)["collections"]["issues"]["indexes"];
+type CountedNotes = (typeof countedSchema)["collections"]["notes"]["indexes"];
+
+export const countQueries: CountQuery<Issue, CountedIssues>[] = [
+  { index: "perStatus", eq: ["p"] },
+  { index: "perStatus", eq: ["p", "todo"], limit: 10 },
+  { index: "perStatus", eq: ["p", ["todo", "started"]] },
+  { index: "perStatus", eq: [["p", "q"]], gte: "started" },
+  { index: "perProject", gte: "a", lt: "m" },
+  { index: "perProject", startsWith: "team-" },
+  { index: "byUpdated", gte: 0, reverse: true },
+  { limit: 5 },
+  // @ts-expect-error "open" is not a status of Issue
+  { index: "perStatus", eq: ["p", "open"] },
+  // @ts-expect-error a count index has no positions
+  { index: "perStatus", after: cursor },
+  // @ts-expect-error nor results to pass over
+  { index: "perStatus", offset: 1 },
+  // @ts-expect-error a count index has no order
+  { index: "perStatus", reverse: true },
+  // @ts-expect-error a count index has no words
+  { index: "perProject", match: "x" },
+  // @ts-expect-error not an index of issues
+  { index: "perStatu" },
+];
+// @ts-expect-error query, queryIds and queryEntries do not read a count index
+export const countIsNoQuery: Query<Issue, CountedIssues> = { index: "perStatus" };
+
+export const tagCounts: CountQuery<Note, CountedNotes>[] = [
+  { index: "perTag", eq: ["work"] },
+  { index: "perTag", startsWith: "wo" },
+  { index: "perTagOwner", eq: ["work", ["ann", "bob"]] },
+  // @ts-expect-error the array field of a count index takes one value
+  { index: "perTag", eq: [["work", "home"]] },
+  // @ts-expect-error also when another field follows it
+  { index: "perTagOwner", eq: [["work", "home"], "ann"] },
+  // @ts-expect-error the element type of tags is string
+  { index: "perTag", eq: [1] },
+];
+
+export async function counts(store: DocStore<typeof countedSchema>): Promise<number[]> {
+  const issues = store.collection("issues");
+  const open: number = await issues.count({ index: "perStatus", eq: ["p", ["todo", "started"]] });
+  const inView: number = await issues.view((snap) => snap.count({ index: "perProject", eq: ["p"] }));
+  // @ts-expect-error a count index has no documents to return
+  await issues.query({ index: "perStatus" });
+  // @ts-expect-error nor ids
+  await issues.queryIds({ index: "perStatus", eq: ["p"] });
+  // @ts-expect-error nor entries
+  await issues.queryEntries({ index: "perProject" });
+  // @ts-expect-error nor in a view
+  await issues.view((snap) => snap.query({ index: "perProject" }));
+  return [open, inView];
+}
+
+// @ts-expect-error a count index includes no fields
+collection<Note>().count("c", "owner", { include: ["slug"] });
+// @ts-expect-error not a field of Note
+collection<Note>().count("c", "ownr");
+// @ts-expect-error an array field needs the [] mark
+collection<Note>().count("c", "tags");
+// @ts-expect-error only the first field may be an array
+collection<Note>().count("c", ["owner", "tags[]"]);
+// @ts-expect-error an index name is declared once, as a count index too
+collection<Note>().index("x", "owner").count("x", "owner");
 
 export async function entryValues(store: DocStore<typeof notesSchema>): Promise<unknown[]> {
   const notes = store.collection("notes");

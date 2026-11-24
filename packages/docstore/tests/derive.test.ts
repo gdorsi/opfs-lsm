@@ -96,6 +96,17 @@ describe("unique and text entries", () => {
     ]);
   });
 
+  it("gives a count index no entry: a key per group the document is in, its values alone, one per distinct element", () => {
+    const c = coll({ byA: { by: "a" }, perA: { by: ["a", "b"], count: true }, perTag: { by: "tags[]", count: true } });
+    const { id, doc } = encodeDoc({ id: "1", a: 1, b: "x", tags: ["t", "u", "t"] });
+    const groups: Uint8Array[] = [];
+    expect(entriesOf(c, utf8.encode(id), doc, "next", undefined, groups)).toEqual([entry(c, "byA", [1])]);
+    expect(groups).toEqual([encodeTuple([1, "x"], prefixOf(c, "perA")), encodeTuple(["t"], prefixOf(c, "perTag")), encodeTuple(["u"], prefixOf(c, "perTag"))]);
+    const none: Uint8Array[] = [];
+    entriesOf(c, utf8.encode("2"), encodeDoc({ id: "2", a: 1, tags: [] }).doc, "next", undefined, none);
+    expect(none).toEqual([]);
+  });
+
   it("stores the lowercased words of the text, a space before each", () => {
     const c = coll({ search: { by: "at", text: "title" } });
     const [e] = entries(c, { id: "1", at: 3, title: "Buy MILK, then bread!" });
