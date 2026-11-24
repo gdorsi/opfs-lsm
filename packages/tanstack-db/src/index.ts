@@ -36,8 +36,9 @@ export interface DocstoreCollectionConfig<T extends JsonDoc, Ix>
 
 export interface DocstoreCollectionUtils<T extends JsonDoc = JsonDoc> extends UtilsRecord {
   /**
-   * Persist a manual transaction's mutations of this collection in one kv
-   * transaction. Call it from `createTransaction({ mutationFn })`.
+   * Persist a manual transaction's mutations in one kv transaction: those
+   * of every collection created from these options, so one call is enough.
+   * Call it from `createTransaction({ mutationFn })`.
    */
   acceptMutations(transaction: { mutations: ReadonlyArray<PendingMutation<any>> }): Promise<void>;
   /**
@@ -68,25 +69,28 @@ export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: Docstor
   const { collection, syncMode = "eager", ...base } = config;
   const docs = collection as unknown as Collection<JsonDoc, unknown>;
   const id = base.id ?? `opfs-lsm:${collection.name}`;
-  let current: Run | DemandRun | undefined;
-  let owner: unknown;
+  // Every collection created from these options shares their handlers and utils.
+  const owners = new Set<unknown>();
+  const runs = new Set<Run | DemandRun>();
 
   const sync: SyncConfig<JsonDoc, string>["sync"] = (params) => {
-    owner = params.collection;
+    owners.add(params.collection);
     const run = syncMode === "on-demand" ? new DemandRun(docs, params) : new Run(docs, params);
-    current = run;
+    runs.add(run);
     run.start();
     const cleanup = () => {
       run.stop();
-      if (current === run) current = undefined;
+      runs.delete(run);
     };
     if (run instanceof Run) return cleanup;
     return { cleanup, loadSubset: (options) => run.load(options), unloadSubset: (options) => run.unload(options) };
   };
 
+  const settled = () => Promise.all([...runs].map((run) => run.settled()));
+
   const persist = async (mutations: ReadonlyArray<PendingMutation<any>>): Promise<void> => {
     const last = new Map<string, PendingMutation<any>>();
-    for (const m of mutations) if (m.collection === owner) last.set(String(m.key), m);
+    for (const m of mutations) if (owners.has(m.collection)) last.set(String(m.key), m);
     if (last.size === 0) return;
     const writes = [...last.values()];
     const deletes = writes.filter((m) => m.type === "delete");
@@ -96,12 +100,12 @@ export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: Docstor
     // docstore reported the write before it resolved, so a live run already
     // committed it. A loading run commits it with its snapshot; wait for that,
     // so the optimistic row is not dropped before the synced one shows.
-    await current?.settled();
+    await settled();
   };
 
   const transact: DocstoreCollectionUtils<T>["transact"] = async (ids, merge) => {
     await collection.modifyMany(ids, merge);
-    await current?.settled();
+    await settled();
   };
 
   const handler = ({ transaction }: { transaction: { mutations: ReadonlyArray<PendingMutation<any>> } }) =>
@@ -118,7 +122,7 @@ export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: Docstor
     onDelete: handler,
     utils: { acceptMutations: (transaction) => persist(transaction.mutations), transact },
   };
-  // This object holds one collection's run, so each DbClient gets its own.
+  // Each DbClient materializes its own options.
   return withCollectionConfigFactory(options, () => docstoreCollectionOptions({ ...config, id }));
 }
 
