@@ -28,7 +28,7 @@ const p = new KvPersistence(db, "draft", new Y.Doc(), 100);
 p.trimDelayMs = 5000;
 ```
 
-A merge reads every entry of the doc first, other tabs' included, and applies them to the doc, as y-indexeddb does.
+A merge reads every entry of the doc first, other tabs' included, and applies them to the doc, as y-indexeddb does. A doc whose state is over 8 MiB, kv's batch limit, is not merged, so each of its loads replays every entry.
 
 ## Other tabs
 
