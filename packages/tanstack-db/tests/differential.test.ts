@@ -51,12 +51,13 @@ const schema = defineSchema({
 const IDS = Array.from({ length: 30 }, (_, i) => `d${String(i).padStart(2, "0")}`);
 // An astral string and a U+E000..U+FFFF one compare apart by code point and by UTF-16 unit.
 const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b", "é", "\u{1F600}", "\uFF21"];
+const NUMBERS = [-2, -0.5, 0, 1, 2, 3, 4, 5, 6];
 const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE"];
 
 const fieldsArb = fc.record({
   g: fc.integer({ min: 0, max: 3 }),
   k: fc.boolean(),
-  n: fc.option(fc.integer({ min: 0, max: 6 }), { nil: null, freq: 6 }),
+  n: fc.option(fc.constantFrom(...NUMBERS), { nil: null, freq: 6 }),
   s: fc.option(fc.constantFrom(...STRINGS), { nil: null, freq: 6 }),
   t: fc.constantFrom(...TEXTS),
 });
@@ -78,14 +79,14 @@ const condArb: fc.Arbitrary<Cond> = fc.oneof(
   fc.record({
     op: fc.constantFrom("eq", "gt", "gte", "lt", "lte"),
     field: fc.constantFrom("g", "n"),
-    value: fc.integer({ min: 0, max: 6 }),
+    value: fc.constantFrom(...NUMBERS),
     flip: fc.boolean(),
   }),
   fc.record({ op: fc.constantFrom("gt", "lt", "eq"), field: fc.constant("s"), value: fc.constantFrom(...STRINGS), flip: fc.boolean() }),
   fc.record({
     op: fc.constant("in"),
     field: fc.constantFrom("g", "n"),
-    values: fc.uniqueArray(fc.option(fc.integer({ min: 0, max: 6 }), { nil: null, freq: 6 }), { maxLength: 3 }),
+    values: fc.uniqueArray(fc.option(fc.constantFrom(...NUMBERS), { nil: null, freq: 6 }), { maxLength: 3 }),
   }),
   fc.record({ op: fc.constant("eq"), field: fc.constant("k"), value: fc.boolean() }),
   fc.record({ op: fc.constant("ilike"), pattern: fc.constantFrom("%apple%", "%PIE%", "%e%", "%sky-b%", "% %", "%%", "blue") }),
@@ -173,7 +174,7 @@ function liveQuery(source: Collection<Doc, string, any>, spec: Spec) {
     if (!spec.order) return b;
     const { field, dir, nulls, stringSort, then, byId, anchor } = spec.order;
     if (anchor !== undefined) {
-      const value = field === "n" ? anchor : STRINGS[anchor]!;
+      const value = field === "n" ? NUMBERS[anchor % NUMBERS.length]! : STRINGS[anchor]!;
       b = b.where(({ d }) => (dir === "desc" ? lte : gte)(d[field], value));
     }
     let o = b.orderBy(({ d }) => d[field], { direction: dir, nulls, stringSort });
