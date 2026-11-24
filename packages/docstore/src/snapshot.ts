@@ -42,16 +42,9 @@ export interface CollectionSnapshot<T extends JsonDoc, Ix> {
   count(q: CountQuery<T, Ix>): Promise<number>;
 }
 
-function limitOf(limit: unknown): number | undefined {
-  if (limit === undefined) return undefined;
-  if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1) return limit;
-  throw new DocStoreError("query", "limit must be a positive integer");
-}
-
-function offsetOf(offset: unknown): number {
-  if (offset === undefined) return 0;
-  if (typeof offset === "number" && Number.isInteger(offset) && offset >= 0) return offset;
-  throw new DocStoreError("query", "offset must be a non-negative integer");
+function intOf(v: unknown, min: number, name: string): number | undefined {
+  if (v === undefined || (typeof v === "number" && Number.isInteger(v) && v >= min)) return v;
+  throw new DocStoreError("query", `${name} must be an integer of at least ${min}`);
 }
 
 /** `hits` holds one entry past the page iff another page follows: drop it and name the cursor. */
@@ -248,9 +241,9 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   /** `peek` extra entries tell whether another page follows. `range` is the query's one range, when it has one. */
   private plan(q: CountQuery<T, Ix>, peek: number) {
     const input = q as QueryInput;
-    const limit = limitOf(input.limit);
+    const limit = intOf(input.limit, 1, "limit");
     const target = input.index === undefined ? this.coll.rows : readableTarget(this.coll, input.index);
-    const offset = offsetOf(input.offset);
+    const offset = intOf(input.offset, 0, "offset") ?? 0;
     const { ranges, repeats } = scanPlan(target, input);
     const want = limit && limit + peek;
     const range: Range | undefined = ranges.length === 1 ? { ...ranges[0]!.range, ...(want && { limit: want }), ...(offset && { offset }) } : undefined;
