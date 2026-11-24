@@ -179,14 +179,24 @@ describe("generation recorded in IndexedDB", () => {
 
     const o = observedFs(inner);
     o.holdNextManifestRead();
-    const tails = vi.spyOn(TabWal.prototype, "tail");
+    const tails = vi.fn();
+    const open = TabWal.open;
+    TabWal.open = async (...args) => {
+      const wal = await open(...args);
+      const tail = wal.tail;
+      wal.tail = (...rest) => {
+        tails();
+        return tail(...rest);
+      };
+      return wal;
+    };
     const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes });
     await o.isHeld;
     expect(o.opened).toHaveLength(1);
     o.release();
     const db = await reopening;
     expect(tails).toHaveBeenCalledTimes(1);
-    tails.mockRestore();
+    TabWal.open = open;
     expect(text(await db.get(utf("k7")))).toBe("v7");
     expect(text(await db.get(utf("tail")))).toBe("t");
     await db.close();

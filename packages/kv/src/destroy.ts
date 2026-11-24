@@ -1,7 +1,7 @@
 import type { DbName } from "./check.js";
 import { CommitError } from "./errors.js";
 import { readDestroyed, recordDestroyed } from "./idb/destroyed.js";
-import { IdBWal, idbName, openDatabase } from "./idb/wal.js";
+import { idbName, idbWal, openDatabase, type IdBWal } from "./idb/wal.js";
 import { compactLock, ingestLock, openLock, withLock } from "./locks.js";
 import type { RemovableFs } from "./opfs/async-fs.js";
 import { floorOfFiles, recordEmpty } from "./recover.js";
@@ -62,7 +62,7 @@ async function openAlone(name: DbName): Promise<IdBWal | undefined> {
   // Our own probe would block the upgrade.
   probe.close();
   const db = await openDatabase(idbName(name), { version: version + 1 });
-  return db && new IdBWal(name, db);
+  return db && idbWal(name, db);
 }
 
 /** Close `wal` and delete `opfs-lsm-wal/<name>`. Resolves once it is gone. */

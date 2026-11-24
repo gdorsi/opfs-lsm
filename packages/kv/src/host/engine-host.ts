@@ -1,6 +1,6 @@
 import { checkDbName, type DbName } from "../check.js";
 import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
-import { IdBWal, uningestedBytes } from "../idb/wal.js";
+import { openExistingWal, uningestedBytes, type IdBWal } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
@@ -210,7 +210,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
 
   /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
   async function openStores(): Promise<Stores | undefined> {
-    const wal = await IdBWal.openExisting(name);
+    const wal = await openExistingWal(name);
     if (!wal) return undefined;
     const fs = await folder().catch((err: unknown) => {
       wal.close();
@@ -548,7 +548,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
 
   /** `fn` on the WAL database for one operation, or `gone()` when it does not exist. */
   async function withWal<T>(fn: (wal: IdBWal) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
-    const wal = await IdBWal.openExisting(name);
+    const wal = await openExistingWal(name);
     if (!wal) return gone();
     try {
       return await fn(wal);

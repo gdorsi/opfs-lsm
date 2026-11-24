@@ -369,7 +369,7 @@ function sourceSync(): string[] {
   need("recover.ts", /export async function floorOfFiles[\s\S]*?if \(numbers\.length === 0\) return undefined;\s*return atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, SEQ_ZERO\)\), top: numbers\[0\]! \}\);/, "with no WAL database, the row comes from the manifests on disk");
   need("opfs/browser-fs.ts", /class RemovableBrowserFs extends BrowserFs[\s\S]*?async removeFolder\(\): Promise<void> \{\s*await ignoreNotFound\(\(await this\.root\)\.removeEntry\("m", \{ recursive: true \}\)\);\s*await ignoreNotFound\(this\.parent\.removeEntry\(this\.dbName, \{ recursive: true \}\)\);/, "the folder removal takes m/ first, then the folder");
   need("host/shared-worker.ts", /new EngineHost\(\(name\) => findBrowserFs\(name\)\)/, "the SharedWorker host finds the folder and never creates it");
-  need("host/engine-host.ts", /const wal = await IdBWal\.openExisting\(name\);/, "the host opens the WAL database only if it exists");
+  need("host/engine-host.ts", /const wal = await openExistingWal\(name\);/, "the host opens the WAL database only if it exists");
   for (const [file, re, what] of [
     ["host/engine-host.ts", /TabWal\.open|openBrowserFs|\{ create:/, "the host creates no store"],
     ["host/shared-worker.ts", /openBrowserFs/, "the SharedWorker creates no folder"],

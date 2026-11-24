@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName } from "../src/check.js";
 import { forgetDestroyed, readDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
-import { IdBWal, type WalMeta } from "../src/idb/wal.js";
+import { openExistingWal, type WalMeta } from "../src/idb/wal.js";
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type Db } from "../src/index.js";
 import {
   EngineHost,
@@ -124,7 +124,7 @@ function gatedFolder() {
 }
 
 async function walMeta(name: string): Promise<WalMeta> {
-  const wal = (await IdBWal.openExisting(checkDbName(name)))!;
+  const wal = (await openExistingWal(checkDbName(name)))!;
   try {
     return await wal.meta();
   } finally {
@@ -526,7 +526,7 @@ describe("destroyDb", () => {
     await fill(old, "old", 10);
     await old.close();
     // A destroyDb cut off after its row: the WAL database reads empty, and no file is removed.
-    const wal = (await IdBWal.openExisting(checkDbName(name)))!;
+    const wal = (await openExistingWal(checkDbName(name)))!;
     try {
       await recordDestroyed(checkDbName(name), await recordEmpty(wal, fs, undefined));
     } finally {
