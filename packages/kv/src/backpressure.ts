@@ -31,6 +31,8 @@ export class Backpressure {
   private askAt: number;
   /** The flush in flight, if any. */
   private flushing: Promise<boolean> | undefined;
+  /** The wait of the last held write, which the next held write goes after. */
+  private turn: Promise<void> | undefined;
 
   /**
    * `flush` asks the host to flush the WAL and loads what it published. It
@@ -49,20 +51,37 @@ export class Backpressure {
     if (!this.flushing && this.bytes() >= this.askAt) this.start();
   }
 
-  /** True at the hard cap. A write that finds room should not call `admit`: it would yield first. */
-  get full(): boolean {
-    return this.bytes() >= this.caps.hard;
+  /**
+   * True when a write has to go through `admit`: at the hard cap, or while an
+   * earlier write still waits. A write that is not held should not call
+   * `admit`: it would yield first.
+   */
+  get held(): boolean {
+    return this.turn !== undefined || this.bytes() >= this.caps.hard;
   }
 
   /**
-   * Before a write. At the hard cap, wait for the flush in flight, or start
-   * one, and look again. After a flush that failed or left the generation
-   * where it was, writes go on until the table has grown an eighth of the
-   * limit more, so a host that cannot help neither stops writes nor is asked
-   * on every one.
+   * Run `write` once the table has room, after every write that was held
+   * before it: a later write that found room would otherwise append first.
+   * `write` runs in the turn the wait ends, so no other write gets between.
    */
-  async admit(): Promise<void> {
-    while (this.full) {
+  admit<T>(write: () => T | PromiseLike<T>): Promise<T> {
+    const turn = this.turn ? this.turn.then(() => this.room()) : this.room();
+    this.turn = turn;
+    return turn.then(() => {
+      if (this.turn === turn) this.turn = undefined;
+      return write();
+    });
+  }
+
+  /**
+   * At the hard cap, wait for the flush in flight, or start one, and look
+   * again. After a flush that failed or left the generation where it was,
+   * writes go on until the table has grown an eighth of the limit more, so a
+   * host that cannot help neither stops writes nor is asked on every one.
+   */
+  private async room(): Promise<void> {
+    while (this.bytes() >= this.caps.hard) {
       if (!this.flushing && this.bytes() < this.askAt) return;
       await (this.flushing ?? this.start());
     }

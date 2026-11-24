@@ -21,7 +21,7 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
 import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
@@ -424,7 +424,7 @@ async function openStores(
     heldDb = db;
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
-    ingest.watch(name, {
+    db.watch({
       maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
       reserveBytes,
@@ -594,6 +594,8 @@ class DbImpl implements Db {
   private updating: Promise<unknown> = Promise.resolve();
   /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
   private beaten = false;
+  /** The host counts this handle as open, so `closeFor` owes it one `unwatch`. */
+  private watching = false;
 
   constructor(
     readonly name: DbName,
@@ -618,6 +620,13 @@ class DbImpl implements Db {
         document.addEventListener("visibilitychange", this.onVisibility);
       }
     }
+  }
+
+  /** Ask the host to count this handle and apply `policy`. A handle closed during boot is not counted. */
+  watch(policy: WatchPolicy): void {
+    if (this.closed) return;
+    this.watching = true;
+    this.ingestClient.watch(this.name, policy);
   }
 
   private onMessage(data: BusMessage): void {
@@ -972,13 +981,17 @@ class DbImpl implements Db {
   }
 
   /**
-   * Wait out a full memtable before a write (`Backpressure`). Called only
-   * when it is full: a write with room must start its append in the turn it
-   * was called, or a `close` right after a `put` would beat the append.
+   * Start `write` now, or in its turn when the memtable is full or an earlier
+   * write waits (`Backpressure`). A write that is not held must start its
+   * append in the turn it was called, or a `close` right after a `put` would
+   * beat the append.
    */
-  private async admit(): Promise<void> {
-    await this.pressure.admit();
-    this.ensureOpen();
+  private admitted<T>(write: () => Promise<T>): Promise<T> {
+    if (!this.pressure.held) return write();
+    return this.pressure.admit(() => {
+      this.ensureOpen();
+      return write();
+    });
   }
 
   /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
@@ -996,14 +1009,14 @@ class DbImpl implements Db {
    * reads before each attempt, and a `plan` that still misses appends
    * nothing and is retried. A tail that names a generation this tab lacks
    * appends nothing either: the tab loads it and tries again (`retrying`).
-   * It first waits out a full memtable (`admit`). Resolves with the
+   * It first waits out a full memtable (`admitted`). Resolves with the
    * appended seq, undefined when `plan` chose no ops, and `plan`'s result.
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
-    if (this.pressure.full) await this.admit();
+    await this.admitted(async () => undefined);
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
@@ -1102,8 +1115,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return this.mem.appliedThrough;
-    if (this.pressure.full) await this.admit();
-    return this.commit(ops);
+    return this.admitted(() => this.commit(ops));
   }
 
   /**
@@ -1202,7 +1214,7 @@ class DbImpl implements Db {
       // With keys of `tx.read`, `got` is more than the values of `ks`, and `plan` reads those again.
       warmed = wanted === ks ? [at, got] : undefined;
     };
-    if (this.pressure.full) await this.admit();
+    await this.admitted(async () => undefined);
     await warm();
     this.ensureOpen();
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
@@ -1394,7 +1406,7 @@ class DbImpl implements Db {
       }
       this.bus.close();
     }
-    this.ingestClient.unwatch(this.name);
+    if (this.watching) this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
     this.release(this.installed);
