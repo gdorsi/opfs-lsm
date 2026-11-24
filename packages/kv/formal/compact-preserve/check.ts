@@ -264,7 +264,8 @@ function appliesMarksInSource(): boolean {
   const compact = read("../../src/host/compact.ts");
   return (
     /if\s*\(\s*this\.covered\(key,\s*keyLen,\s*winner\.seq\)\s*\)\s*\{\s*this\.retire\(w\);\s*return\s+0;\s*\}\s*if\s*\(\s*winner\.put\s*\|\|\s*!this\.dropTombstones\s*\)/.test(engine) &&
-    /return\s+through\s*>\s*0\s*&&\s*seq\s*<=\s*through;/.test(engine) &&
+    // A key is in a mark from its start up to its end exclusive, and the highest `through` of those marks judges it.
+    /compareBytes\(marks \+ start, end - start, key, keyLen\) <= 0 &&\s*\(!hasEnd \|\| compareBytes\(key, keyLen, stop, stopLen\) < 0\)\s*\)\s*\{[^}]*through = max\(through, load<u64>\(marks \+ next\)\);\s*\}[\s\S]*?return\s+through\s*>\s*0\s*&&\s*seq\s*<=\s*through;/.test(engine) &&
     /private\s+emit\(e:\s*SstEntry\):\s*void\s*\{\s*if\s*\(\s*this\.marks\.length\s*>\s*0\s*&&\s*e\.seq\s*<=\s*throughAt\(\s*this\.marks\s*,\s*e\.key\s*\)\s*\)\s*return;/.test(session) &&
     /marksThrough:\s*base\.through\s*\}/.test(compact)
   );
