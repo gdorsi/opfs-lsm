@@ -121,7 +121,7 @@ const count = await db.update([enc("count")], ([current], tx) => {
 count; // => 1
 ```
 
-The body usually runs once, and the update costs what a `put` costs. It runs again when another write landed between its read and its commit, when it writes nothing, and when the browser refuses the write for lack of space: three times at most. Only its last run counts: what it wrote and what it returned. So keep it free of side effects, such as a counter outside the database or a network call. The updates of one handle run one at a time, in call order.
+The body usually runs once, and the update costs what a `put` costs. It runs again when another write landed between its read and its commit, when it writes nothing or throws, and when the browser refuses the write for lack of space: three times at most. Only its last run counts: what it wrote, returned or threw. So keep it free of side effects, such as a counter outside the database or a network call. The updates of one handle run one at a time, in call order.
 
 The body reads the keys it learns of while it runs with `tx.read`, such as a key one of the values names. It gets their values as `update` read `keys`: before the body's own writes. When their bytes are not loaded, kv drops that run of the body, loads them and runs the body again.
 

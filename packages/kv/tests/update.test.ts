@@ -181,6 +181,18 @@ describe("update", () => {
     await db.close();
   });
 
+  it("throws only what a body throws at the committed head", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.put(utf("n"), utf("1"));
+    await unheard("n", "5");
+    const read = db.update([utf("n")], ([cur]) => {
+      if (text(cur) !== "5") throw new Error(`read ${text(cur)}`);
+      return text(cur);
+    });
+    expect(await read).toBe("5");
+    await db.close();
+  });
+
   it("writes no more rows that lose while another handle keeps writing, and commits like a put again once it stops", async () => {
     const db = await open("a", new MemoryFs());
     await db.put(utf("n"), utf("1"));
