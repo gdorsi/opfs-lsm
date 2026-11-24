@@ -5,7 +5,6 @@ export {
   type OpenOptions,
   type Db,
   type BatchTx,
-  type UpdateTx,
   type KeyBounds,
   type DeleteRangeOptions,
   type Decode,

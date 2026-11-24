@@ -169,17 +169,6 @@ export interface BatchTx {
   deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
-/** What the body of `update` writes with, and reads the keys it learns of while it runs. */
-export interface UpdateTx extends BatchTx {
-  /**
-   * The values of `keys`, in their order, as `update`'s own keys were read:
-   * before the body's ops. Synchronous. When a key's bytes are not loaded,
-   * `update` drops this run of the body, whether or not the body catches what
-   * `read` throws, loads them and runs the body again.
-   */
-  read(keys: readonly Uint8Array[]): (Uint8Array | undefined)[];
-}
-
 export interface Db {
   /** The name passed to `openDb`. */
   readonly name: string;
@@ -217,17 +206,16 @@ export interface Db {
    * Read `keys` and write as one step: `body` runs synchronously with the
    * values, in the order of `keys`, and its writes commit only if no other
    * write landed since they were read. So there is no conflict to handle,
-   * and concurrent updates lose nothing. A key that only the values name is
-   * read with `tx.read`. `body` usually runs once. It runs again when
-   * another write landed between its read and its commit, when it writes
-   * nothing or throws, and when the browser refuses the write for lack of
-   * space: three times at most, and once more each time `tx.read` waits for
-   * bytes. Only its last run counts, so keep it free of side effects. The
-   * updates of one handle run one at a time, in call order.
+   * and concurrent updates lose nothing. `body` usually runs once. It runs
+   * again when another write landed between its read and its commit, when
+   * it writes nothing or throws, and when the browser refuses the write for
+   * lack of space: three times at most. Only its last run counts, so keep
+   * it free of side effects. The updates of one handle run one at a time,
+   * in call order.
    */
   update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T>;
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
@@ -442,20 +430,15 @@ async function openStores(
   }
 }
 
-/** `read` is `update`'s `tx.read`. A batch has none. */
 function collectBatch(
-  build: (tx: UpdateTx) => unknown,
-  read?: UpdateTx["read"],
+  build: (tx: BatchTx) => unknown,
 ): readonly CheckedOp[] {
   const batch = new CheckedBatch();
   let open = true;
   // A build that catches a check error still rejects the whole batch.
   let failure: { readonly error: unknown } | undefined;
-  const live = () => {
-    if (!open) throw new ConstraintError("tx used after its callback returned");
-  };
   const add = (op: BatchOp) => {
-    live();
+    if (!open) throw new ConstraintError("tx used after its callback returned");
     try {
       batch.add(op);
     } catch (error) {
@@ -470,10 +453,6 @@ function collectBatch(
       delete: (key) => add({ type: "del", key }),
       deleteRange: (bounds, options) =>
         add({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through }),
-      read: (keys) => {
-        live();
-        return read!(keys);
-      },
     });
   } finally {
     open = false;
@@ -484,9 +463,6 @@ function collectBatch(
   if (failure) throw failure.error;
   return batch.ops;
 }
-
-/** What `tx.read` throws on a miss. `update` drops the run whether or not the body lets it through. */
-const READ_MISSED = new Error("tx.read is loading; update runs the body again");
 
 /** An open run file and the number of `Layers` that list it. */
 type Run = {
@@ -1114,7 +1090,7 @@ class DbImpl implements Db {
 
   async update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
@@ -1136,60 +1112,33 @@ class DbImpl implements Db {
    * throws was read at the committed head. It also runs it alone after a row
    * lost (`beaten`): while another tab keeps writing, every row would lose,
    * and cost a round trip more than the transaction alone.
-   *
-   * `tx.read` reads in the turn `body` runs in, so at the state its keys
-   * were read at. A key of it that misses makes the run a miss, and the
-   * next `warm` loads the keys the last run asked for (`wanted`).
    */
   private async updateOnce<T>(
     ks: readonly CheckedKey[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
   ): Promise<T> {
     // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
-    const read = (keys: readonly CheckedKey[]) => keysReader(this.memRows(keys), keys, this.point());
+    const read = () => keysReader(this.memRows(ks), ks, this.point());
     /** What the last `warm` read, and the `appliedThrough` it read at. */
     let warmed: [Seq, (Uint8Array | undefined)[]] | undefined;
-    /** What `warm` loads: `ks`, then the keys the last run gave `tx.read`. */
-    let wanted = ks;
     const plan = () => {
-      const now = (keys: readonly CheckedKey[]) => held.attempt(() => read(keys)(this.installed.levels));
       // Nothing landed since the warm read, so it read this state: no second read.
-      const values = warmed?.[0] === this.mem.appliedThrough ? warmed[1] : now(ks);
+      const values =
+        warmed?.[0] === this.mem.appliedThrough ? warmed[1] : held.attempt(() => read()(this.installed.levels));
       warmed = undefined;
       if (values instanceof Miss) return held.keep(values);
-      wanted = ks;
-      let missed: Miss | undefined;
       let result!: T;
-      let ops: readonly CheckedOp[] = [];
-      try {
-        ops = collectBatch(
-          (tx) => {
-            result = body(values, tx);
-            return result;
-          },
-          (keys) => {
-            if (!missed) {
-              const more = keys.map(checkKey);
-              wanted = wanted.concat(more);
-              const got = now(more);
-              if (!(got instanceof Miss)) return got;
-              missed = got;
-            }
-            throw READ_MISSED;
-          },
-        );
-      } catch (err) {
-        if (!missed) throw err;
-      }
-      return missed ? held.keep(missed) : { ops, result };
+      const ops = collectBatch((tx) => {
+        result = body(values, tx);
+        return result;
+      });
+      return { ops, result };
     };
     const warm = async () => {
       // The rows, levels and marks it reads are all taken now, so the values are the state at `at`.
       const at = this.mem.appliedThrough;
-      const got = await this.settleInstalled(read(wanted), held);
-      // With keys of `tx.read`, `got` is more than the values of `ks`, and `plan` reads those again.
-      warmed = wanted === ks ? [at, got] : undefined;
+      warmed = [at, await this.settleInstalled(read(), held)];
     };
     // Only its turn: the handle is checked open again below.
     await this.pressure.admit();

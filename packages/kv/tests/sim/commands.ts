@@ -382,17 +382,15 @@ type UpdateAction = "keep" | "del" | "put";
 
 /**
  * `update` reads `keys` and writes in one transaction, so it reads the prefix
- * just before its own seq. The body reads the last `late` keys with `tx.read`,
- * writes `more` ops to any key after the ones `actions` picks, and returns a
- * value, or throws: then the update rejects with that error and writes
- * nothing (README, "Read-modify-write").
+ * just before its own seq. The body writes `more` ops to any key after the
+ * ones `actions` picks, and returns a value, or throws: then the update
+ * rejects with that error and writes nothing (README, "Read-modify-write").
  */
 class UpdateCmd implements Cmd {
   constructor(
     private readonly keys: readonly number[],
     private readonly actions: readonly UpdateAction[],
     private readonly value: ValueSpec,
-    private readonly late: number,
     private readonly more: readonly OpSpec[],
     private readonly throws: boolean,
   ) {}
@@ -400,7 +398,6 @@ class UpdateCmd implements Cmd {
   async run(m: Model, r: Sut): Promise<void> {
     m.scribble();
     const keys = this.keys.map((k) => KEYS[k]!);
-    const first = keys.slice(0, Math.max(0, keys.length - this.late));
     const ops: OracleOp[] = [];
     keys.forEach((key, i) => {
       const action = this.actions[i % this.actions.length];
@@ -412,8 +409,8 @@ class UpdateCmd implements Cmd {
     const failure = new Error("the body threw");
     const result = {};
     const run = () =>
-      r.db.update(first, (got, tx) => {
-        seen = [...got, ...tx.read(keys.slice(first.length))];
+      r.db.update(keys, (got, tx) => {
+        seen = got;
         applyOps(tx, ops);
         if (this.throws) throw failure;
         return result;
@@ -438,7 +435,7 @@ class UpdateCmd implements Cmd {
     }
   }
   toString = () =>
-    `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}] late ${this.late}` +
+    `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}]` +
     (this.more.length ? ` then ${this.more.map(opName).join("; ")}` : "") +
     (this.throws ? " throws" : "");
 }
@@ -743,11 +740,10 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
         fc.array(keyArb, { minLength: 1, maxLength: 3 }),
         fc.array(fc.constantFrom<UpdateAction>("keep", "del", "put"), { minLength: 1, maxLength: 3 }),
         valueArb,
-        fc.nat({ max: 3 }),
         fc.array(opArb, { maxLength: 2 }),
         fc.oneof({ weight: 4, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
       )
-      .map(([keys, actions, value, late, more, throws]) => new UpdateCmd(keys, actions, value, late, more, throws)),
+      .map(([keys, actions, value, more, throws]) => new UpdateCmd(keys, actions, value, more, throws)),
     keyArb.map((k) => new GetCmd(k)),
     keyArb.map((k) => new GetCmd(k)),
     getManyArb.map((spec) => new GetManyCmd(spec)),
