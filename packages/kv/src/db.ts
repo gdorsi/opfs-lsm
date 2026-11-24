@@ -1016,7 +1016,7 @@ class DbImpl implements Db {
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
     warm?: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
-    await this.admitted(async () => undefined);
+    if (this.pressure.held) await this.pressure.admit(() => this.ensureOpen());
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
@@ -1214,7 +1214,7 @@ class DbImpl implements Db {
       // With keys of `tx.read`, `got` is more than the values of `ks`, and `plan` reads those again.
       warmed = wanted === ks ? [at, got] : undefined;
     };
-    await this.admitted(async () => undefined);
+    if (this.pressure.held) await this.pressure.admit(() => this.ensureOpen());
     await warm();
     this.ensureOpen();
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.

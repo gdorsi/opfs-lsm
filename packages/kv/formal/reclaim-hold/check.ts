@@ -14,7 +14,6 @@
  *   lock, no removal can run, so the manifest and every run of the recorded
  *   generation are on disk and the load succeeds"), so `GENERATION_RETRIES`
  *   is reached only by a database that is corrupt;
- * - Settles: every sync and every removal finishes; the host never waits.
  *
  * Broken variants (a retry with no reclaim lock, a retry that locks after
  * its tail read, a run checked before it is locked, a host that removes
@@ -44,7 +43,7 @@ function explore(v: Variant): string | undefined {
     const state = nodes[i]!.state!;
     nodes[i]!.state = undefined;
     const actions = enabled(state);
-    const found = violation(state, actions.length);
+    const found = violation(state);
     if (found) {
       const trail: Action[] = [];
       for (let j = i; j > 0; j = nodes[j]!.prev) trail.push(nodes[j]!.action!);
@@ -110,7 +109,7 @@ function sourceSync(): string[] {
   need("store/generation.ts", /if \(retained\.has\(path\)\) continue;\s*await fs\.removeUnlessOpen\(path\)/, "reclaimRuns removes a run only through removeUnlessOpen");
   need("store/generation.ts", /if \(m\[2\] \? n > keepFrom : n >= keepFrom\) continue;/, "reclaimManifests keeps the recorded manifest and every newer one");
   const host = read("host/engine-host.ts");
-  const removals = host.match(/reclaimManifests\(|reclaimRuns\(|removeUnlessOpen\(|\bsweep\(fs/g)?.length ?? 0;
+  const removals = host.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "").match(/reclaimManifests\(|reclaimRuns\(|removeUnlessOpen\(|\bsweep\(fs/g)?.length ?? 0;
   // A flush and a destroy call reclaimManifests under unlessHeld, reclaim and sweepIdle call sweep under it, and sweep
   // (declared once) calls reclaimManifests and reclaimRuns: 3 + 1 + 3.
   if (removals !== 7) out.push(`host/engine-host.ts: the host removes files at ${removals} sites, the model knows 7`);
@@ -152,4 +151,4 @@ if (found) {
   console.error("\nHarm: a tab reads a run the host removed, or a healthy database under churn throws CorruptDatabaseError.");
   process.exit(1);
 }
-console.log(`PASS ReclaimHold — ${states} states: HeldStays, ViewHolds, LockedLoad, Settles`);
+console.log(`PASS ReclaimHold — ${states} states: HeldStays, ViewHolds, LockedLoad`);

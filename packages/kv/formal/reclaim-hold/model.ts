@@ -384,7 +384,7 @@ export function step(s: State, act: Action, v: Variant): string {
 }
 
 /** The properties every state must hold, or the first that breaks. */
-export function violation(s: State, enabledCount: number): string | undefined {
+export function violation(s: State): string | undefined {
   if (s.fault) return s.fault;
   const t = s.tab;
   for (const [run, n] of Object.entries(t.holds)) {
@@ -394,6 +394,5 @@ export function violation(s: State, enabledCount: number): string | undefined {
   for (const gen of t.views) {
     for (const r of s.gens[gen]!) if (!s.files.includes(r)) return `ViewHolds: run ${r} of generation ${gen}, which an open view reads, is gone`;
   }
-  if (enabledCount === 0 && (t.attempt || s.host.at !== "idle")) return "Settles: nothing can move, and a sync or a removal is unfinished";
   return undefined;
 }

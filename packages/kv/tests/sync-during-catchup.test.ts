@@ -27,7 +27,11 @@ afterEach(() => {
 function gated(inner: ReadFs) {
   let open!: () => void;
   let gate: Promise<void> | undefined;
-  const wait = () => gate ?? Promise.resolve();
+  let reached: (() => void) | undefined;
+  const wait = () => {
+    if (gate) reached?.();
+    return gate ?? Promise.resolve();
+  };
   const fs: ReadFs = {
     read: (path, offset, length) => wait().then(() => inner.read(path, offset, length)),
     open: (path) => wait().then(() => inner.open(path)),
@@ -35,7 +39,11 @@ function gated(inner: ReadFs) {
   };
   return {
     fs,
-    close: () => (gate = new Promise((resolve) => (open = resolve))),
+    /** Resolves once a call waits at the gate. */
+    close: () => {
+      gate = new Promise((resolve) => (open = resolve));
+      return new Promise<void>((resolve) => (reached = resolve));
+    },
     open: () => {
       gate = undefined;
       open();
@@ -59,11 +67,11 @@ describe("sync() while a catch-up is in flight", () => {
     expect(await reader.get(b(1))).toEqual(b(1));
 
     // A flush the reader has not loaded: its next catch-up reads the WAL, then waits on the gated fs.
-    gate.close();
+    const loading = gate.close();
     await ingest(writer);
     const first = reader.sync();
-    // Let the catch-up read its tail and reach the fs.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The catch-up has read its tail once it reaches the fs.
+    await loading;
 
     await writer.put(b(2), b(2));
     const second = reader.sync();
