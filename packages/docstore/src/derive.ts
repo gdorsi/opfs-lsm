@@ -54,7 +54,7 @@ function encodeDocs(values: readonly unknown[], prepare?: (value: unknown) => un
 function encodeChunk(texts: readonly string[], out: EncodedDoc[]): void {
   if (texts.length === 1) {
     const doc = JSON.parse(texts[0]!) as StoredDoc;
-    out.push({ id: parseId(doc["id"]), bytes: utf8.encode(texts[0]), doc });
+    out.push({ id: parseId(doc["id"]), bytes: utf8Pooled(texts[0]!), doc });
     return;
   }
   const joined = `[${texts.join(",")}]`;
@@ -305,11 +305,47 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
 }
 const EMPTY = new Uint8Array(0);
 
+/**
+ * A covering entry's value. `JSON.stringify` writes an object with a
+ * prototype several times faster than one without, so only a field named
+ * "__proto__", which such an object cannot hold, takes the slow one.
+ */
 function fieldsValue(doc: StoredDoc, include: readonly string[]): Uint8Array {
-  // No prototype, so a field named "__proto__" is copied like any other.
-  const fields: Record<string, unknown> = Object.create(null);
-  for (const f of include) if (Object.hasOwn(doc, f)) fields[f] = doc[f];
-  return utf8.encode(JSON.stringify(fields));
+  let fields: Record<string, unknown> = {};
+  for (const f of include) {
+    if (f === "__proto__") fields = Object.assign(Object.create(null), fields);
+    if (Object.hasOwn(doc, f)) fields[f] = doc[f];
+  }
+  return utf8Pooled(JSON.stringify(fields));
+}
+
+const POOL_BYTES = 16 * 1024;
+let pool = new Uint8Array(0);
+let used = 0;
+
+/**
+ * The same bytes as `utf8.encode`, as a view of a shared buffer when the
+ * text is short: `encode` allocates a buffer per call, which costs more than
+ * encoding a short text. kv copies what a write hands it, so the view only
+ * has to last until then, and a buffer is never written twice.
+ */
+function utf8Pooled(text: string): Uint8Array {
+  const n = text.length;
+  // A UTF-16 unit is at most 3 UTF-8 bytes.
+  if (n * 3 > POOL_BYTES / 4) return utf8.encode(text);
+  if (used + n * 3 > pool.length) {
+    pool = new Uint8Array(POOL_BYTES);
+    used = 0;
+  }
+  const at = used;
+  let i = 0;
+  for (; i < n; i++) {
+    const c = text.charCodeAt(i);
+    if (c > 0x7f) break;
+    pool[at + i] = c;
+  }
+  used = i === n ? at + n : at + utf8.encodeInto(text, pool.subarray(at)).written;
+  return pool.subarray(at, used);
 }
 
 function readPath(doc: StoredDoc, path: Path): unknown {
