@@ -838,22 +838,29 @@ export async function recordNew(wal: IdBWal, expect: WalMeta): Promise<boolean> 
 /**
  * Empty the database: drop every record, and record generation 0 with
  * `head` and `ingestedThrough` at `head`, and `topGeneration` and
- * `destroyedTop` at `top`. Writes nothing and returns false unless `meta`
- * still reads `expect`. Resolves once the commit is on disk (durability
- * "strict"), so no power loss keeps a file removed after it and loses it.
+ * `destroyedTop` at `top`. Writes nothing and returns undefined unless
+ * `meta` still reads `expect`. Resolves once the commit is on disk
+ * (durability "strict"), so no power loss keeps a file removed after it and
+ * loses it. Returns the head it recorded.
+ *
+ * `pastAppends` is for a destroy that open handles keep writing through:
+ * appends since `expect` was read are no change, and the head goes past
+ * them too. Without it a steady writer would make every attempt stale.
  */
 export async function emptyWal(
   wal: IdBWal,
-  emptied: { readonly expect: WalMeta; readonly head: Seq; readonly top: Generation },
-): Promise<boolean> {
-  const { expect, head, top } = emptied;
+  emptied: { readonly expect: WalMeta; readonly head: Seq; readonly top: Generation; readonly pastAppends?: boolean },
+): Promise<Seq | undefined> {
+  const { expect, top, pastAppends = false } = emptied;
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readwrite", { durability: "strict" });
   const done = txDone(tx);
   const now = await readMeta(tx);
-  if (!sameMeta(now, expect)) {
+  const appended = pastAppends && now.head > expect.head;
+  if (!sameMeta(now, appended ? { ...expect, head: now.head } : expect)) {
     await done;
-    return false;
+    return undefined;
   }
+  const head = appended ? asSeq(Math.max(emptied.head, nextSeq(now.head))) : emptied.head;
   const meta = tx.objectStore(META_STORE);
   const records = tx.objectStore(WAL_STORE);
   records.delete(IDBKeyRange.upperBound(now.head));
@@ -863,7 +870,7 @@ export async function emptyWal(
   meta.put(top, META_TOP);
   meta.put(top, META_DESTROYED_TOP);
   await done;
-  return true;
+  return head;
 }
 
 /** Record `generation` and its `manifest` bytes unless a newer one is already recorded. */

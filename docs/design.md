@@ -500,8 +500,8 @@ For `dangerousDestroy`, the host:
    current step.
 2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
    is on disk. It drops every WAL record and records generation 0, with `ingestedThrough` one
-   past every seq the WAL or a manifest on disk names, and `topGeneration` and `destroyedTop` at
-   the highest manifest number in use.
+   past every seq a manifest on disk names and past the head the transaction reads, so a tab that
+   keeps writing never delays it, and `topGeneration` and `destroyedTop` at the top manifest number.
 3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip while a
    tab holds the reclaim lock, and the sweep skips each run a tab still holds open. A tab holds
    its runs until it installs generation 0, or until a `view` that started before the destroy ends.
