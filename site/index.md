@@ -273,7 +273,9 @@ await db.view(async (snap) => {
 
 ## Our benchmarks
 
-What a user of your app waits for: a screen's reads to the last answer, a first load, an edit, a sync batch landing under open screens.
+We aim to make web apps faster, and so we optimize for loading multiple queries concurrently and warm navigations.
+
+These benchmarks show our work in this direction.
 
 <Benchmarks :charts="$frontmatter.bench" />
 
