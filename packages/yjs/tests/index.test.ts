@@ -375,3 +375,23 @@ test("clearData after a failed write removes the whole doc its final flush store
   assert.equal(again.p.loadedUpdates, 0);
   assert.equal(again.doc.getText("t").toString(), "");
 });
+
+test("clearData while the doc loads leaves nothing stored, though its stored updates reached the trim size", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "doc", 1000);
+  for (let i = 0; i < 12; i++) seed.doc.getText("t").insert(i, "x");
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "doc", doc, 10);
+  p.trimDelayMs = 0;
+  await p.clearData();
+  await p.whenSynced;
+  await sleep(20);
+  assert.equal(doc.getText("t").toString(), "", "a destroyed persistence applies nothing");
+
+  const again = await reopen(db, "doc", 1000);
+  assert.equal(again.p.loadedUpdates, 0);
+  assert.equal(again.doc.getText("t").toString(), "");
+});
