@@ -1,4 +1,3 @@
-import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import { raiseGeneration } from "../idb/wal.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
@@ -6,7 +5,7 @@ import { reconcile, type Trusted } from "../recover.js";
 import { nextGeneration, type Generation } from "../seq.js";
 import { openMerge, type MergeCore } from "../store/engine.js";
 import {
-  loadGeneration,
+  loadRecorded,
   manifestNumbers,
   publishGeneration,
   type GenerationMeta,
@@ -162,8 +161,7 @@ export async function installStep(
   trusted: Trusted,
 ): Promise<Generation> {
   const base = await reconcile(wal, fs, trusted);
-  const meta = await loadGeneration(fs, base.generation);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+  const meta = await loadRecorded(fs, base.generation);
   const live = new Set(meta.runs.map((r) => r.path));
   if (!step.inputs.every((p) => live.has(p))) {
     throw new Error("compaction inputs left the recorded generation");
