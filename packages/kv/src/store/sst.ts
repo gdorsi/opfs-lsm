@@ -242,15 +242,9 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
 /** One block's bytes: a u32 record count at `start`, then records up to `end`. */
 export type BlockBytes = { buf: Uint8Array; view: DataView; start: number; end: number };
 
-export function blockBytes(
-  buf: Uint8Array,
-  view: DataView,
-  dataStart: number,
-  ix: { readonly offset: number; readonly length: number },
-): BlockBytes {
-  const start = dataStart + ix.offset;
-  const end = start + ix.length;
-  if (end > buf.byteLength || ix.length < 4) throw new CorruptDatabaseError("sst block OOB");
+export function blockBytes(buf: Uint8Array, view: DataView, start: number, length: number): BlockBytes {
+  const end = start + length;
+  if (end > buf.byteLength || length < 4) throw new CorruptDatabaseError("sst block OOB");
   return { buf, view, start, end };
 }
 

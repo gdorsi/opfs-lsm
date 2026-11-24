@@ -85,7 +85,7 @@ async function scanBoth(block: Uint8Array, pattern: Uint8Array): Promise<"same" 
   return bounded("scan_block_contains (both)", () => {
     const w = wasmOutcome("scanBlockContains", () => [...unpackHits(scanBlockContainsIn(wasm, block, packPatterns([pattern])))]);
     const t = tsOutcome("blockEntries", () => {
-      const b = blockBytes(block, new DataView(block.buffer, block.byteOffset, block.byteLength), 0, { offset: 0, length: block.byteLength });
+      const b = blockBytes(block, new DataView(block.buffer, block.byteOffset, block.byteLength), 0, block.byteLength);
       const next = blockEntries(b);
       const out: LayerEntry[] = [];
       for (let e = next(); e; e = next()) {
