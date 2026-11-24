@@ -104,9 +104,7 @@ export class SstReader {
     const p = pageOfBlock(index, b);
     const page = this.page(meta, p, "main");
     if (page instanceof Miss) return page;
-    const at = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
-    const length = index.blockStart[b + 1]! - index.blockStart[b]!;
-    return findInBlock(blockBytes(page.buf, page.view, 0, { offset: at, length }), key);
+    return findInBlock(blockIn(index, b, p, page), key);
   }
 
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
@@ -214,9 +212,6 @@ export class SstReader {
           if (page instanceof Miss) return page;
           at = { p, page };
         }
-        const { page } = at;
-        const offset = index.blockStart[b]! - index.blockStart[index.pageFirst[p]!]!;
-        const length = index.blockStart[b + 1]! - index.blockStart[b]!;
         // Every key of block `b` is at or after its separator and before the next block's.
         mayPass =
           !!stopAt &&
@@ -225,7 +220,7 @@ export class SstReader {
             : b + 1 < blockCount
               ? compareSepAt(index, b + 1, stopAt) > 0
               : compareBytes(index.last, stopAt) >= 0);
-        take = open(blockBytes(page.buf, page.view, 0, { offset, length }), seek);
+        take = open(blockIn(index, b, p, at.page), seek);
         shared = -1;
         b += step;
         seek = undefined;
@@ -288,6 +283,12 @@ function readAhead(load: (page: number) => Maybe<Page>, last: number, step: 1 | 
       return page;
     },
   };
+}
+
+/** Block `b`, which sits in page `p` of the run, as that page holds it. */
+function blockIn(index: RunIndex, b: number, p: number, page: Page): BlockBytes {
+  const { blockStart } = index;
+  return blockBytes(page.buf, page.view, blockStart[b]! - blockStart[index.pageFirst[p]!]!, blockStart[b + 1]! - blockStart[b]!);
 }
 
 /** The last page a scan of `bounds` can reach: the highest going forward, the lowest going back. */
