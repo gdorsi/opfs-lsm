@@ -113,6 +113,16 @@ const NO_CATALOG = new Uint8Array(0);
 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
+/** The collection and the plan of an index while it is building. By ids, as `settleIndex` names it. */
+function building(bound: Bound, collection: CollectionId, index: IndexId): { readonly coll: BoundCollection; readonly plan: IndexPlan } | undefined {
+  for (const coll of bound.collections.values()) {
+    if (coll.id !== collection) continue;
+    const plan = coll.maintained.find((p) => p.id === index);
+    return plan?.state.kind === "building" ? { coll, plan } : undefined;
+  }
+  return undefined;
+}
+
 class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   private readonly jobs = new Map<string, Promise<void>>();
   /** What each declared collection's handle reports as `indexes`. */
@@ -275,7 +285,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   startJobs(): void {
     for (const coll of this.bound.collections.values()) {
       for (const plan of coll.maintained) {
-        if (plan.state.kind === "building") this.job(backfillKey(coll, plan), () => this.backfill(coll.name, plan.id));
+        if (plan.state.kind === "building") this.job(backfillKey(coll, plan), () => this.backfill(coll.id, plan.id));
       }
     }
     for (const p of this.bound.catalog.dropped) {
@@ -302,13 +312,13 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
    * Progress is not stored, because storing it in the catalog would make
    * every concurrent writer retry once per chunk.
    */
-  private async backfill(collection: string, index: IndexId): Promise<void> {
+  private async backfill(collection: CollectionId, index: IndexId): Promise<void> {
     let from: Uint8Array | undefined;
     for (;;) {
       const bound = this.bound;
-      const coll = bound.collections.get(collection);
-      const plan = coll?.maintained.find((p) => p.id === index);
-      if (!coll || !plan || plan.state.kind !== "building") return;
+      const now = building(bound, collection, index);
+      if (!now) return;
+      const { coll, plan } = now;
       const rowPrefix = coll.rows.prefix;
       const rows: Entry[] = [];
       const derived: (Entry[] | Unindexable)[] = [];

@@ -333,21 +333,27 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
   return { format: FORMAT, version: declared.version, nextCollectionId, collections, dropped };
 }
 
-/** A building index leaves `building` for `state`. A failed one also drops its entries. Anything else is already settled: undefined. */
+/**
+ * A building index leaves `building` for `state`. A failed one also drops its
+ * entries. Anything else is already settled: undefined. The index is named by
+ * ids: a collection id is never reused, while a collection dropped and
+ * declared again reuses its name and its index ids.
+ */
 export function settleIndex(
   c: StoredCatalog,
-  collection: string,
+  collection: CollectionId,
   index: IndexId,
   state: Exclude<IndexState, { kind: "building" }>,
 ): StoredCatalog | undefined {
-  const coll = c.collections[collection];
-  const entry = coll && Object.entries(coll.indexes).find(([, i]) => i.id === index);
+  const found = Object.entries(c.collections).find(([, coll]) => coll.id === collection);
+  const entry = found && Object.entries(found[1].indexes).find(([, i]) => i.id === index);
   if (!entry || entry[1].state.kind !== "building") return undefined;
+  const [collName, coll] = found;
   const [name, was] = entry;
   return {
     ...c,
-    collections: { ...c.collections, [collection]: { ...coll, indexes: { ...coll.indexes, [name]: { ...was, state } } } },
-    dropped: state.kind === "failed" ? [...c.dropped, { collection: coll.id, index: was.id }] : c.dropped,
+    collections: { ...c.collections, [collName]: { ...coll, indexes: { ...coll.indexes, [name]: { ...was, state } } } },
+    dropped: state.kind === "failed" ? [...c.dropped, { collection, index }] : c.dropped,
   };
 }
 
