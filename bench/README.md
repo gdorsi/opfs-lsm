@@ -168,7 +168,7 @@ The definitions and sources are in [docs/research/benchmark-prior-art.md](../doc
 
 `driver/budgets.ts` lists upper bounds on W-Amp total and Space-Amp for named rows: a workload, a contender, a size and a phase. Every `run` and `smoke` checks the rows it recorded, and one run over a bound fails it. `bench:smoke --check` also runs the rows above size `tiny` once, since compaction writes little at 1,000 entries.
 
-Timings on a shared CI runner are too noisy to gate. Byte counters are not: over 21 runs of `kv/fillrandom` at size `small`, WAL bytes were identical and flush bytes stayed within 0.1%. Each budget sits a few percent above the value on the commit that set it. A run that settles to another layout writes less, so only an upper bound is checked.
+Timings on a shared CI runner are too noisy to gate. Byte counters are not: over 21 runs of `kv/fillrandom` at size `small`, WAL bytes were identical and flush bytes stayed within 0.1%. Each budget sits a few percent above the value on the commit that set it. Only an upper bound is checked, so a row that can settle to more than one layout takes its budget from the layout that writes most. The tiny tracker is such a row: its history is flushed 3 or 4 times, as the flushes fall, and the fourth L0 run starts a compaction.
 
 A budget whose row ran but recorded no such number fails too, so renaming a phase cannot switch a budget off. The budgets hold for kv's default options and seed 1: a run with `--cache-bytes`, `--compaction-memory-bytes` or another `--seed` is not checked, and the command says so. To raise a budget, say in the commit what made the engine write more.
 
