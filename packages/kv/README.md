@@ -30,8 +30,8 @@ Keys and values are `Uint8Array`, so the examples use the `enc` and `dec` helper
 // Every tab that opens "notes" shares it. A write lands in a
 // write-ahead log (WAL) in IndexedDB. One SharedWorker per name,
 // `opfs-lsm:notes`, flushes the WAL into sorted SST files in the
-// Origin Private File System (OPFS) once 1 MiB is waiting, and
-// compacts them.
+// Origin Private File System (OPFS) once 1 MiB is waiting, or sooner
+// when writes pause, and compacts them.
 const db = await openDb({ name: "notes" });
 
 await openDb({ name: "my notes" });
@@ -478,8 +478,8 @@ try {
 | Class | `code` | When | What to do |
 | --- | --- | --- | --- |
 | `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, or one that failed to start or open, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
-| `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write or a flush fails. `cause` holds the browser's error for a write. | Free space. See [Storage quota](#storage-quota). |
-| `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
+| `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write, a flush or `openDb` fails. `cause` holds the browser's error for a write or an open. | Free space. See [Storage quota](#storage-quota). |
+| `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone, or a run was written by an earlier build whose run format kv no longer reads. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed: by `close()`, by `destroyDb`, or because the browser closed its IndexedDB connection. | Open a new one. |
