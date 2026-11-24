@@ -95,7 +95,8 @@ export type HarnessOpenOptions = OpenOptions &
   };
 
 const memoryFsByName = new Map<string, MemoryFs>();
-const localHosts = new Map<string, EngineHost>();
+/** The in-process host that publishes to each fs. */
+const localHosts = new WeakMap<AsyncFs, EngineHost>();
 
 function memoryFs(name: string): MemoryFs {
   let fs = memoryFsByName.get(name);
@@ -106,11 +107,11 @@ function memoryFs(name: string): MemoryFs {
   return fs;
 }
 
-function localIngest(name: string, fs: AsyncFs): IngestClient {
-  let host = localHosts.get(name);
+function localIngest(fs: AsyncFs): IngestClient {
+  let host = localHosts.get(fs);
   if (!host) {
     host = new EngineHost(() => fs);
-    localHosts.set(name, host);
+    localHosts.set(fs, host);
   }
   return createLocalIngestClient(host);
 }
@@ -119,7 +120,7 @@ function backingOf(options: HarnessOpenOptions): Backing {
   const name = checkDbName(options.name);
   // Memory is never a fallback: only a harness that asks for it gets it.
   const fs = options.fs ?? (options.forceMemory === true ? memoryFs(name) : undefined);
-  if (fs) return { fs, ingest: options.ingest ?? localIngest(name, fs) };
+  if (fs) return { fs, ingest: options.ingest ?? localIngest(fs) };
   return options.ingest ? { ingest: options.ingest } : {};
 }
 
@@ -138,5 +139,4 @@ export async function destroyHarnessDb(options: HarnessOpenOptions & { readonly 
 
 export function __resetMemoryFsForTests(name: string): void {
   memoryFsByName.delete(name);
-  localHosts.delete(name);
 }
