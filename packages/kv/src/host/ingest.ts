@@ -1,12 +1,11 @@
 import { opsBytes } from "../check.js";
-import { CorruptDatabaseError } from "../errors.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { nextGeneration, type Generation, type Seq } from "../seq.js";
 import { reconcile, type Trusted } from "../recover.js";
 import {
-  loadGeneration,
+  loadRecorded,
   publishGeneration,
   publishL0,
 } from "../store/generation.js";
@@ -67,8 +66,7 @@ export async function ingestChunk(
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
-  const prev = await loadGeneration(fs, base.generation);
-  if (!prev) throw new CorruptDatabaseError(`manifest ${base.generation} is gone`);
+  const prev = await loadRecorded(fs, base.generation);
   if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
     return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }

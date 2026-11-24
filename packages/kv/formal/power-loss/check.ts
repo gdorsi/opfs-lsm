@@ -327,8 +327,8 @@ function sourceSync(): string[] {
   const need = (file: string, re: RegExp, what: string) => {
     if (!re.test(read(file))) out.push(`${file}: ${what}`);
   };
-  need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
-  need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadGeneration\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
+  need("host/ingest.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadRecorded\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*publishL0[\s\S]*publishGeneration[\s\S]*through: last[\s\S]*advanceIngested/, "ingest builds on the recorded generation and numbers past the top manifest");
+  need("host/compact.ts", /reconcile\(wal, fs, trusted\)[\s\S]*loadRecorded\(fs, base\.generation\)[\s\S]*nextGeneration\(base\.top\)[\s\S]*through: meta\.through[\s\S]*raiseGeneration/, "install builds on the recorded generation");
   need("idb/wal.ts", /async function advanceIngested[\s\S]*delete\(IDBKeyRange\.upperBound\(existing\)\)/, "advanceIngested keeps the records it folds until the next ingest");
   need("idb/wal.ts", /Math\.max\(head, through, floor\)/, "adopt raises head past every seq a manifest names");
   need("idb/wal.ts", /async function headOf\(tx: IDBTransaction, after: Seq\): Promise<Seq> \{\s*const wal = tx\.objectStore\(WAL_STORE\);\s*if \(\(await reqToPromise\(wal\.getKey\(nextSeq\(after\)\)\)\) === undefined\) return after;\s*const last = await reqToPromise\(wal\.openKeyCursor\(IDBKeyRange\.lowerBound\(after, true\), "prev"\)\);\s*return asSeq\(Math\.max\(num\(last\?\.key\), after\)\);/, "the head is the floor when no record is at floor + 1, else the last WAL key");

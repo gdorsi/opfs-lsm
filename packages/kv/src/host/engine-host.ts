@@ -197,6 +197,10 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
   /** Run compaction passes until no request arrives during one. */
   const compact = coalesced(() => withLock(compactLock(name), compactPass));
 
+  function failed(what: string, err: unknown): void {
+    console.error(`opfs-lsm: ${what} of ${name} failed`, err);
+  }
+
   function currentBudget(): HostBudget {
     const asked = watching?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
     return { ...hostBudget(asked), ...overrides };
@@ -221,10 +225,10 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     return undefined;
   }
 
-  /** `fn` on the stores of one operation, or `gone()` when the database is not there. */
-  async function withStores<T>(fn: (stores: Stores) => Promise<T>, gone: () => T | Promise<T>): Promise<T> {
+  /** `fn` on the stores of one operation, rejecting when the database is not there. */
+  async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
     const stores = await openStores();
-    if (!stores) return gone();
+    if (!stores) throw destroyed();
     try {
       return await fn(stores);
     } finally {
@@ -316,7 +320,6 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
                 await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
                 return folded;
               },
-              () => Promise.reject(destroyed()),
             ),
           ),
         );
@@ -398,7 +401,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
       },
       (err: unknown) => {
         if (isClosedDatabase(err)) return;
-        console.error(`opfs-lsm: reading the WAL of ${name} failed`, err);
+        failed("reading the WAL", err);
       },
     );
   }
@@ -483,7 +486,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         compact().catch(() => undefined);
       } catch (err) {
         // A database `destroyDb` removed is not a failure.
-        if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${name} failed`, err);
+        if (!(err instanceof ClosedError)) failed("ingest", err);
         watch.triggerAt = watch.pendingBytes + watch.maxWalBytes;
       } finally {
         watch.state = "idle";
@@ -516,7 +519,6 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
               await unlessHeld(name, () => reclaimManifests(fs, asGeneration(Number.POSITIVE_INFINITY)));
               await reclaim(fs, wal);
             },
-            () => Promise.reject(destroyed()),
           ),
         ),
       );
@@ -537,7 +539,6 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         async ({ wal, fs }) => {
           trusted = (await reconcile(wal, fs, undefined)).generation;
         },
-        () => Promise.reject(destroyed()),
       ),
     );
   }
@@ -645,7 +646,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     try {
       await onReserve({ kind: "settle", through: base.through, head, target: watch.reserveBytes });
     } catch (err) {
-      console.error(`opfs-lsm: writing the reserve of ${name} failed`, err);
+      failed("writing the reserve", err);
     }
   }
 
@@ -709,7 +710,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         return undefined;
       case "flush":
         ingest(false).catch((err: unknown) => {
-          if (!(err instanceof ClosedError)) console.error(`opfs-lsm: ingest of ${name} failed`, err);
+          if (!(err instanceof ClosedError)) failed("ingest", err);
         });
         return undefined;
     }
