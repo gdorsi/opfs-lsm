@@ -269,8 +269,6 @@ await db.view(async (snap) => {
 
 <Illustration name="hood" full />
 
-[How it works](../docs/how-it-works.md) · [What kv promises](../docs/how-it-works.md#consistent-not-durable) · [Engine design](../docs/design.md) · [How each promise is verified](../docs/verification.md) · [Browser support](../docs/browser-support.md)
-
 ## Our benchmarks
 
 We aim to make web apps faster, and so we optimize for loading multiple queries concurrently and warm navigations.
