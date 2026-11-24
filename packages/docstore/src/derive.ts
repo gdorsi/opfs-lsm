@@ -99,11 +99,11 @@ export function docEncoder(name: string, validator: StandardSchemaV1 | undefined
   return (values) => encodeDocs(values, validate);
 }
 
-const NOT_A_DOC = "a stored document is not a JSON object";
+const NOT_AN_OBJECT = "a stored value is not a JSON object";
 
 export function decodeDoc(bytes: Uint8Array): StoredDoc {
   const parsed: unknown = JSON.parse(fromUtf8.decode(bytes));
-  if (!isObject(parsed)) throw new CorruptDatabaseError(NOT_A_DOC);
+  if (!isObject(parsed)) throw new CorruptDatabaseError(NOT_AN_OBJECT);
   return parsed as StoredDoc;
 }
 
@@ -121,8 +121,6 @@ export class JsonBatch<V extends Record<string, unknown> = StoredDoc> {
   private buf: Uint8Array | undefined;
   private length = 0;
   private pending = 0;
-
-  constructor(private readonly corrupt = NOT_A_DOC) {}
 
   readonly add = (bytes: Uint8Array): number => {
     if (this.length + bytes.length + 2 > CHUNK) this.flush();
@@ -156,14 +154,14 @@ export class JsonBatch<V extends Record<string, unknown> = StoredDoc> {
     this.buf![this.length] = 0x5d;
     const values: unknown = JSON.parse(fromUtf8.decode(this.buf!.subarray(0, this.length + 1)));
     // A value that is not one JSON document could shift the others into its slot.
-    if (!Array.isArray(values) || values.length !== this.pending) throw new CorruptDatabaseError(this.corrupt);
+    if (!Array.isArray(values) || values.length !== this.pending) throw new CorruptDatabaseError(NOT_AN_OBJECT);
     for (const v of values) this.out.push(this.object(v));
     this.length = 0;
     this.pending = 0;
   }
 
   private object(v: unknown): V {
-    if (!isObject(v)) throw new CorruptDatabaseError(this.corrupt);
+    if (!isObject(v)) throw new CorruptDatabaseError(NOT_AN_OBJECT);
     return v as V;
   }
 }
@@ -175,9 +173,6 @@ export function decodeDocs(values: readonly (Uint8Array | undefined)[]): (Stored
   const slots = values.map((v) => v && batch.add(v));
   return slots.map(batch.done());
 }
-
-/** Parses the values of covering entries. */
-export const fieldsBatch = () => new JsonBatch<Record<string, unknown>>("an index entry's fields are not a JSON object");
 
 export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
