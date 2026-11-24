@@ -50,21 +50,20 @@ All six packages are fixed to one version, the `fixed` setting in `.changeset/co
 
 ## Release
 
-Releases run locally. On `main` with a clean tree, run:
+The [release workflow](.github/workflows/release.yml) runs on every push to `main`.
 
-```sh
-pnpm release
-```
+1. If `.changeset/` has pending files, the workflow opens the pull request `chore(release): version packages`, or updates it if it is open. The pull request holds the result of `changeset version`, which deletes the pending files, bumps the versions, and updates each package's `CHANGELOG.md`.
+2. Merge that pull request to release. The workflow runs `pnpm test` and `pnpm static`, then publishes every package whose version is not on npm yet. It publishes with npm trusted publishing, so npm adds provenance and the repository holds no npm token.
+3. After the publish, the workflow pushes a tag for each package, such as `@opfs-lsm/kv@0.4.0`. It also opens one GitHub release, tagged `v<version>` with the shared version, that lists each package with its changelog entry.
 
-The script in [scripts/release.ts](scripts/release.ts) (Node runs TypeScript directly; use Node 24 from `.nvmrc`, Node 22 can't run `.ts` without a flag):
+The checks on the version pull request do not start by themselves, because the workflow opens it with `GITHUB_TOKEN`. The tests in step 2 run before anything publishes. If the publish fails, re-run the failed jobs of that workflow run. The re-run skips the versions that are already on npm and opens the GitHub release only if it is missing.
 
-1. Checks you are on `main`, the tree is clean, and you are up to date with `origin`.
-2. If `.changeset/` has pending files, runs `changeset version`, which deletes them, bumps the versions, and updates each package's `CHANGELOG.md`, then commits the result as `chore(release): version packages`.
-3. Runs `pnpm test` and `pnpm static`.
-4. Publishes every package whose version is not on npm yet with `changeset publish`, which also tags each published package.
-5. Pushes `main` with the tags and opens one GitHub release for the whole run, tagged `v<version>` with the shared version, listing each published package with its changelog entry.
+The workflow needs a one-time setup:
 
-Pass `--dry-run` to print the plan without changing anything, or `--no-github` to skip step 5. npm provenance needs a supported CI environment, so a local publish runs without it.
+- In the repository settings, under **Actions** > **General**, turn on **Allow GitHub Actions to create and approve pull requests**.
+- On npm, add a trusted publisher to each package that names this repository and the workflow file `release.yml`.
+
+npm accepts a trusted publisher only for a package that exists on npm. Publish a new package once by hand before its first release from the workflow.
 
 To see what the next release contains, run:
 
