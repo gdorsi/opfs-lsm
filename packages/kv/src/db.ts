@@ -21,7 +21,7 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
 import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
@@ -424,7 +424,7 @@ async function openStores(
     heldDb = db;
     await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
-    ingest.watch(name, {
+    db.watch({
       maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
       reserveBytes,
@@ -594,6 +594,8 @@ class DbImpl implements Db {
   private updating: Promise<unknown> = Promise.resolve();
   /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
   private beaten = false;
+  /** The host counts this handle among its watchers. An open that failed before `watch` must not take another tab's place. */
+  private watched = false;
 
   constructor(
     readonly name: DbName,
@@ -1354,6 +1356,11 @@ class DbImpl implements Db {
     }
   }
 
+  watch(policy: WatchPolicy): void {
+    this.ingestClient.watch(this.name, policy);
+    this.watched = true;
+  }
+
   /** Have the host flush the WAL, and load what it published. */
   async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
@@ -1394,7 +1401,7 @@ class DbImpl implements Db {
       }
       this.bus.close();
     }
-    this.ingestClient.unwatch(this.name);
+    if (this.watched) this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
     this.release(this.installed);

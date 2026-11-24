@@ -7,6 +7,8 @@ import {
   ingest,
   openHarnessDb,
 } from "../src/testing.js";
+import type { ReadFs } from "../src/opfs/async-fs.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 
 const enc = new TextEncoder();
 let names = 0;
@@ -93,5 +95,21 @@ describe("a failed openDb", () => {
     await expect(openHarnessDb(options)).rejects.toBeInstanceOf(CorruptDatabaseError);
 
     expect(open()).toEqual({ idb: 0, channels: 0 });
+  });
+
+  it("leaves the host flushing at the maxWalBytes of the handles still open", async () => {
+    const { fs, options } = await storedDatabase();
+    const db = await openHarnessDb({ ...options, maxWalBytes: 100 });
+    const unreadable = (inner: ReadFs): ReadFs => ({
+      read: (path, offset, length) => inner.read(path, offset, length),
+      list: (dir) => inner.list(dir),
+      open: () => Promise.reject(new Error("run unreadable")),
+    });
+    await expect(openHarnessDb({ ...options, wrapFs: unreadable })).rejects.toThrow("run unreadable");
+
+    const seq = await db.put(enc.encode("big"), new Uint8Array(150));
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(seq), { timeout: 2000, interval: 5 });
+    await ingest(db);
+    await db.close();
   });
 });
