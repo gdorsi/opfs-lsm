@@ -233,7 +233,7 @@ function smokeChecks(records: readonly RunRecord[]): string[] {
   return problems;
 }
 
-/** Opt-in ceiling on the worker's peak (the kv SharedWorker or a SQLite contender's dedicated worker): the sum of three peaks (an upper bound): JS heap in use, ArrayBuffer backing store, wasm memory. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
+/** Opt-in ceiling on the worker's peak (the kv SharedWorker or a SQLite contender's dedicated worker): the largest JS heap in use + ArrayBuffer backing store + wasm memory that one worker held in one sample. Chrome's backing counter does not include wasm memory (bench/probes/memory.ts). */
 function peakChecks(records: readonly RunRecord[], maxBytes: number): string[] {
   return measure(records)
     .all.filter((s) => s.at.metric === "mem:workerTotal" && s.summary.max > maxBytes)
