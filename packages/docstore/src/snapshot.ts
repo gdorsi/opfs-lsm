@@ -56,14 +56,6 @@ function trimPage<H>(hits: H[], keyOf: (hit: H) => Uint8Array, limit: number | u
 
 const nothing = () => undefined;
 
-/** What `queryEntries` needs of an entry's value, decoded from the bytes where kv holds them. A covering entry's fields are parsed in a batch. */
-const ENTRY_VALUE: { readonly [K in Exclude<EntryTarget["kind"], "covering">]: Decode<unknown> } = {
-  rows: nothing,
-  sorted: nothing,
-  text: nothing,
-  unique: idOf,
-};
-
 type Merge = ScanPlan & { readonly reverse: boolean; readonly offset: number; readonly want: number | undefined };
 
 /**
@@ -193,7 +185,8 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
     const fields = target.kind === "covering" ? fieldsBatch() : undefined;
-    const decode = fields ? fields.add : ENTRY_VALUE[target.kind as keyof typeof ENTRY_VALUE];
+    // A covering entry's fields are parsed in a batch, a unique entry holds its id, and any other entry has no value to read.
+    const decode: Decode<unknown> = fields ? fields.add : target.kind === "unique" ? idOf : nothing;
     const page = await this.scan(plan, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
     const next = trimPage(page, (h) => h.key, limit);
     if (fields) {
