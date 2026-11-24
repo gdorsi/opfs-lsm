@@ -292,13 +292,15 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
 
 /** `p` is the prefix and the tuple of the components `eq` fixes. */
 function indexBounds(p: Uint8Array, q: QueryInput): [Uint8Array, Uint8Array] {
-  const at = (v: unknown) => tupleBounds(encodeTuple([checkQueryValue(v)], p));
+  const at = (v: unknown) => encodeTuple([checkQueryValue(v)], p);
+  // A unique key can be as long as a key can be, and no stored key continues it.
+  const endOf = (k: Uint8Array) => (k.length === MAX_KEY_BYTES ? past(k) : tupleBounds(k).endExclusive);
   if (q.startsWith !== undefined) {
     const { start, endExclusive } = stringPrefixBounds(p, q.startsWith);
     return [start, endExclusive];
   }
-  const lower = q.gte !== undefined ? at(q.gte).start : q.gt !== undefined ? at(q.gt).endExclusive : p;
-  const upper = q.lte !== undefined ? at(q.lte).endExclusive : q.lt !== undefined ? at(q.lt).start : tupleBounds(p).endExclusive;
+  const lower = q.gte !== undefined ? at(q.gte) : q.gt !== undefined ? endOf(at(q.gt)) : p;
+  const upper = q.lte !== undefined ? endOf(at(q.lte)) : q.lt !== undefined ? at(q.lt) : endOf(p);
   return [lower, upper];
 }
 
