@@ -80,22 +80,23 @@ export default defineWorkload({
     check("check-inserts", true),
     phase("update", async (ctx, store) => {
       const ids = permutation(ctx.model.end, ctx.rng).subarray(0, ctx.params.ops);
+      const batches: { next: Map<string, Todo>; changed: string[]; bytes: number }[] = [];
       for (let k = 0; k < ids.length; k += TX_CHANGE) {
         const next = new Map<string, Todo>();
         for (const i of ids.subarray(k, k + TX_CHANGE)) next.set(row(i, 0).id, write(ctx, i));
-        const bytes = [...next.values()].reduce((t, r) => t + rowBytes(r), 0);
-        const changed = [...next.keys()];
-        await ctx.time("updateMany", bytes, () => store.updateMany(changed, (r) => next.get(r.id)!), next.size);
+        batches.push({ next, changed: [...next.keys()], bytes: [...next.values()].reduce((t, r) => t + rowBytes(r), 0) });
       }
+      for (const { next, changed, bytes } of batches) await ctx.time("updateMany", bytes, () => store.updateMany(changed, (r) => next.get(r.id)!), next.size);
     }),
     phase("delete", async (ctx, store) => {
       const ids = permutation(ctx.model.end, ctx.rng).subarray(0, ctx.params.ops);
+      const batches: string[][] = [];
       for (let k = 0; k < ids.length; k += TX_CHANGE) {
         const slice = [...ids.subarray(k, k + TX_CHANGE)];
         for (const i of slice) ctx.model.remove(i);
-        const keys = slice.map((i) => row(i, 0).id);
-        await ctx.time("deleteMany", slice.length * 13, () => store.deleteMany(keys), slice.length);
+        batches.push(slice.map((i) => row(i, 0).id));
       }
+      for (const keys of batches) await ctx.time("deleteMany", keys.length * 13, () => store.deleteMany(keys), keys.length);
     }),
     phase("reopen-unsettled", async (ctx) => {
       await ctx.store();
