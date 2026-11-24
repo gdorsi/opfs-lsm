@@ -183,20 +183,20 @@ byte layout is in [sst-format.md](sst-format.md).
 
 ### Reading a run
 
-A tab holds each run of its installed generation open and reads it on demand. The first read loads
-the footer, the bloom filter and the block index. Each later read loads the 32 KB page of whole
-blocks that it needs. Reads of one run issued in one turn share one file read, unless they are over
-128 KiB apart or the read would pass 1 MiB. Pages that fill three quarters of a file read share its
-buffer, so the cache can hold a third more than it counts. A scan past its first page reads ahead
-toward its bound: when at most half a window is asked past the page it enters, it doubles the
-window, from 1 page up to 32, and asks for every page up to a window past that page. All of it lives
-in one page cache per tab, capped by `openDb({ cacheBytes })`, 256 MiB by default.
+A tab holds each run of its installed generation open and reads it on demand. The manifest holds
+each run's block index, so a read loads only the blocks it needs. A get with no bloom filter cached
+starts reading the run's tail and does not wait for it. Reads of one run issued in one turn share
+one file read, unless they are over 128 KiB apart or the read would pass 1 MiB. Blocks that fill
+three quarters of a file read share its buffer, so the cache can hold a third more than it counts. A
+scan past its first block reads ahead toward its bound: when at most half a window is asked past the
+block it enters, it doubles the window, from 1 block to 32, and asks for every block up to a window
+past it. One cache per tab holds them, capped by `openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads
 again, keeping what it read outside the cap. A value over the cap is never cached. A point get:
 
 1. Rejects the key if it falls outside the first and last keys of the run.
-2. Rejects it if the bloom filter says no.
+2. Rejects it if the bloom filter is cached and says no.
 3. Binary-searches the block index for the one block that could hold the key.
 4. Binary-searches the offset table of the block, then walks at most 4 records in place.
 
@@ -210,8 +210,8 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 `through` is the seq the runs reach. The runs hold the fold of every seq up to it and no seq
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
-A manifest also holds the marks of the range deletes up to `through` that its runs may still hold
-versions for, and for each run its `marksThrough` (see [Range deletes](#range-deletes)).
+A manifest also holds each run's block index, the marks of the range deletes up to `through` that
+its runs may still hold versions for, and each run's `marksThrough` (see [Range deletes](#range-deletes)).
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -220,8 +220,8 @@ recorded generation and `meta.topGeneration`. Numbers can skip.
 
 `get` reads the memtable, then the installed levels newest first, up to the first that holds the
 key; each L0 run is a level, and a deeper one asks the run whose range holds the key. It goes on
-past a run whose layout is not cached, so those layouts load together, and waits at one that may
-hold the key. It touches neither IndexedDB nor the host. `getMany` reads many keys at once, and with `decode` copies no value.
+past a run whose bloom filter is not cached, so a cold get reads its block of every level at once,
+and waits at one whose filter says it may hold the key. It touches neither IndexedDB nor the host. `getMany` reads many keys at once, and with `decode` copies no value.
 
 `range` merges one cursor per source: the memtable, each L0 run, and each deeper level as a
 whole. For each key the newest source wins, and tombstones are dropped. The waiting sources sit
@@ -433,7 +433,7 @@ between two keys and asks the host for one thing:
 |---|---|
 | NEED | reads the listed byte ranges of the inputs and feeds them in |
 | WRITE | writes the bytes to the open output run |
-| RUN_END | finishes that file and records its size and key range |
+| RUN_END | finishes that file and records its size, key range and block index |
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 

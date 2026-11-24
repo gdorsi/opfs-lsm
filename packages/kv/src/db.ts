@@ -52,10 +52,10 @@ export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./change
 export type OpenOptions = {
   readonly name: string;
   /**
-   * Bytes of run files this tab keeps in memory: cached data pages plus
-   * each run's Bloom filter and block index. Default 256 MiB, at least
-   * 1 MiB. It does not cover the memtable, the wasm heap, or values handed
-   * to the caller. Each `openDb` has its own budget.
+   * Bytes of run files this tab keeps in memory: cached data blocks and
+   * Bloom filters. Default 256 MiB, at least 1 MiB. It does not cover the
+   * block indexes of the manifest, the memtable, the wasm heap, or values
+   * handed to the caller. Each `openDb` has its own budget.
    */
   readonly cacheBytes?: number;
   /**

@@ -455,7 +455,7 @@ dec(await tabB.get(key)); // => "world"
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | Tabs that pass the same name share one database. |
-| `cacheBytes` | 256 MiB, at least 1 MiB | SST pages, Bloom filters and block indexes this tab caches. |
+| `cacheBytes` | 256 MiB, at least 1 MiB | SST blocks and Bloom filters this tab caches. |
 | `memtableBytes` | 16 MiB, at least 1 MiB | Unflushed rows this tab holds. At the limit a write waits for a flush ([Backpressure](../../docs/design.md#backpressure)). |
 | `compactionMemoryBytes` | 32 MiB, at least 8 MiB | Memory the SharedWorker spends to flush and compact ([Memory budget](../../docs/design.md#memory-budget)). |
 | `reserveBytes` | 24 MiB | Bytes the SharedWorker keeps in a file and gives back when the browser refuses a write. 0 keeps none. See [Storage quota](#storage-quota). |
