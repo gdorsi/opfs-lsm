@@ -1,7 +1,9 @@
 /**
  * Content a doc already holds when the persistence is constructed is stored
  * (README). That includes content still pending: an update that arrived
- * before the one it builds on, as a sync provider can deliver.
+ * before the one it builds on, as a sync provider can deliver. Yjs fires no
+ * update event for an update that goes pending while the persistence is
+ * attached, so destroy stores it.
  */
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
@@ -34,6 +36,31 @@ test("a pending update the doc held before the persistence was attached is store
 
   const p = new KvPersistence(db, "d", doc);
   await p.whenSynced;
+  await p.destroy();
+
+  const again = new Y.Doc();
+  const q = new KvPersistence(db, "d", again);
+  await q.whenSynced;
+  Y.applyUpdate(again, first);
+  assert.equal(again.getText("t").toString(), "ab");
+  await q.destroy();
+});
+
+test("an update that goes pending while the persistence is attached is stored by destroy", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const source = new Y.Doc();
+  const updates: Uint8Array[] = [];
+  source.on("update", (u: Uint8Array) => updates.push(u));
+  source.getText("t").insert(0, "a");
+  source.getText("t").insert(1, "b");
+  const [first, second] = updates as [Uint8Array, Uint8Array];
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "d", doc);
+  await p.whenSynced;
+  Y.applyUpdate(doc, second, "provider");
+  assert.ok(doc.store.pendingStructs);
   await p.destroy();
 
   const again = new Y.Doc();
