@@ -142,6 +142,10 @@ test("unicode query keys, data and prefixes come back unchanged", () =>
     await persist(persister, entries);
     const client = await restored(persister);
     for (const [queryKey, data] of entries) assert.equal(client.getQueryData(queryKey), data);
+
+    const bomPrefixed = createQueryPersister(db, { prefix: "﻿key" });
+    await persist(bomPrefixed, [[["bom"], "prefixed"]]);
+    assert.deepEqual(await restoredKeys(bomPrefixed), [["bom"]]);
   }));
 
 test("a serialized query or a prefix with a lone surrogate rejects and writes nothing", () =>
