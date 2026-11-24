@@ -584,15 +584,18 @@ describe("ingest policy", () => {
 
   it("starts no compaction pass when the due time passes with too little waiting to flush", async () => {
     const fs = new MemoryFs();
+    // A name of its own: the host of the test before may still be starting the pass that follows its flush.
+    const name = `${NAME}-due`;
+    onTestFinished(() => deleteWal(name));
     const compactions = vi.fn<() => void>();
     const request = navigator.locks.request.bind(navigator.locks);
-    vi.spyOn(navigator.locks, "request").mockImplementation(((name: string, ...rest: unknown[]) => {
-      if (name === compactLock(NAME)) compactions();
-      return (request as (...args: unknown[]) => Promise<unknown>)(name, ...rest);
+    vi.spyOn(navigator.locks, "request").mockImplementation(((lock: string, ...rest: unknown[]) => {
+      if (lock === compactLock(name)) compactions();
+      return (request as (...args: unknown[]) => Promise<unknown>)(lock, ...rest);
     }) as typeof navigator.locks.request);
     // The reserve is still unwritten, which is when the idle flush starts a pass.
     const db = await openHarnessDb({
-      name: NAME,
+      name,
       writerId: "a",
       fs,
       maxWalBytes: 8000,
