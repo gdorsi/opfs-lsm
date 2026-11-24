@@ -528,10 +528,9 @@
 
 .home-line-name {
   color: var(--vp-c-text-1);
-  font-size: 18px;
-  font-weight: 650;
+  font-size: 17px;
+  font-weight: 600;
   line-height: 24px;
-  letter-spacing: -0.01em;
 }
 
 .home-line-menu {

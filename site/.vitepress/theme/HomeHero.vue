@@ -3,6 +3,7 @@ import { useData, withBase } from "vitepress";
 import { computed } from "vue";
 import AlphaNotice from "./AlphaNotice.vue";
 import HomeDemo from "./HomeDemo.vue";
+import Logo from "./Logo.vue";
 
 /**
  * The home page's first screen: the name line, what opfs-lsm is, and LinearLite running on it in this tab. The copy, the
@@ -28,6 +29,7 @@ const menu = computed(() =>
   <section class="home-hero">
     <div class="home-line">
       <div class="home-line-brand">
+        <Logo />
         <span class="home-line-name">{{ site.title }}</span>
         <AlphaNotice :notice="intro.notice" />
       </div>

@@ -2,6 +2,10 @@
 
 The VitePress site published at https://opfs-lsm.guidodorsi.dev/. Its home page frames a build of the [LinearLite demo](../examples/linearlite-docstore), served from the same origin under `demo/`. `pnpm docs:dev` starts both, and `pnpm docs:build` builds both into `site/.vitepress/dist`.
 
+## Logo
+
+The mark is the sixteen bits of "ol", the initials of opfs-lsm, in ASCII: a 4 by 4 matrix with a row per four bits. [`.vitepress/theme/Logo.vue`](.vitepress/theme/Logo.vue) draws it in the navbar and on the home page. The favicon and the iOS home screen icon are files in [`public/`](../public) at the repository root, because VitePress serves the `public` folder of its source directory, and the site's source directory is the repository.
+
 ## Telemetry
 
 The site and the demo send OpenTelemetry from the visitor's browser to [Everr](https://app.everr.dev). Each runs its own `WebSDK` from `@everr/otel-web`, under its own service name.
