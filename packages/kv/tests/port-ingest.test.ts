@@ -17,6 +17,8 @@ import {
   OpfsLsmError,
   StorageUnavailableError,
 } from "../src/errors.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES } from "../src/host/budget.js";
+import { RESERVE_PATH } from "../src/host/reserve.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { walStore } from "./sim/check-database.js";
 
@@ -111,6 +113,41 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     expect(await reply).toMatchObject({ type: "err", id: 7, code: new StorageUnavailableError("").code });
     port1.close();
     port2.close();
+  });
+
+  it("answers every request about a name no openDb created, creates neither store, and serves the name once it is opened", async () => {
+    const fs = new MemoryFs();
+    const { port1, port2 } = new MessageChannel();
+    // An idle pass 10 ms after a watch: it would write the reserve of a database that existed.
+    attachEngineHostPort(port1, new EngineHost(() => fs, { idleFlushMs: 10 }));
+    const client = createPortIngestClient(port2);
+    try {
+      client.watch("port-db", { maxWalBytes: 100, compactionMemoryBytes: DEFAULT_COMPACTION_MEMORY_BYTES, reserveBytes: 4096 });
+      await expect(client.ingest("port-db")).rejects.toBeInstanceOf(ClosedError);
+      await expect(client.ingest("port-db", true)).rejects.toBeInstanceOf(ClosedError);
+      await expect(client.repair("port-db")).rejects.toBeInstanceOf(ClosedError);
+      await expect(client.destroy("port-db")).rejects.toBeInstanceOf(ClosedError);
+      await expect(client.stats("port-db")).rejects.toBeInstanceOf(ClosedError);
+      await expect(client.makeRoom("port-db")).resolves.toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      client.unwatch("port-db");
+
+      expect((await indexedDB.databases()).map((info) => info.name)).not.toContain("opfs-lsm-wal/port-db");
+      expect(fs.publishedPaths()).toEqual([]);
+
+      const db = await openHarnessDb({ name: "port-db", fs, ingest: client, maxWalBytes: 1 << 30, reserveBytes: 4096 });
+      try {
+        await db.put(utf("k"), utf("v"));
+        expect((await ingestDb(db)).generation).toBe(1);
+        expect(await db.get(utf("k"))).toEqual(utf("v"));
+        expect(fs.publishedPaths()).toContain(RESERVE_PATH);
+      } finally {
+        await db.close();
+      }
+    } finally {
+      client.close();
+      port1.close();
+    }
   });
 
   it("ingests via port so a second writer sees SST data", async () => {

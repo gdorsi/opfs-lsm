@@ -640,6 +640,23 @@ describe("ingest policy", () => {
     await db.close();
   });
 
+  it("runs a failed flush again at the next openDb, with no further write", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { fs, state } = l0Fs();
+    state.fail = true;
+    const host = new EngineHost(() => fs);
+    const db = await open(host, fs, "a", 100);
+    await db.put(utf("a"), new Uint8Array(120));
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(1), WAIT);
+
+    state.fail = false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(await loadLatestGeneration(fs)).toBeUndefined();
+    await open(host, fs, "b", 100);
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(1), WAIT);
+    expect(errors).toHaveBeenCalledTimes(1);
+  });
+
   it("flushes the tail an open finds, once the database is quiet", async () => {
     const fs = new MemoryFs();
     const first = await open(new EngineHost(() => fs), fs, "a", 800);
