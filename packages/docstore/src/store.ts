@@ -416,7 +416,15 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
       });
       if (!read) return;
       if ("unindexable" in read) {
-        await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "failed", reason: "value", ids: [idOf(read.unindexable)] }));
+        const { unindexable: row, id } = read;
+        // A write since the snapshot may have fixed the row: fail only while it holds the same bytes.
+        const failed = await this.kv.update([CATALOG_KEY, row.key], ([stored, value], tx) => {
+          if (!bytesEqual(value, row.value)) return false;
+          const next = settleIndex(this.adopt(stored).catalog, collection, index, { kind: "failed", reason: "value", ids: [idOf(id)] });
+          if (next) tx.put(CATALOG_KEY, encodeCatalog(next));
+          return true;
+        });
+        if (!failed) continue;
         this.startJobs();
         return;
       }
