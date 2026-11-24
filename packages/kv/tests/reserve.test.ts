@@ -241,6 +241,36 @@ describe("a full origin", () => {
     await turns(300);
     expect(calls.length).toBe(1);
   });
+
+  describe("with an offer from the idle pass over an unflushed tail", () => {
+    beforeEach(() => {
+      budget.limit = RESERVE / 2;
+      host = hostOf(budget, { idleFlushMs: 20 });
+    });
+
+    it("writes the reserve once a handler frees space outside kv", async () => {
+      const db = await open(RESERVE);
+      let calls = 0;
+      db.onStorageFull(async () => {
+        calls += 1;
+        budget.limit = BUDGET;
+      });
+      await db.put(keyOf(0), enc.encode("v"));
+      await until(() => budget.sizeOf(RESERVE_PATH) === RESERVE, "the reserve to return");
+      expect(calls).toBe(1);
+    });
+
+    it("writes the reserve once a handler frees space with dangerousDestroy", async () => {
+      const db = await open(RESERVE);
+      db.onStorageFull(async () => {
+        await db.dangerousDestroy();
+        budget.limit = BUDGET;
+      });
+      await db.put(keyOf(0), enc.encode("v"));
+      await until(() => budget.sizeOf(RESERVE_PATH) === RESERVE, "the reserve to return");
+      expect(await readAll(db)).toEqual([]);
+    });
+  });
 });
 
 describe("an offer", () => {

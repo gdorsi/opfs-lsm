@@ -1,6 +1,6 @@
 import { checkDbName, type DbName } from "../check.js";
 import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
-import { openExistingWal, uningestedBytes, type IdBWal } from "../idb/wal.js";
+import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
@@ -11,7 +11,6 @@ import {
   loadGeneration,
   reclaimManifests,
   reclaimRuns,
-  type GenerationMeta,
 } from "../store/generation.js";
 import { engineMemory, recycleEngine } from "../store/engine.js";
 import { levelOf } from "../store/levels.js";
@@ -578,7 +577,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         const budget = currentBudget();
         const merged = await withRoom(() => mergeNextStep(fs, budget, base, meta.top));
         recycleEngine(budget.wasmRecycleBytes);
-        if (!merged) return await settle(base, meta.head);
+        if (!merged) return await settle(meta);
         const landed = await withRoom(() =>
           exclusive(() =>
             withWal(
@@ -636,15 +635,15 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
   }
 
   /**
-   * A pass found `base` in shape. The reserve is written, and the handlers
-   * asked again, only here: by then a flush holds what they wrote and
-   * compaction has dropped what it could.
+   * A pass found the recorded generation in shape. The reserve is written,
+   * and the handlers asked again, only here: by then a flush holds what they
+   * wrote and compaction has dropped what it could.
    */
-  async function settle(base: GenerationMeta, head: Seq): Promise<void> {
+  async function settle({ head, ingestedThrough }: WalMeta): Promise<void> {
     const watch = watching;
     if (!watch) return;
     try {
-      await onReserve({ kind: "settle", through: base.through, head, target: watch.reserveBytes });
+      await onReserve({ kind: "settle", ingestedThrough, head, target: watch.reserveBytes });
     } catch (err) {
       failed("writing the reserve", err);
     }
@@ -652,8 +651,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
 
   /** The handlers settled, so every write of theirs is at or below the head read now. */
   async function answered(): Promise<void> {
-    const head = await walHead();
-    if (head !== undefined) await onReserve({ kind: "done", head });
+    const meta = await withWal((wal) => wal.meta(), () => undefined);
+    if (meta) await onReserve({ kind: "done", head: meta.head, ingestedThrough: meta.ingestedThrough });
   }
 
   function walHead(): Promise<Seq | undefined> {

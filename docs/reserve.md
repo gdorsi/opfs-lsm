@@ -32,15 +32,15 @@ nothing.
 | held 0 | a refused write, or a fill the browser refuses | offered | posts the offer |
 | held | a tab opens the database | unknown | |
 | offered | `full-pull` | offered | posts the offer again |
-| offered | `full-done` | answered at the WAL head `s` | flushes now if the head moved since the offer |
-| answered at `s` | a settle over a manifest whose `through` is at least `s` | held | writes the file; if the browser refuses, offered, and it posts the offer |
+| offered | `full-done` | answered at the WAL head `s` | flushes now if the head moved since the offer, or `ingestedThrough` is under `s` |
+| answered at `s` | a settle with `ingestedThrough` at least `s` | held | writes the file; if the browser refuses, offered, and it posts the offer |
 | any | the last tab closes the database | unknown | |
 
 A fill the browser refuses leaves the file as it was, so a held file that is too small stays. An
 offered database gets no fill, and no second offer from a settle: the handlers still need the room. An answer
-counts only once a flush holds what the handlers wrote. Handlers that wrote nothing start no
-flush, so the host asks them again at most once per settle, and never because of their own
-answer. A new host starts at unknown.
+counts only once a flush holds what the handlers wrote, or `dangerousDestroy` dropped it. An answer
+with no new write over a fully ingested WAL starts no flush, so the host asks the handlers again
+at most once per settle, and never in a loop. A new host starts at unknown.
 
 **Refused write.** A write of a flush or a compaction that fails with `QuotaExceededError` runs
 once more when that failure removed the file. Any other refused write fails with
