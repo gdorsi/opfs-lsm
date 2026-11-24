@@ -10,7 +10,7 @@ import { collection, defineSchema, openDocStore } from "../src/index.js";
 import type { Scalar } from "../src/schema.js";
 import { checkQuery, textArb } from "./docs.js";
 import { docstoreKeys, freshName, openKv } from "./harness.js";
-import { storedRows, stored, type ModelIndex } from "./oracle.js";
+import { expected, stored, type ModelIndex } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 
 type Inner = { a?: Scalar | undefined; tags?: Scalar[] | undefined; t?: string | null | undefined; u?: Scalar | undefined; d?: { e?: Scalar | undefined } | undefined };
@@ -25,9 +25,7 @@ const schema = defineSchema({
       .index("mtags", ["m.tags[]", "b"] as never)
       .unique("mu", "m.u" as never)
       .text("search", "m.a" as never, "m.t" as never)
-      .index("cov", ["b", "m.a"] as never, { include: ["m", "b"] } as never)
-      .count("perMA", "m.a" as never)
-      .count("perMTag", "m.tags[]" as never),
+      .index("cov", ["b", "m.a"] as never, { include: ["m", "b"] } as never),
   },
 });
 
@@ -38,8 +36,6 @@ const MODEL: Record<string, ModelIndex> = {
   mu: { kind: "unique", on: ["m.u"] },
   search: { kind: "text", on: ["m.a"], text: "m.t" },
   cov: { kind: "sorted", on: ["b", "m.a"], include: ["m", "b"] },
-  perMA: { kind: "count", on: ["m.a"], multi: false },
-  perMTag: { kind: "count", on: ["m.tags"], multi: true },
 };
 
 const innerArb: fc.Arbitrary<Inner> = fc.record(
@@ -105,7 +101,7 @@ describe("indexes on dot paths", () => {
           }
           const docs = [...model.values()];
           for (const index of Object.keys(MODEL)) await checkQuery(c as never, docs as never, index, { index }, 2, MODEL);
-          const entries = Object.values(MODEL).reduce((n, ix) => n + storedRows(docs, ix), 0);
+          const entries = Object.values(MODEL).reduce((n, ix) => n + expected(docs, ix, {}).length, 0);
           expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
         } finally {
           await kv.close();

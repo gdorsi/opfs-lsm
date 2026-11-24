@@ -25,8 +25,7 @@ const schema = defineSchema({
       .index("byOwnerDue", ["meta.owner.name", "meta.due"])
       .index("byLead", "meta.owner.team.lead")
       .index("byLabel", "meta.labels[]")
-      .text("search", "at", "meta.note")
-      .count("perDue", "meta.due"),
+      .text("search", "at", "meta.note"),
   },
 });
 
@@ -63,8 +62,6 @@ describe("an index on a dot path", () => {
     expect((await c.queryIds({ index: "byLabel", eq: ["y"] })).ids).toEqual(["t1", "t2"]);
     expect((await c.queryIds({ index: "search" })).ids).toEqual(["t1", "t2"]);
     expect((await c.queryIds({ index: "search", match: "milk" })).ids).toEqual(["t1"]);
-    expect(await c.count({ index: "perDue" })).toBe(2);
-    expect(await c.count({ index: "perDue", eq: [2] })).toBe(1);
   });
 
   it("moves a document's entries when a write changes or removes the value at the path", async () => {
@@ -80,8 +77,6 @@ describe("an index on a dot path", () => {
     expect((await c.queryIds({ index: "byLabel", eq: ["z"] })).ids).toEqual(["t1"]);
     expect((await c.queryIds({ index: "search", match: "milk" })).ids).toEqual([]);
     expect((await c.queryIds({ index: "search", match: "mom" })).ids).toEqual(["t1"]);
-    expect(await c.count({ index: "perDue" })).toBe(1);
-    expect(await c.count({ index: "perDue", eq: [2] })).toBe(0);
 
     await c.modify("t2", (doc) => {
       const rest = { ...doc };
@@ -91,6 +86,5 @@ describe("an index on a dot path", () => {
     expect((await c.queryIds({ index: "byOwnerDue" })).ids).toEqual([]);
     expect((await c.queryIds({ index: "byLabel" })).ids).toEqual(["t1"]);
     expect((await c.queryIds({ index: "search" })).ids).toEqual(["t1"]);
-    expect(await c.count({ index: "perDue" })).toBe(0);
   });
 });

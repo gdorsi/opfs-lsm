@@ -51,14 +51,13 @@ const schema = defineSchema({
 		todos: collection<Todo>()
 			.index("open", ["done", "createdAt"])  // sorted
 			.index("byTag", "tags[]")              // multi
-			.text("search", "createdAt", "title")  // text
-			.count("perDone", "done"),             // count
+			.text("search", "createdAt", "title"), // text
 		users: collection<User>().unique("byEmail", "email"), // unique
 	},
 });
 ```
 
-`collection<T>()` starts a declaration. `index`, `unique`, `text` and `count` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument, and `index` can take `{ include }` ([Included fields](#included-fields)). Each call returns a new declaration, so you can share a base.
+`collection<T>()` starts a declaration. `index`, `unique` and `text` each take the index name, then `by`: a field, or a list of fields. `text` takes the string field to search as its third argument, and `index` can take `{ include }` ([Included fields](#included-fields)). Each call returns a new declaration, so you can share a base.
 
 ```ts
 const base = collection<Todo>().index("open", ["done", "createdAt"]);
@@ -341,31 +340,6 @@ await users.put({ id: "u5", email: "\uD800" });
 // sorted and multi indexes can be unique, text indexes cannot
 ```
 
-### Count
-
-A count index keeps how many documents hold each value of its fields, in the same kv transaction as the documents. It holds one or two small rows per value and no entries, so only `count` reads it. It suits fields with few values: a status, a flag, a tag.
-
-```ts
-await todos.count({ index: "perDone", eq: [false] });
-// => 2, read from one or two rows
-await todos.count({ index: "perDone" });
-// => 3, one or two rows per value of done
-await todos.count({ index: "perDone", eq: [[false, true]] });
-// => 3, the numbers of the listed values, added
-// count("perDone", ["done", "createdAt"]) counts each pair of
-// values. eq and one bound pick pairs as they do in a sorted
-// index
-// count("perTag", "tags[]") counts a document once per distinct
-// tag. Its eq takes one tag, not a list: two tags can share a
-// document
-// a write that moves a document to another value reads and
-// writes two numbers. One that moves none does neither
-await todos.query({ index: "perDone" });
-// type error, and DocStoreError "query": no entries to read
-todos.indexes.has("perDone");
-// => false, it lists the indexes query reads
-```
-
 ## Queries
 
 A query names an index and a range in it. Without `index`, it reads the documents in id order.
@@ -574,8 +548,6 @@ await todos.count({ index: "open", limit: 1 });
 // => 1, count stops at limit
 ```
 
-`count` walks the entries it counts. On a [count index](#count) it adds the numbers of the values in range instead. There it takes `eq`, one bound and `limit`, and not `after`, `offset`, `reverse` or `match`.
-
 ### Entries
 
 An entry already holds the values its index orders by. `queryEntries` returns them with each id, typed from `by`, and reads no document. An entry of an index with `include` also has `fields` ([Included fields](#included-fields)); other entries have no `fields` key.
@@ -733,8 +705,6 @@ await todos.put(todo);
 // a v1 handle keeps byCreated up to date too
 // a backfill cut short by a closed tab resumes on the next open
 ```
-
-Adding a count index to a stored collection counts its documents from one snapshot, while other tabs keep writing. Redefining or removing it drops its numbers. A database whose schema has a count index stores catalog format 4, which a version of this library from before count indexes refuses to open.
 
 To delete a collection and its documents, name it in `drop`. A collection you only leave out keeps its documents for a later schema.
 

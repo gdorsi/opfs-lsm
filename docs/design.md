@@ -109,8 +109,7 @@ since the read. Failing that, the update runs in one transaction that reads the 
 the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
 update issued while an append of its handle is in flight, or whose `body` wrote nothing or threw. After a row
 loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
-runs its updates one at a time, in call order. `body` may read more keys, at the state it read `keys`
-at: one whose bytes are not loaded appends nothing, and `body` runs again once they are.
+runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not

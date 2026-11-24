@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { expect } from "vitest";
-import { collection, defineSchema, type Collection, type CountQuery, type Cursor, type Query } from "../src/index.js";
+import { collection, defineSchema, type Collection, type Cursor, type Query } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { expected, type ModelIndex } from "./oracle.js";
 import { denseScalarArb, stringArb } from "./order.js";
@@ -24,10 +24,7 @@ export const schema = defineSchema({
       .index("tags", ["tags[]", "b"])
       .unique("uniq", "u")
       .text("search", "a", "t")
-      .index("covered", ["b", "a"], { include: ["t", "tags", "u"] })
-      .count("perA", "a")
-      .count("perAB", ["a", "b"])
-      .count("perTag", "tags[]"),
+      .index("covered", ["b", "a"], { include: ["t", "tags", "u"] }),
   },
 });
 
@@ -38,24 +35,19 @@ export const MODEL: Record<string, ModelIndex> = {
   uniq: { kind: "unique", on: ["u"] },
   search: { kind: "text", on: ["a"], text: "t" },
   covered: { kind: "sorted", on: ["b", "a"], include: ["t", "tags", "u"] },
-  perA: { kind: "count", on: ["a"], multi: false },
-  perAB: { kind: "count", on: ["a", "b"], multi: false },
-  perTag: { kind: "count", on: ["tags"], multi: true },
 };
-export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2, perA: 1, perAB: 2, perTag: 1 };
+export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
 
 /** A unique multi index, which gives a document one unique entry per distinct element of `ut`. */
 export const withUniqueTags = schema.collections.docs.unique("utags", "ut[]");
 export const UNIQUE_TAGS = { name: "utags", model: { kind: "multi", on: ["ut"] }, arity: 1 } as const;
-/** The indexes whose `eq` takes no list: the unique ones, and the count index on an array field, whose one field is that array's. */
-const NO_LISTS: ReadonlySet<string> = new Set(["uniq", UNIQUE_TAGS.name, "perTag"]);
+/** The unique indexes: `eq` takes no list on them. */
+const UNIQUE: ReadonlySet<string> = new Set(["uniq", UNIQUE_TAGS.name]);
 
 export type Docs = Collection<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 export type DocQuery = Query<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
-type DocCountQuery = CountQuery<Doc, (typeof schema)["collections"]["docs"]["indexes"]>;
 
 export const asQuery = (q: QueryInput) => q as DocQuery;
-const asCountQuery = (q: QueryInput) => q as DocCountQuery;
 
 const WORDS = ["Buy", "milk", "MILKSHAKE", "buyer", "Bacon", "rép", "Ünï", "x1", "2024", ",", " ", "-"];
 export const textArb = fc.array(fc.constantFrom(...WORDS), { maxLength: 5 }).map((ws) => ws.join(" "));
@@ -106,10 +98,9 @@ export const queryArbOn = (indexes: Record<string, number>): fc.Arbitrary<{ inde
   fc.constantFrom(undefined, ...Object.keys(indexes)).chain((index) => {
     const arity = index === undefined ? 1 : indexes[index]!;
     const value = index === undefined ? idArb : denseScalarArb;
-    const counted = index !== undefined && MODEL[index]?.kind === "count";
-    // A slot of `eq` can be a list, as long as the index takes one. Lists may repeat a value or be empty.
+    // A slot of `eq` can be a list, as long as the index is not unique. Lists may repeat a value or be empty.
     const slot: fc.Arbitrary<Scalar | Scalar[]> =
-      index === undefined || NO_LISTS.has(index)
+      index === undefined || UNIQUE.has(index)
         ? value
         : fc.oneof({ weight: 2, arbitrary: value }, { weight: 1, arbitrary: fc.array(fc.oneof(poolArb, value), { maxLength: 4 }) });
     return fc.integer({ min: 0, max: arity }).chain((k) =>
@@ -117,7 +108,7 @@ export const queryArbOn = (indexes: Record<string, number>): fc.Arbitrary<{ inde
         .record({
           eq: fc.array(slot, { minLength: k, maxLength: k }),
           bound: k === arity ? fc.constant({}) : boundArb(value),
-          reverse: counted ? fc.constant(false) : fc.boolean(),
+          reverse: fc.boolean(),
           match: index === "search" ? fc.option(matchArb, { nil: undefined }) : fc.constant(undefined),
         })
         .map(({ eq, bound, reverse, match }) => ({
@@ -149,14 +140,6 @@ export async function checkQuery(
 ): Promise<void> {
   const ix = index === undefined ? undefined : indexes[index];
   const want = expected(docs, ix, q);
-  if (ix?.kind === "count") {
-    expect(await c.count(asCountQuery(q))).toBe(want.length);
-    expect(await c.count(asCountQuery({ ...q, limit: pageSize }))).toBe(Math.min(pageSize, want.length));
-    for (const read of [c.query(asQuery(q)), c.queryIds(asQuery(q)), c.queryEntries(asQuery(q))]) {
-      await expect(read).rejects.toMatchObject({ code: "query" });
-    }
-    return;
-  }
   const query = asQuery(q);
   expect((await c.queryIds(query)).ids).toEqual(want.map((h) => h.id));
   const include = ix && "include" in ix ? ix.include : undefined;

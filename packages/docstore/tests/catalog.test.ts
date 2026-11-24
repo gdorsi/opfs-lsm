@@ -163,28 +163,10 @@ describe("stored bytes", () => {
     expect(parseCatalog(encodeCatalog(c))).toEqual(c);
   });
 
-  it("has format 4 while it holds a count index, in any state or collection, and format 2 otherwise", () => {
-    const counted = { ...v1, todos: { ...v1["todos"], perA: { by: "a", count: true } } };
-    const c1 = open(undefined, 1, v1);
-    expect(c1.format).toBe(2);
-    const c2 = open(c1, 2, counted);
-    expect(c2.format).toBe(4);
-    expect(parseCatalog(encodeCatalog(c2))).toEqual(c2);
-    const failed = markFailed(c2, collOf(c2, "todos"), idOf(c2, "todos", "perA"), "value", ["1"])!;
-    expect(failed.format).toBe(4);
-    expect(clearCollection(c2, "todos").format).toBe(4);
-    // A collection this schema leaves out keeps its count index.
-    expect(open(c2, 3, { notes: v1["notes"]! }).format).toBe(4);
-    expect(open(c2, 3, v1).format).toBe(2);
-    expect(open(c2, 3, { notes: v1["notes"]! }, ["todos"]).format).toBe(2);
-    expect(open(undefined, 1, counted).format).toBe(4);
-  });
-
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 5 } as unknown as StoredCatalog)))).toBe("schema");
     expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
@@ -319,7 +301,7 @@ describe("normalizeSchema", () => {
 
   it("names the option it does not know and the ones it does", () => {
     const decl = { version: 1, collections: { a: { x: { by: "b", uniqe: true } } } };
-    expect(() => normalize(decl)).toThrow(/"uniqe".*by, unique, text, include, count/);
+    expect(() => normalize(decl)).toThrow(/"uniqe".*by, unique, text/);
   });
 
   it("says by is missing when an index has none", () => {
@@ -348,24 +330,6 @@ describe("normalizeSchema", () => {
       ["one", { kind: "sorted", by: ["a", "b"], unique: true }],
       ["s", { kind: "text", by: ["a"], unique: false, text: "t" }],
     ]);
-  });
-
-  it("stores a count index by its fields, the mark off an array field, and leaves it out of the indexes query reads", () => {
-    const specs = declare(1, { c: { perTag: { by: ["tags[]", "at"], count: true }, one: { by: "a" } } }).collections.get("c")!;
-    expect(specs.get("perTag")).toEqual({ kind: "count", on: ["tags", "at"], multi: true });
-    expect([...describeIndexes(specs).keys()]).toEqual(["one"]);
-  });
-
-  it("at a higher version rebuilds an index that becomes a count index, stops being one, or counts other fields", () => {
-    const at = (version: number, x: object, stored?: StoredCatalog) => open(stored, version, { c: { x } });
-    const sorted = at(1, { by: "a" });
-    const counted = at(2, { by: "a", count: true }, sorted);
-    expect(counted.collections["c"]!.indexes["x"]).toMatchObject({ spec: { kind: "count" }, state: { kind: "building" } });
-    expect(idOf(counted, "c", "x")).not.toBe(idOf(sorted, "c", "x"));
-    expect(idOf(at(3, { by: "a", count: true }, counted), "c", "x")).toBe(idOf(counted, "c", "x"));
-    expect(idOf(at(3, { by: "a[]", count: true }, counted), "c", "x")).not.toBe(idOf(counted, "c", "x"));
-    expect(idOf(at(3, { by: ["a", "b"], count: true }, counted), "c", "x")).not.toBe(idOf(counted, "c", "x"));
-    expect(at(3, { by: "a" }, counted).collections["c"]!.indexes["x"]!.spec.kind).toBe("sorted");
   });
 
   it("describes the fields an index includes, and only on an index that includes some", () => {

@@ -594,8 +594,6 @@ class UpdateCmd extends SlotCmd {
     private readonly keys: readonly number[],
     private readonly actions: readonly UpdateAction[],
     private readonly value: ValueSpec,
-    /** How many of the last keys the body reads with `tx.read`. */
-    private readonly late: number,
     /** Ops on keys the body did not read, after the ones `actions` picks. */
     private readonly more: readonly OpSpec[],
   ) {
@@ -603,7 +601,6 @@ class UpdateCmd extends SlotCmd {
   }
   async run(_m: Model, w: World): Promise<void> {
     const keys = this.keys.map((k) => KEYS[k]!);
-    const first = keys.slice(0, Math.max(0, keys.length - this.late));
     const ops: OracleOp[] = [];
     keys.forEach((key, i) => {
       const action = this.actions[i % this.actions.length];
@@ -612,13 +609,13 @@ class UpdateCmd extends SlotCmd {
     });
     ops.push(...opsOf(w, this.more));
     await w.start(this.slot, "update", { keys, ops }, (db, op) =>
-      db.update(first, (got, tx) => {
-        op.seen = [...got, ...tx.read(keys.slice(first.length))].map((v) => (v ? new Uint8Array(v) : undefined));
+      db.update(keys, (got, tx) => {
+        op.seen = got.map((v) => (v ? new Uint8Array(v) : undefined));
         applyOps(tx, ops);
       }), this.wait);
   }
   name = () =>
-    `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}] late ${this.late}` +
+    `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}]` +
     (this.more.length ? ` then ${this.more.map(opName).join("; ")}` : "");
 }
 
@@ -813,10 +810,9 @@ export const multiCommandsArb = (replayPath?: string) => {
           fc.array(keyArb, { minLength: 1, maxLength: 3 }),
           fc.array(fc.constantFrom<UpdateAction>("keep", "del", "put"), { minLength: 1, maxLength: 3 }),
           valueArb,
-          fc.nat({ max: 3 }),
           fc.array(opArb, { maxLength: 2 }),
         )
-        .map(([s, x, keys, actions, value, late, more]) => new UpdateCmd(s, x, keys, actions, value, late, more)),
+        .map(([s, x, keys, actions, value, more]) => new UpdateCmd(s, x, keys, actions, value, more)),
       fc.tuple(slot, wait).map(([s, x]) => new IncrementCmd(s, x)),
       fc.tuple(slot, wait).map(([s, x]) => new IncrementCmd(s, x)),
       fc.tuple(slot, wait, keyArb).map(([s, x, k]) => new GetCmd(s, x, k)),

@@ -16,7 +16,7 @@ async function docs(name = freshName()): Promise<{ kv: Db; c: Docs }> {
 }
 
 describe("indexes", () => {
-  it("lists what the schema declares for query: the kind, the fields, whether it is unique, and what it includes; no count index", async () => {
+  it("lists what the schema declares: the kind, the fields, whether it is unique, and what it includes", async () => {
     const { c } = await docs();
     expect(new Map(c.indexes)).toEqual(
       new Map([
