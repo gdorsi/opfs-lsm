@@ -1,10 +1,10 @@
 # A 64 MiB page cache
 
+Status: rejected. `cacheBytes` stays 256 MiB by default, as design.md, "Reading a run" states.
+
 Date: 2026-11-23. Chrome 157 headless, macOS arm64, Apple M2 Pro, commit `69f68dd6`. Another
 session ran on the machine during every measurement, with a load average of 3 to 14. Each side is
 5 runs, interleaved one run at a time on the same build, so both sides saw the same noise.
-
-Status: rejected. `cacheBytes` stays 256 MiB by default.
 
 ## Question
 
@@ -64,5 +64,6 @@ that needs less memory can pass a smaller `cacheBytes` itself.
 Not measured: a size between 64 MiB and 256 MiB, such as 128 MiB, which holds the whole
 `kv/fillrandom` store at `large`.
 
-The raw runs are in [page-cache-size/](page-cache-size/): `cache-256mib.jsonl` and
-`cache-64mib.jsonl`, one record per run.
+The raw runs, one record per run, are in git history, and
+`git show df257487:docs/research/page-cache-size/cache-256mib.jsonl` and
+`git show df257487:docs/research/page-cache-size/cache-64mib.jsonl` print them.

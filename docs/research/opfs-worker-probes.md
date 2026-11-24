@@ -1,12 +1,14 @@
 # OPFS worker probes: locks, handles, SharedWorkers and bfcache
 
-Run 2026-11-09 on an Apple M5 Max (macOS):
+Status: reference. Browser facts for any design where several contexts write OPFS files. They were measured for PR #97, per-tab OPFS logs with a liveness protocol, which closed unmerged. kv has one IndexedDB WAL, and its SharedWorker writes SST files with `createWritable()` (design.md, [Where code runs](../design.md#where-code-runs)).
+
+Date: 2026-11-09, on an Apple M5 Max (macOS):
 - Chrome 156, headless, through [`drive-chrome.mjs`](opfs-worker-probes/drive-chrome.mjs).
 - Safari 26.6.2 and Firefox 157, opened by hand.
 
 Probe: [`docs/research/opfs-worker-probes/`](opfs-worker-probes/). Raw results are written to its `results/` folder, which is gitignored.
 
-Any write path where several tabs write OPFS files and another context reads, reclaims or takes over those files must answer the same questions. When is a writer really gone? Can a reader see a file while it is being written? Can a cached page keep holding what others wait for? PR #97 (per-tab logs) answers them with a liveness protocol. These probes measure what the browsers actually do.
+Any write path where several tabs write OPFS files and another context reads, reclaims or takes over those files must answer the same questions. When is a writer really gone? Can a reader see a file while it is being written? Can a cached page keep holding what others wait for? These probes measure what the browsers actually do.
 
 ## Web Locks and SyncAccessHandles
 
@@ -22,7 +24,7 @@ Probe P1+P2: a dedicated WebWorker holds a Web Lock and overwrites chunks of a f
 | File reopenable by another worker after grant | yes | yes | yes |
 
 - **No write ever landed after the lock was released.** So taking a writer worker's lock is a safe sign that it can no longer write its files. That only holds if the worker itself holds the lock: a lock held by the page says nothing about a worker that is still running.
-- **This makes the lock a fence even where deletion isn't one.** Safari lets `removeEntry` delete a file while a handle is open on it, as measured in #97's earlier cross-browser probe (`architecture/wal-opfs/03-cross-browser-probe.md` on that branch). Deleting a file after taking its writer's lock is safe in all three browsers. Deleting it while relying on the delete to fail is not.
+- **This makes the lock a fence even where deletion isn't one.** Safari lets `removeEntry` delete a file while a handle is open on it, as measured in #97's earlier cross-browser probe (`architecture/wal-opfs/03-cross-browser-probe.md` on branch `feat/kv-per-tab-logs`). Deleting a file after taking its writer's lock is safe in all three browsers. Deleting it while relying on the delete to fail is not.
 - **Chrome takes about 2 s to release a worker that is busy in sync writes.** Safari and Firefox release at once. Timeouts that wait for a terminated writer must allow for Chrome's 2 s.
 - **Untested:** a write blocked by an exhausted quota, which can hang in Chrome, rather than a slow one. The full-quota probe (P2b) needs a profile with a small quota and has not been run.
 
@@ -43,7 +45,8 @@ Probe P7: a page whose worker holds a lock and a handle navigates away. The next
 - **Two limits of these runs.** Both are fixed in the probe now, and Safari and Firefox have not been run again.
   - The probe server sent the page with `Cache-Control: no-store`. Firefox has long kept such pages out of bfcache, so its column doesn't show what the lock and the handle do there. Chrome and Safari cached the page anyway.
   - The probe page posted a finished P7 run again, as "not bfcached", each time it was loaded afterwards. Safari's 1 of 2 may count one such repeat.
-- **Handling.** On `pagehide` with `persisted: true`, a tab should flush, close its handles and release its locks. On `pageshow` it should start over as a new writer. Nothing in the repo does this yet.
+- **Handling.** On `pagehide` with `persisted: true`, a tab should flush, close its handles and release its locks. On `pageshow` it should start over as a new writer. Nothing in the repo did this on 2026-11-24.
+- **Where kv meets it.** A kv tab holds a shared Web Lock on each run it has open, and the host removes a run only when that lock is free, asking with `ifAvailable` ([Loading a generation under churn](../design.md#loading-a-generation-under-churn)). So a tab Safari keeps cached can delay the removal of old runs, but not a flush or a compaction. That is inferred from the design, not probed.
 
 ## SharedWorker reads of a file being written
 

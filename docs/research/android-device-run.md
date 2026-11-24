@@ -1,12 +1,14 @@
 # kv on an Android phone: what runs, what does not, and how to drive it
 
-Run 2026-11-13 at `d71e997` on a Pixel 4a (8 cores, 6 GB of RAM) with LineageOS 23.2 (Android 16), a `userdebug` image, over adb from a Mac:
+Status: reference. In Chromium 160 on a Pixel 4a, kv passed the two-tab proofs, every bench workload and every recovery check. It did not open in the phone's WebView. Which browsers kv supports is in [Browser support](../browser-support.md), and how to rerun this is in [verification.md](../verification.md#run-on-an-android-device).
+
+Date: 2026-11-13, at `d71e997`, on a Pixel 4a (8 cores, 6 GB of RAM) with LineageOS 23.2 (Android 16), a `userdebug` image, over adb from a Mac:
 - Chromium 160.0.8160.0, the official snapshot builds 1744029 and 1744109 for Android arm64, installed for the run.
 - Android System WebView 154.0.8037.57, the WebView the phone ships, through the Jelly browser.
 
 Tools: [`docs/research/android-device-run/`](android-device-run/). Its README has the commands, and `run.mjs` there runs everything below in one command. Raw logs are written to its `results/` folder, which is gitignored.
 
-Until this run the engine had only been driven in desktop Chrome. Three questions needed a real phone. Does kv open in the browsers an Android phone has? Do the SharedWorker, OPFS and Web Lock behaviors the design relies on hold there? Does a kill lose an acked write?
+Three questions needed a real phone. Does kv open in the browsers an Android phone has? Do the SharedWorker, OPFS and Web Lock behaviors the design relies on hold there? Does a kill lose an acked write?
 
 - **kv works in Chromium 160 on the phone.** The two-tab proofs, every bench workload, and the kill loop's recovery check all pass.
 - **kv does not open in the phone's own WebView.** WebView 154 has no SharedWorker.
@@ -26,8 +28,7 @@ Until this run the engine had only been driven in desktop Chrome. Three question
 | `openDb`, then put and get | **rejects with `StorageUnavailableError`** | returns the value |
 | `two-tab-local` (engine hosted in the page, a test-only setup) | passes | passes |
 
-- **Every app and browser built on this WebView is out.** `openDb` rejects there, as it is documented to do without SharedWorker. Jelly is one such browser.
-- **MDN says otherwise.** browser-compat-data 8.1.8 marks `webview_android` as a mirror of `chrome_android` for `SharedWorker`, which gives 148. The measured WebView is 154.
+- **MDN lists SharedWorker in this WebView.** [Browser support](../browser-support.md) has its claim and what the missing SharedWorker rules out.
 - **Only the missing SharedWorker stops kv.** With the engine hosted in the page, the two-tab scenario passes in the WebView: OPFS files, the IndexedDB WAL and the wasm engine all work.
 - **Untested:** Google's WebView build. The measured one is the LineageOS build.
 
@@ -108,7 +109,7 @@ The `quota` kind sets the origin's quota below its usage, asks one tab to ingest
 
 | First ingest rejected with `StorageFullError` | Runs | Second ingest |
 |---|---|---|
-| Pixel 4a, locked | 7 | 2 answered, **5 timed out after 20 s** |
+| Pixel 4a, locked | 7 | 2 answered, **5 timed out after 20 s** (`ingest timed out after 20000ms`) |
 | Pixel 4a, unlocked | 6 | 6 answered |
 | Desktop Chrome on the Mac | 1 | answered |
 

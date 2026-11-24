@@ -1,13 +1,14 @@
 # Round trips in a conditional write
 
-Date: 2026-11-11. Chrome 157 headless, macOS arm64, Apple M5 Max. Commit `5b26f17` plus local
-probes. The machine ran other work during every measurement, so absolute times are high. Each
-comparison below alternates its variants call by call inside one run, which cancels that noise.
+Status: shipped. Every append commits without waiting for its adds' results, and a `put`,
+`delete` or `batch` is one round trip ([Append](../design.md#append)). The one-round-trip
+`update` shipped on 2026-11-20 in another form than the one probed here: the row carries the seq
+it is valid at, and nothing aborts. A `body` must be free of side effects.
 
-Status: the explicit commit is implemented, for `update` and for `put`, `delete` and `batch`
-(see [Plain put and batch](#plain-put-and-batch)). The one-round-trip `update` is implemented in
-another form than the one probed here: the row carries the seq it is valid at, and nothing aborts
-(see [design.md](../design.md#append)). A `body` must be free of side effects.
+Date: 2026-11-11 to 2026-11-13. Chrome 157 headless, macOS arm64, Apple M5 Max. Commit `5b26f17`
+plus local probes. The machine ran other work during every measurement, so absolute times are
+high. Each comparison below alternates its variants call by call inside one run, which cancels
+that noise.
 
 ## Question
 
@@ -22,7 +23,8 @@ transaction: p50 495 to 880 µs right after the bulk load, 330 to 390 µs in the
 phase. Reading the keys the body needs and applying the record to the memtable took 5 to 20 µs
 together.
 
-That transaction makes three sequential trips between the tab and the browser process:
+On 2026-11-11 that transaction made three sequential trips between the tab and the browser
+process:
 
 1. read the tail (three gets on `meta`, a reverse key cursor on `wal`);
 2. add the record;
@@ -60,11 +62,11 @@ call with the previous code:
 About 40 µs per write, at every percentile, in every run. A request that fails after `commit()`
 still aborts the transaction, so the ack means what it meant before.
 
-## One-round-trip write (not implemented)
+## One-round-trip update, the probed form
 
-Trip 1 can be folded into trip 2: run the body against the memtable as it is, add the record
-under the key IndexedDB assigns, and abort when the assigned key or the `meta` values show that
-something landed in between. Alternated call by call in `table/todos` (about 580 pairs a run):
+The probe folded trip 1 into trip 2. It ran the body against the memtable, added the record under
+the key IndexedDB assigned, and aborted when the assigned key or the `meta` values showed a write
+in between. Alternated call by call in `table/todos` (about 580 pairs a run):
 
 | run | p50 before | p50 one trip |
 |---|---:|---:|
@@ -72,21 +74,21 @@ something landed in between. Alternated call by call in `table/todos` (about 580
 | 2 | 415 µs | 255 µs |
 | 3 | 290 µs | 195 µs |
 
-It was not taken because it changes what `update` promises. When the guess is wrong the body
-runs a second time, which happened in 6 to 8 of about 580 writes (inferred: when the host
-ingested).
-`kv/ycsb-f` failed its read checks under the prototype for that reason: its body advances the
-bench model. Shipping this means documenting that a body must be free of side effects.
+The probe was not taken on 2026-11-11 because it changed what `update` promised. When the guess
+was wrong the body ran a second time, which happened in 6 to 8 of about 580 writes (inferred: when
+the host ingested). `kv/ycsb-f` failed its read checks under the prototype for that reason: its
+body advances the bench model. The form that shipped reruns the body too, so the side-effect rule
+became part of `update`'s contract (see `packages/kv/README.md`).
 
 ## Plain put and batch
 
 Date: 2026-11-13. Chrome 157 headless, Apple M5 Max, `kv/fillsync` at `--size large` (10,000
 awaited single puts per run), 21 runs per side, kv and the IndexedDB baseline alternating.
 
-The append read the `head` floor and checked each assigned key against it in the add's success
-handler, so it could not call `commit()` before that handler ran: two trips per put. Recovery
-and destroy now move the key generator whenever they move the head past the records, so the
-check is gone and the append commits at the end of the turn that issued it: one trip.
+Before this change the append read the `head` floor and checked each assigned key against it in
+the add's success handler, so it could not call `commit()` before that handler ran: two trips per
+put. The change made recovery and destroy move the key generator whenever they move the head past
+the records, which removed the check: one trip.
 
 | build | kv ops/s | kv p50 | IndexedDB ops/s | IndexedDB p50 | kv ÷ IndexedDB per run |
 |---|---:|---:|---:|---:|---:|
@@ -102,15 +104,15 @@ results are readable at `complete`.
 
 The table above is against the bench's IndexedDB store as it was: it waited for its `put`'s
 success event before the commit, like kv did. A kv put is one IndexedDB transaction plus the
-post of the row, so it can match a tuned IndexedDB write and cannot beat it. The baseline now
-calls `transaction.commit()` after its requests. With that, it runs at 9,877 ops/s (p50 90 µs),
-and kv, at 7,422 ops/s (p50 110 µs) in that run, is at 0.76 of it (21 runs, 0.62 to 1.22).
+post of the row, so it can match a tuned IndexedDB write and cannot beat it. With the baseline
+calling `transaction.commit()` after its requests, it ran at 9,877 ops/s (p50 90 µs), and kv, at
+7,422 ops/s (p50 110 µs) in that run, was at 0.76 of it (21 runs, 0.62 to 1.22).
 
 At `--size small`, the README's row (1,000 puts a run), 21 runs a side gave the baseline 6,393
 ops/s (p50 118 µs) and kv 6,179 ops/s (p50 132 µs): 0.93 per run (0.74 to 1.59). Five runs of
 that size do not agree with each other. The five of one full suite run gave 0.65.
 
-What is left is the `BroadcastChannel` post of each row. At `--size small`, where no ingest
+What was left was the `BroadcastChannel` post of each row. At `--size small`, where no ingest
 runs, against that faster baseline (41 runs per side):
 
 | kv build | kv p50 | IndexedDB p50 | kv ÷ IndexedDB per run |
@@ -125,8 +127,9 @@ number of messages, not where the post sits (inferred).
 
 ### One message for several rows
 
-A tab now posts a row at once only when it has not posted for a window. Otherwise the row waits,
-and one message carries the rows of the wait. `kv/fillsync` at `--size large`, 21 runs per
+The change that shipped posts a row at once only when the tab has not posted for a window, and
+otherwise one message carries the rows of the wait ([Seeing other tabs'
+writes](../design.md#seeing-other-tabs-writes)). `kv/fillsync` at `--size large`, 21 runs per
 build, every build and the IndexedDB baseline alternating in one run. The machine was busy with
 other work, so compare the builds within a table, not with the tables above.
 
@@ -174,3 +177,4 @@ Not tried: reading the WAL for a flush in several short transactions.
 - Firefox and Safari.
 - A quiet machine. The docstore `serial-insert` loss against Dexie (0.40× in the clean run of
   issue 139) is about 170 µs per write, so this change narrows it and does not close it.
+- The shipped `update` form. The one-trip numbers above are the probed form's.
