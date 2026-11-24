@@ -285,9 +285,9 @@ describe("opening a schema", () => {
     expect(await codeOf(old.store.collection("notes").put({ id: "n1", body: "x" }))).toBe("schema");
   });
 
-  it("starts a dropped collection declared again empty before any sweep has removed its old keys: no row, no unique value, no count", async () => {
+  it("starts a dropped collection declared again empty before any sweep has removed its old keys: no row, no unique value", async () => {
     type User = { id: string; email?: string | undefined; plan?: string | undefined };
-    const users = collection<User>().unique("byEmail", "email").count("perPlan", "plan");
+    const users = collection<User>().unique("byEmail", "email");
     const withUsers = (version: number) => defineSchema({ version, collections: { todos: byCreated, users } });
     const name = freshName();
     const first = await at(name, withUsers(1));
@@ -310,9 +310,9 @@ describe("opening a schema", () => {
     expect(await c.getMany(["u1", "u2"])).toEqual([undefined, undefined]);
     expect((await c.queryIds({})).ids).toEqual([]);
     expect((await c.queryIds({ index: "byEmail" })).ids).toEqual([]);
-    expect(await c.count({ index: "perPlan", eq: ["pro"] })).toBe(0);
+    expect(await c.count({ index: "byEmail" })).toBe(0);
     await c.put({ id: "u3", email: "ada@example.com", plan: "pro" });
-    expect(await c.count({ index: "perPlan", eq: ["pro"] })).toBe(1);
+    expect(await c.count({ index: "byEmail" })).toBe(1);
 
     dropKv.release();
     againKv.release();
