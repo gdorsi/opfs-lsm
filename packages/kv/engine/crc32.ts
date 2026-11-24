@@ -73,7 +73,7 @@ function fill(): void {
  * The register `c` after the `n` bytes at `p`, as slicing-by-8 computes it.
  * It runs four `LANE`-byte lanes at once: their lookup chains do not depend
  * on each other, so the CPU overlaps them, and `shift` joins the four
- * results. A lane is short so that a 4 KiB block gains from it.
+ * results. A lane is short so that a small block gains from it too.
  */
 export function crcUpdate(c: u32, p: usize, n: usize): u32 {
   if (!ready) fill();

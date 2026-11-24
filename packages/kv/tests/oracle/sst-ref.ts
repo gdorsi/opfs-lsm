@@ -28,7 +28,7 @@ const TAG_DEL = 2;
 const OFFSET_STRIDE = 4;
 
 /** Target encoded size of one data block. */
-export const SST_BLOCK_TARGET = 4 * 1024;
+export const SST_BLOCK_TARGET = 32 * 1024;
 
 function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;

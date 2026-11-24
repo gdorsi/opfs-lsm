@@ -14,7 +14,7 @@ const VERSION: u32 = 2;
 export const FOOTER_BYTES: usize = 40;
 export const TAG_PUT: u8 = 1;
 export const TAG_DEL: u8 = 2;
-export const BLOCK_TARGET: usize = 4 << 10;
+export const BLOCK_TARGET: usize = 32 << 10;
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after the
  * first, so a get binary-searches them and walks at most

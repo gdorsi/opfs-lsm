@@ -68,15 +68,22 @@ async function open(reserveBytes: number): Promise<Db> {
   return db;
 }
 
-/** Puts and flushes time-ordered batches until the browser refuses a write. Returns the rows put, flushed or not. */
+/**
+ * Puts and flushes time-ordered batches, enough for a compaction, then leaves the origin no room for
+ * the next flush, which the browser refuses. The limit counts the reserve and the runs of the manifest
+ * alone: the flush fits once the reserve is released, and the reserve never fits again, whatever merged
+ * runs the host removes later. Returns the rows put.
+ */
 async function fillToRefusal(db: Db): Promise<number> {
   let rows = 0;
-  while (budget.refused === 0) {
+  for (; rows < 8 * BATCH; rows += BATCH) {
     await putBatch(db, rows);
-    rows += BATCH;
-    await ingest(db).catch(() => undefined);
+    await ingest(db);
   }
-  return rows;
+  budget.limit = RESERVE + (await runBytes()) + 64 * 1024;
+  await putBatch(db, rows);
+  await ingest(db).catch(() => undefined);
+  return rows + BATCH;
 }
 
 /** One small write and a flush, so a compaction pass ends. */
@@ -172,9 +179,10 @@ describe("a full origin", () => {
     const rows = await fillToRefusal(db);
     await until(() => calls > 0, "the offer");
     await turns(100);
-    // A pass of the flush that was refused can end after the answer, and ask once more.
+    // The pass of the flush that was refused can end after the answer, and ask once more. So can the
+    // pass of the flush an answer starts when it comes before the refused flush is recorded.
     const asked = calls;
-    expect(asked).toBeLessThanOrEqual(2);
+    expect(asked).toBeLessThanOrEqual(3);
 
     await turns(500);
     expect(calls).toBe(asked);

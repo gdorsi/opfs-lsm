@@ -160,7 +160,7 @@ describe("sst", () => {
     expect(got).toEqual(["k040", "k041", "k042"]);
   });
 
-  it("default block target constant is 4KiB", () => {
-    expect(SST_BLOCK_TARGET).toBe(4096);
+  it("default block target constant is 32KiB", () => {
+    expect(SST_BLOCK_TARGET).toBe(32 * 1024);
   });
 });
