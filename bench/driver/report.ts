@@ -242,6 +242,7 @@ export function compare(a: Measures, b: Measures, { all = false }: { all?: boole
   const out: string[] = [];
   for (const [side, m] of [["A", a], ["B", b]] as const) {
     for (const options of m.kvOptions) out.push(`${side} opened kv with ${options}`);
+    for (const [key, n] of m.failed) out.push(`${side} has ${n} failed run${n === 1 ? "" : "s"} of ${key}, left out of its medians`);
   }
   const seeds = (m: Measures) => m.seeds.join(", ") || "–";
   if (seeds(a) !== seeds(b)) out.push(`A ran on seed ${seeds(a)} and B on seed ${seeds(b)}, so this compares two inputs, not a before and after`);

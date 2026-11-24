@@ -28,6 +28,12 @@ test("compare says nothing about seeds when both files ran on the same one", () 
   assert.doesNotMatch(compare(measure(runs(7)), measure(runs(7))), /seed/);
 });
 
+test("compare names the failed runs of each file, which its medians leave out", () => {
+  const out = compare(measure([...runs(1), { ...run(1, 5), error: "timeout" }]), measure(runs(1)));
+  assert.match(out, /A has 1 failed run of kv\/test small kv\/kv, left out of its medians/);
+  assert.doesNotMatch(out, /B has/);
+});
+
 test("the report states a seed other than the default, and is silent on the default", () => {
   assert.match(report(runs(7)), /seed 7, not the default 1/);
   assert.doesNotMatch(report(runs(1)), /seed/);
