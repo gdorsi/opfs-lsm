@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
 import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { CATALOG_KEY, bytesEqual } from "../src/keys.js";
-import { codeOf, freshName, gate, openKv, recording, storedCatalog, wrap, wrapViews } from "./harness.js";
+import { codeOf, freshName, gate, openKv, openKvWithoutBus, recording, storedCatalog, wrap, wrapViews } from "./harness.js";
 
 type Todo = { id: string; title?: string; done?: boolean };
 
@@ -249,6 +249,16 @@ describe("opening a schema the stored catalog already satisfies", () => {
     await openDocStore(db, v1);
     expect(await kv.get(CATALOG_KEY)).toEqual(before);
     expect(updates).toEqual([]);
+  });
+
+  it("opens a lower version than another handle stored, before this handle has read that catalog", async () => {
+    const name = freshName();
+    const kv = await openKvWithoutBus(name);
+    open.push(kv);
+    await openDocStore(kv, v1);
+    await openDocStore(await kvOn(name), v2);
+    const todos = (await openDocStore(kv, byDone)).collection("todos");
+    expect(await todos.count({ index: "byDone" })).toBe(0);
   });
 
   it("writes the catalog when the declared version is higher", async () => {
