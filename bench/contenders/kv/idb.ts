@@ -1,7 +1,7 @@
 /**
  * A hand-written IndexedDB key-value store doing the same ops as kv: one
  * object store with binary keys, one readwrite transaction per batch,
- * getAll(range, limit) for scans and getAllRecords in reverse, count(range) for counts. Default durability, like kv's WAL.
+ * getAll(range, limit) for scans, with a direction in reverse, count(range) for counts. Default durability, like kv's WAL.
  *
  * Every write calls `commit()` once its requests are issued. Without it,
  * Chrome waits for the requests' success events to reach the tab before it
@@ -13,15 +13,15 @@ import { done, openIdb, request } from "../../page/idb.ts";
 const STORE = "kv";
 /** kv bytes are always ArrayBuffer-backed; TypeScript's IDBValidKey wants that spelled out. */
 const k = (b: Uint8Array) => b as Uint8Array<ArrayBuffer>;
-/** `getAllRecords` (Chrome 141) takes a direction, which `getAll` lacks; TypeScript's DOM types do not have it yet. */
-type RecordsStore = IDBObjectStore & {
-  getAllRecords(options: { query: IDBKeyRange; count: number; direction: IDBCursorDirection }): IDBRequest<{ value: Uint8Array }[]>;
+/** `getAll` takes a direction since Chrome 141, in an options object TypeScript's DOM types do not have yet. */
+type DirectedStore = {
+  getAll(options: { query: IDBKeyRange; count: number; direction: IDBCursorDirection }): IDBRequest<Uint8Array[]>;
 };
 
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); getMany = one readonly tx of gets; range = getAll(bound, limit), or getAllRecords(bound, limit, prev) in reverse, after a key cursor advance for an offset; count = count(bound)",
+  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); getMany = one readonly tx of gets; range = getAll(bound, limit), or getAll({ query, count, direction: prev }) in reverse, after a key cursor advance for an offset; count = count(bound)",
   engine: false,
   async open(name) {
     const db = await openIdb(`idb-${name}`, (d) => d.createObjectStore(STORE));
@@ -71,8 +71,7 @@ export default defineContender({
             if (at === undefined) return [];
             range = IDBKeyRange.bound(k(start), at);
           }
-          const records = await request<{ value: Uint8Array }[]>((s as RecordsStore).getAllRecords({ query: range, count: limit, direction: "prev" }));
-          return records.map((r) => r.value);
+          return request<Uint8Array[]>((s as unknown as DirectedStore).getAll({ query: range, count: limit, direction: "prev" }));
         }
         let from = k(start);
         if (offset > 0) {
