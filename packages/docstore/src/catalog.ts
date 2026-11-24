@@ -107,8 +107,6 @@ function checkField(field: unknown, where: string): string {
   return field;
 }
 
-const isArrayField = (field: unknown): field is string => typeof field === "string" && field.endsWith(ARRAY_MARK);
-
 function checkInclude(include: unknown, where: string): readonly string[] {
   if (
     !Array.isArray(include) ||
@@ -148,7 +146,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
       const by: unknown[] = Array.isArray(d["by"]) ? d["by"] : [d["by"]];
       if (by.length === 0 || by.length > MAX_FIELDS) badSchema(`${where}: by takes 1 to ${MAX_FIELDS} fields`);
       const first = by[0];
-      const multi = isArrayField(first);
+      const multi = typeof first === "string" && first.endsWith(ARRAY_MARK);
       const on = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
       if (new Set(on).size !== on.length) badSchema(`${where}: by repeats a field`);
       const { unique = false, text, include, count } = d;
@@ -303,7 +301,9 @@ export function sameCatalog(a: Uint8Array | undefined, b: Uint8Array | undefined
  * at once see each other's result.
  */
 export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredSchema): StoredCatalog | undefined {
-  if (!stored) return fresh(declared);
+  if (!stored) {
+    return upgrade({ format: FORMAT, version: declared.version, nextCollectionId: 1, collections: {}, dropped: [] }, declared);
+  }
   if (declared.version < stored.version) return undefined;
   if (declared.version > stored.version) return upgrade(stored, declared);
   for (const [name, specs] of declared.collections) {
@@ -320,11 +320,6 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
     if (Object.hasOwn(stored.collections, name)) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
   }
   return undefined;
-}
-
-function fresh(declared: DeclaredSchema): StoredCatalog {
-  const empty: StoredCatalog = { format: FORMAT, version: declared.version, nextCollectionId: 1, collections: {}, dropped: [] };
-  return upgrade(empty, declared);
 }
 
 function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog {
