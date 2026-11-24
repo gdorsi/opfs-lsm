@@ -390,7 +390,11 @@ export class Sys implements Disk {
     const idb = this.wal();
     const waiting = [...idb.rows].filter(([s]) => s > idb.ingested).sort((a, b) => a[0] - b[0]);
     const rows = oldestOnly ? waiting.slice(0, 1) : waiting;
-    if (rows.length === 0) return;
+    if (rows.length === 0) {
+      // `HostedDb.fold` removes the old manifests after a chunk that folded nothing too.
+      if (!this.v.held) this.reclaimManifests(meta.gen);
+      return;
+    }
     const first = rows[0]![0];
     const last = rows[rows.length - 1]![0];
     const path = `l0/${first}-${last}`;
