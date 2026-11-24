@@ -84,6 +84,27 @@ describe("a backfill stopped between chunks", () => {
   });
 });
 
+describe("a backfill stopped, then resumed by a handle on the version before", () => {
+  it("fails over a duplicate, and whenIdle waits for the sweep the failure starts", async () => {
+    const name = await loaded();
+    const writer = await openKv(name);
+    await (await openDocStore(writer, v1)).collection("rows").put({ ...rows[1]!, id: "dup" });
+    await writer.close();
+    const kv = await stopAt(name, "range", 0, (db) => openDocStore(db, v2.unique));
+    try {
+      const prefix = await storedPrefix(kv, "rows", "added");
+      expect((await storedCatalog(kv)).collections["rows"]!.indexes["added"]!.state).toEqual({ kind: "building" });
+      await (await openDocStore(kv, v1)).whenIdle();
+      const catalog = await storedCatalog(kv);
+      expect(catalog.collections["rows"]!.indexes["added"]!.state).toEqual({ kind: "failed", reason: "unique", ids: [rows[1]!.id, "dup"] });
+      expect(catalog.dropped).toEqual([]);
+      expect(await keysUnder(kv, prefix)).toBe(0);
+    } finally {
+      await kv.close();
+    }
+  });
+});
+
 describe("a sweep stopped before its range delete", () => {
   it("of a cleared collection keeps the prefix listed, and the next open empties it", async () => {
     const k = 1;
