@@ -113,7 +113,8 @@ function checkInclude(include: unknown, where: string): readonly string[] {
     include.length === 0 ||
     include.length > MAX_INCLUDE ||
     new Set(include).size !== include.length ||
-    include.some((f) => typeof f !== "string" || f === "" || f.includes(".") || f.includes(ARRAY_MARK))
+    // A copy, so a hole is checked as undefined: `some` skips it.
+    [...include].some((f) => typeof f !== "string" || f === "" || f.includes(".") || f.includes(ARRAY_MARK))
   ) {
     badSchema(`${where}: include takes 1 to ${MAX_INCLUDE} different top-level fields`);
   }
@@ -143,7 +144,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
         if (!OPTIONS.includes(key)) badSchema(`${where}: unknown option "${key}", expected ${OPTIONS.join(", ")}`);
       }
       if (d["by"] === undefined) badSchema(`${where}: by is required`);
-      const by: unknown[] = Array.isArray(d["by"]) ? d["by"] : [d["by"]];
+      const by: unknown[] = Array.isArray(d["by"]) ? [...d["by"]] : [d["by"]];
       if (by.length === 0 || by.length > MAX_FIELDS) badSchema(`${where}: by takes 1 to ${MAX_FIELDS} fields`);
       const first = by[0];
       const multi = typeof first === "string" && first.endsWith(ARRAY_MARK);
@@ -168,7 +169,7 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
     collections.set(name, specs);
   }
   const drop: unknown = decl.drop === undefined ? [] : decl.drop;
-  if (!Array.isArray(drop) || drop.some((name) => typeof name !== "string" || !NAME.test(name))) badSchema(`drop must be an array of collection names matching ${NAME}`);
+  if (!Array.isArray(drop) || [...drop].some((name) => typeof name !== "string" || !NAME.test(name))) badSchema(`drop must be an array of collection names matching ${NAME}`);
   for (const name of drop) if (collections.has(name)) badSchema(`"${name}" is both declared and dropped`);
   return { version: decl.version, collections, drop: new Set(drop) };
 }
