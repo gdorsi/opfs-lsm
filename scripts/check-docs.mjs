@@ -61,8 +61,38 @@ for (const page of new Set(pages.trim().split("\n").filter((page) => page && exi
   }
 }
 
+const research = "docs/research";
+const maxResearchBytes = 20 * 1024;
+const statusLine = /^Status: (shipped|rejected|open|reference)\b/m;
+const researchFiles = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--", research], {
+  cwd: root,
+  encoding: "utf8",
+})
+  .trim()
+  .split("\n")
+  .filter((file) => file && existsSync(join(root, file)));
+const index = researchFiles.includes(`${research}/README.md`) ? readFileSync(join(root, research, "README.md"), "utf8") : "";
+if (!index) errors.push(`${research}/README.md is missing. It lists every note with its verdict.`);
+for (const file of researchFiles) {
+  const text = readFileSync(join(root, file));
+  if (text.length > maxResearchBytes) {
+    errors.push(`${file} is ${text.length} bytes, the limit is ${maxResearchBytes}. Cut what another doc owns, and keep raw runs out of ${research}.`);
+  }
+  if (!file.endsWith(".md")) continue;
+  for (const [, target] of text.toString().matchAll(/\]\((?!https?:|#|mailto:)([^)#\s]+)(?:#[^)]*)?\)/g)) {
+    if (!existsSync(join(root, dirname(file), target))) errors.push(`${file}: links to "${target}", which does not exist.`);
+  }
+  const name = file.slice(research.length + 1);
+  if (name.includes("/") || name === "README.md") continue;
+  if (!statusLine.test(text.toString().split("\n").slice(0, 12).join("\n"))) {
+    errors.push(`${file}: no "Status: shipped|rejected|open|reference" line in its first 12 lines.`);
+  }
+  if (!index.includes(`](${name})`)) errors.push(`${file}: ${research}/README.md has no row that links to it.`);
+}
+
 if (errors.length > 0) {
   console.error(errors.join("\n"));
   process.exit(1);
 }
 console.log(`docs/design.md: ${lines.length}/${maxLines} lines, every citation resolves, every figure is registered`);
+console.log(`${research}: ${researchFiles.length} files, each at most ${maxResearchBytes} bytes, every note has a status and a README row`);
