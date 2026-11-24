@@ -6,13 +6,15 @@
  *
  * Two tabs share one WAL and one key. Each calls `update` and `put`, and
  * hears the other's rows one seq at a time. Every await of the product is a
- * step of its own: a row joins a group commit, the commit gives it a seq,
- * and the row lands in its tab's memtable. A recovery that drops the WAL
- * records may run once, between any two steps.
+ * step of its own: an update loads its keys, a row joins a group commit,
+ * the commit gives it a seq, and the row lands in its tab's memtable. A
+ * recovery that drops the WAL records may run once, between any two steps.
  *
- * An update appends a row valid only at `appliedThrough + 1` (`rowValid`).
- * At any other seq the row has no ops, and the update runs again inside a
- * transaction that reads the tail first. An update may also take that
+ * An update first loads its keys (`warm`), an await, and its body reads
+ * that load only when nothing landed since, else the memtable. It appends a
+ * row valid only at `appliedThrough + 1` (`rowValid`). At any other seq the
+ * row has no ops, and the update runs again inside a transaction that loads
+ * its keys again and reads the tail first. An update may also take that
  * transaction from the start, at any time: the product does when an append
  * of its handle is in flight, or after a row of the handle lost, and no
  * property may depend on that rule. Properties, in every state:
@@ -26,7 +28,8 @@
  *
  * Broken variants (the writer lands its row whatever its seq, a reader
  * applies a row whatever its header, the header takes `appliedThrough` after
- * an await, a recovery drops the records and keeps the head) must each fail.
+ * an await, a recovery drops the records and keeps the head, the body reads
+ * the load whatever landed since) must each fail.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -41,19 +44,26 @@ type Variant = {
   readonly readerIgnoresHeader?: boolean;
   readonly stampAfterAwait?: boolean;
   readonly dropKeepsHead?: boolean;
+  readonly warmIgnoresLanded?: boolean;
 };
 
 /** `validAt` 0: no header. `basedOn`: the state the body read, `BLIND` for a put, which reads nothing. */
 type Row = { readonly validAt: number; readonly basedOn: number };
 const BLIND = -1;
 
+/** What a `warm` loaded: the state at `appliedThrough` `at`. */
+type Warm = { readonly at: number; readonly state: number };
+
 type Update =
   | { at: "idle" }
+  /** The warm read is in flight: the body has not run. */
+  | { at: "warm"; warm: Warm }
   /** Only with `stampAfterAwait`: the body ran, the header is not written yet. */
   | { at: "read"; basedOn: number }
   | { at: "queued"; row: Row }
   | { at: "committed"; seq: number; validAt: number }
-  | { at: "transaction" }
+  /** `warm` is undefined until the transaction's own load. */
+  | { at: "transaction"; warm?: Warm }
   | { at: "written"; seq: number };
 
 type Tab = {
@@ -131,6 +141,11 @@ function follow(s: State, tab: Tab, v: Variant): void {
   tab.applied = seq;
 }
 
+/** What the body reads: the load when nothing landed since it, as `plan` checks `warmed`. */
+function values(tab: Tab, warm: Warm, v: Variant): number {
+  return v.warmIgnoresLanded || warm.at === tab.applied ? warm.state : tab.state;
+}
+
 function catchUp(s: State, tab: Tab, v: Variant): void {
   while (tab.applied < head(s)) follow(s, tab, v);
 }
@@ -145,7 +160,7 @@ function land(s: State, tab: Tab, seq: number, live: boolean, v: Variant): void 
   }
 }
 
-type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "stamp" | "rowCommits" | "rowLands" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
+type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "plan" | "stamp" | "rowCommits" | "rowLands" | "warmTx" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
 
 function enabled(s: State): Action[] {
   const out: Action[] = [];
@@ -154,16 +169,18 @@ function enabled(s: State): Action[] {
     if (tab.put === "idle" && tab.putsLeft > 0) out.push({ tab: i, type: "put" });
     if (tab.put === "queued") out.push({ tab: i, type: "putCommits" });
     if (typeof tab.put === "number") out.push({ tab: i, type: "putLands" });
-    const at = tab.update.at;
+    const u = tab.update;
+    const at = u.at;
     if (at === "idle" && tab.updatesLeft > 0) {
       // With an append of its own in flight, a tab's memtable lacks that row: only the transaction.
       if (tab.put === "idle") out.push({ tab: i, type: "update" });
       out.push({ tab: i, type: "updateAlone" });
     }
+    if (at === "warm") out.push({ tab: i, type: "plan" });
     if (at === "read") out.push({ tab: i, type: "stamp" });
     if (at === "queued") out.push({ tab: i, type: "rowCommits" });
     if (at === "committed") out.push({ tab: i, type: "rowLands" });
-    if (at === "transaction") out.push({ tab: i, type: "transaction" });
+    if (u.at === "transaction") out.push({ tab: i, type: u.warm ? "transaction" : "warmTx" });
     if (at === "written") out.push({ tab: i, type: "written" });
   });
   if (s.dropsLeft > 0 && head(s) > 0) out.push({ tab: -1, type: "drop" });
@@ -211,12 +228,18 @@ function step(s: State, a: Action, v: Variant): string {
     case "update":
       tab.updatesLeft--;
       tab.runs = 1;
+      tab.update = { at: "warm", warm: { at: tab.applied, state: tab.state } };
+      return `${who} calls update: warm loads ${named(tab.state)} at seq ${tab.applied}`;
+    case "plan": {
+      if (u.at !== "warm") throw new Error("model: plan");
+      const basedOn = values(tab, u.warm, v);
       if (v.stampAfterAwait) {
-        tab.update = { at: "read", basedOn: tab.state };
-        return `${who} calls update: body reads ${named(tab.state)}`;
+        tab.update = { at: "read", basedOn };
+        return `${who}: body reads ${named(basedOn)}`;
       }
-      tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn: tab.state } };
-      return `${who} calls update: body reads ${named(tab.state)}, the row is valid at seq ${tab.applied + 1}`;
+      tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn } };
+      return `${who}: body reads ${named(basedOn)}, the row is valid at seq ${tab.applied + 1}`;
+    }
     case "stamp":
       if (u.at !== "read") throw new Error("model: stamp");
       tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn: u.basedOn } };
@@ -239,12 +262,17 @@ function step(s: State, a: Action, v: Variant): string {
       tab.update = { at: "idle" };
       return `${who}: the row lands with its ops, the update resolves`;
     }
+    case "warmTx":
+      tab.update = { at: "transaction", warm: { at: tab.applied, state: tab.state } };
+      return `${who}: warm loads ${named(tab.state)} at seq ${tab.applied} for the transaction`;
     case "transaction": {
+      if (u.at !== "transaction" || !u.warm) throw new Error("model: transaction");
       catchUp(s, tab, v);
       tab.runs++;
-      const seq = commit(s, { validAt: 0, basedOn: tab.state });
+      const basedOn = values(tab, u.warm, v);
+      const seq = commit(s, { validAt: 0, basedOn });
       tab.update = { at: "written", seq };
-      return `${who}: a transaction reads the tail, body reads ${named(tab.state)}, the row commits at seq ${seq}`;
+      return `${who}: a transaction reads the tail, body reads ${named(basedOn)}, the row commits at seq ${seq}`;
     }
     case "written":
       if (u.at !== "written") throw new Error("model: written");
@@ -296,16 +324,20 @@ function shapeOf(s: State, order: readonly Tab[]): string {
   for (let at = base + 1; at <= head(s); at++) window.push(s.truth[at] === s.truth[at - 1] ? 0 : 1);
   const tabs = order.map((tab) => {
     const u = tab.update;
+    // `appliedThrough` only grows, so a load that something landed after stays stale.
+    const warm = (w: Warm | undefined) => (w ? [w.at === tab.applied, id(w.state)] : []);
     const update =
-      u.at === "read"
-        ? [u.at, id(u.basedOn)]
-        : u.at === "queued"
-          ? [u.at, validAt(u.row.validAt), id(u.row.basedOn)]
-          : u.at === "committed"
-            ? [u.at, seq(u.seq), rowValid(u.validAt, u.seq)]
-            : u.at === "written"
-              ? [u.at, seq(u.seq)]
-              : [u.at];
+      u.at === "warm" || u.at === "transaction"
+        ? [u.at, ...warm(u.warm)]
+        : u.at === "read"
+          ? [u.at, id(u.basedOn)]
+          : u.at === "queued"
+            ? [u.at, validAt(u.row.validAt), id(u.row.basedOn)]
+            : u.at === "committed"
+              ? [u.at, seq(u.seq), rowValid(u.validAt, u.seq)]
+              : u.at === "written"
+                ? [u.at, seq(u.seq)]
+                : [u.at];
     return [seq(tab.applied), id(tab.state), typeof tab.put === "number" ? seq(tab.put) : tab.put, update, tab.runs, tab.updatesLeft, tab.putsLeft];
   });
   return JSON.stringify([from, window, seq(s.droppedAt), s.dropsLeft, s.fault ? 1 : 0, tabs]);
@@ -370,6 +402,9 @@ function sourceSync(): string[] {
     /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*const next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(!this\.appending && !this\.beaten\) \{\s*const planned = plan\(\);\s*(?:\/\/[^\n]*\n\s*)*if \(planned instanceof Miss\) planned\.ready\.catch\(\(\) => undefined\);\s*else if \(planned\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*\}\s*const out = await this\.write\(plan, warm\);/,
     "update takes appliedThrough + 1, reads and runs body with no await in between, appends no row with an append of its handle in flight, resolves only when rowValid holds, and runs the transaction otherwise",
   );
+  need("db.ts", /const at = this\.mem\.appliedThrough;\s*const got = await this\.settleInstalled\(read\(wanted\), held\);\s*(?:\/\/[^\n]*\n\s*)*warmed = wanted === ks \? \[at, got\] : undefined;/, "warm names its load by the appliedThrough of the turn it starts reading in");
+  need("db.ts", /const values = warmed\?\.\[0\] === this\.mem\.appliedThrough \? warmed\[1\] : now\(ks\);/, "the body reads the warm load only when nothing landed since it, else the memtable now");
+  need("db.ts", /\.appendAfter\(this\.mem\.appliedThrough, \(tail\) => \{\s*missing = this\.catchUp\(tail\);\s*if \(missing !== undefined\) return undefined;\s*const planned = plan\(\);/, "the transaction catches the memtable up to the tail before the body reads");
   need("db.ts", /const turn = this\.updating\.then\(\(\) => this\.updateOnce\(ks, body\)\);\s*this\.updating = turn\.catch\(\(\) => undefined\);/, "the updates of one handle run one at a time");
   need("db.ts", /=== "gap" && ops\.length && !this\.closed\) await this\.sync\(\);/, "a row that lands with no ops waits for no catch-up");
   need("idb/wal.ts", /const nextHead = follows \? head : asSeq\(Math\.max\(past, nextSeq\(head\)\)\);/, "an adopt that drops the records moves the head by at least one");
@@ -383,12 +418,13 @@ if (drift.length > 0) {
   process.exit(1);
 }
 
-/** Each with the recoveries it needs: the first three must fail on two tabs alone. */
+/** Each with the recoveries it needs: all but the recovery one must fail on two tabs alone. */
 const broken: [string, Variant, number][] = [
   ["the writer lands its row with its ops whatever seq it took", { writerIgnoresVerdict: true }, 0],
   ["a reader applies a row with a header whatever its seq", { readerIgnoresHeader: true }, 0],
   ["the header takes appliedThrough after an await", { stampAfterAwait: true }, 0],
   ["a recovery that drops the WAL records keeps the head", { dropKeepsHead: true }, 1],
+  ["the body reads the warm load whatever landed since", { warmIgnoresLanded: true }, 0],
 ];
 for (const [name, v, recoveries] of broken) {
   if (!explore(v, recoveries)) {
