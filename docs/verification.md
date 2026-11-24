@@ -16,7 +16,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | WAL append or ack, `ingestChunk`, `listUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility` and `formal:power-loss`) |
 | The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `power-loss-chrome` (see [Lose IndexedDB commits in real Chrome](#lose-indexeddb-commits-in-real-chrome)), then `kill-chrome --minutes 10` |
 | `update`, the header of a WAL row (`rowValid`, `encodeOps`, `decodeOps`), or how a tab lands its own append (`commit`, `landed`) | `formal:update-exact`, then `tests/update.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. A change to the row format also takes the decoder row below. |
-| Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
+| Generation loading in `db.ts` (`syncOnce`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:reclaim-hold`, `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |
 | Point get versus SST, including tombstones (`pointGet`, `keysReader`) | `formal:wal-over-sst`. Add `drive bench kv/` when the OPFS read after ingest changed. |
 | `view()` or the memtable pin | `formal:view-pin` |
 | SST merge, compaction, or the on-disk format those paths read (`latestSstEntry`, the merge session in `packages/kv/engine/merge.ts` and its oracle `tests/oracle/merge-ts.ts`, `host/compact.ts`, the `bottom` of `planCompaction`) | `formal:compact-preserve`, `pnpm --filter @opfs-lsm/kv test`, plus `drive bench kv/` for a real post-ingest get |
@@ -213,19 +213,20 @@ The script installs the Chromium snapshot when the device has no `org.chromium.c
 pnpm --filter @opfs-lsm/kv formal:kv
 ```
 
-Exit 0. The log ends with `All 6 formal checks passed`. Each check prints a `PASS` line:
+Exit 0. The log ends with `All 7 formal checks passed`. Each check prints a `PASS` line:
 
 - `PASS NoLostAcks`, after two `broken variant caught` lines (orders that record the flush before its manifest is on disk)
 - `PASS WalOverSst` (on real `pointGet`: every memtable row, run and mark, then every pair of levels with each run cold, with its layout loaded, or with its page loaded)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, a delete drops only in a bottom merge, outputs claim the base manifest's marks only), after three `broken variant caught` lines
 - `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after five `broken variant caught` lines
+- `PASS ReclaimHold` (every interleaving of one tab that syncs and opens views with one host that flushes, compacts, destroys and sweeps, each file removal a step of its own: a run the tab or a view holds open stays on disk, and a load under the reclaim lock finds every file). Before it, six `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eighteen `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it. It keeps the WAL database, the `opfs-lsm-destroyed` row and OPFS as three stores with no order between them.
 - `PASS RemoveClean` (`destroyDb` from every crash state leaves no WAL database and no file, and an open after it reads empty)
 - `PASS WalLost` (after every recovery and a flush, losing only the WAL database changes no read: a row a crash left behind never empties a database born after it)
 - `PASS CorruptRefuse` (a run of the recorded manifest removed after every workload: open refuses and nothing writes, unless a manifest that holds every ingested seq stands in)
 
-The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:update-exact`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions, destroys and `destroyDb` removals. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about four minutes. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
+The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:update-exact`, `formal:reclaim-hold`, `formal:power-loss`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions, destroys and `destroyDb` removals. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about four minutes. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
 The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `eeaff758a207a5e9471f3dfd828fe3d2b0359f8b`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
