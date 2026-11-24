@@ -24,6 +24,7 @@ import {
   gte,
   ilike,
   inArray,
+  like,
   localOnlyCollectionOptions,
   lt,
   lte,
@@ -52,7 +53,8 @@ const IDS = Array.from({ length: 30 }, (_, i) => `d${String(i).padStart(2, "0")}
 // An astral string and a U+E000..U+FFFF one compare apart by code point and by UTF-16 unit.
 const STRINGS = ["a", "B", "b", "ab", "Ba", "c", "", "a b", "é", "\u{1F600}", "\uFF21"];
 const NUMBERS = [-2, -0.5, 0, 1, 2, 3, 4, 5, 6];
-const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE"];
+// Σ lowercases to σ or ς by the letters around it.
+const TEXTS = ["red apple", "Green pie", "apple pie", "blue", "", "sky-blue APPLE", "ΟΔΟΣ ΑΣΑ"];
 
 const fieldsArb = fc.record({
   g: fc.integer({ min: 0, max: 3 }),
@@ -72,7 +74,7 @@ type Cond =
   | { readonly op: "gt" | "lt" | "eq"; readonly field: "s"; readonly value: string; readonly flip: boolean }
   | { readonly op: "in"; readonly field: "g" | "n"; readonly values: readonly (number | null)[] }
   | { readonly op: "eq"; readonly field: "k"; readonly value: boolean }
-  | { readonly op: "ilike"; readonly pattern: string }
+  | { readonly op: "like" | "ilike"; readonly pattern: string }
   | { readonly op: "or" | "not"; readonly value: number };
 
 const condArb: fc.Arbitrary<Cond> = fc.oneof(
@@ -89,7 +91,10 @@ const condArb: fc.Arbitrary<Cond> = fc.oneof(
     values: fc.uniqueArray(fc.option(fc.constantFrom(...NUMBERS), { nil: null, freq: 6 }), { maxLength: 3 }),
   }),
   fc.record({ op: fc.constant("eq"), field: fc.constant("k"), value: fc.boolean() }),
-  fc.record({ op: fc.constant("ilike"), pattern: fc.constantFrom("%apple%", "%PIE%", "%e%", "%sky-b%", "% %", "%%", "blue") }),
+  fc.record({
+    op: fc.constantFrom("like", "ilike"),
+    pattern: fc.constantFrom("%apple%", "%PIE%", "%e%", "%sky-b%", "% %", "%%", "blue", "%ΑΣ%", "%ΑΣ_%"),
+  }),
   fc.record({ op: fc.constantFrom("or", "not"), value: fc.integer({ min: 0, max: 3 }) }),
 ) as fc.Arbitrary<Cond>;
 
@@ -151,6 +156,8 @@ function condition(c: Cond, d: any) {
   switch (c.op) {
     case "in":
       return inArray(d[c.field], [...c.values]);
+    case "like":
+      return like(d.t, c.pattern);
     case "ilike":
       return ilike(d.t, c.pattern);
     case "or":
@@ -310,4 +317,9 @@ test("an on-demand live query shows what the same query shows over every documen
   );
   console.log(`differential: ${cases} cases passed`);
   if (process.env.TSDB_DIFF_REPORT) console.log(Object.fromEntries([...shapes].sort()));
+});
+
+test("a case-sensitive like finds a Σ the text lowercases to σ", async () => {
+  const doc: Doc = { id: "d00", g: 0, k: false, n: null, s: null, t: "ΟΔΟΣ ΑΣΑ" };
+  await check([doc], [{ conds: [{ op: "like", pattern: "%ΑΣ_%" }], moves: [] }], [], false);
 });

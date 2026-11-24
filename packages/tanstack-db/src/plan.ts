@@ -326,9 +326,10 @@ export const comparesAsUtf16 = (s: string): boolean => !/[\uD800-\uFFFF]/.test(s
 /** A scalar a range bound may hold: strings must compare in both orders alike. */
 const isBound = (v: unknown): v is Scalar => isScalar(v) && (typeof v !== "string" || comparesAsUtf16(v));
 
-const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
+/** docstore's word breaks, and σ and ς: a Σ lowercases to either by the letters around it, which a pattern does not hold. */
+const NON_WORD = /[^\p{L}\p{M}\p{N}]+|[σς]/u;
 
-/** docstore's text words. Each word of a like pattern occurs inside one word of every text the pattern matches. */
+/** docstore's text words, cut at σ and ς. Each word of a like pattern occurs inside one word of every text the pattern matches. */
 function wordsOf(text: string): string[] {
   return text
     .normalize("NFC")
