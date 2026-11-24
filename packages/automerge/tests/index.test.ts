@@ -150,6 +150,50 @@ test("save, load, loadRange, and caller-buffer alias", async () => {
   }
 });
 
+test("random saves, removes and range removes read back as a Map of keys holds them", async () => {
+  const rand = mulberry32(SEED);
+  const pick = <T>(items: readonly T[]): T => items[Math.floor(rand() * items.length)]!;
+  // Segments that a joined or unframed encoding would confuse.
+  const segments = ["", "a", "ab", "a\u0000b", "b", "\u{1F680}"];
+  const randomKey = (min: number, max: number) =>
+    Array.from({ length: min + Math.floor(rand() * (max - min + 1)) }, () => pick(segments));
+  const byKey = (a: { key: string[] }, b: { key: string[] }) => compareKeys(a.key, b.key);
+  for (let run = 0; run < 20; run++) {
+    const storage = kvStorage(await openHarnessDb({ name: dbName(), forceMemory: true }));
+    const model = new Map<string, { key: string[]; data: Uint8Array }>();
+    const matching = (prefix: string[]) =>
+      [...model.values()].filter((chunk) => segmentsStartWith(chunk.key, prefix)).sort(byKey);
+    try {
+      for (let step = 0; step < 200; step++) {
+        const at = `run ${run} step ${step}`;
+        const op = rand();
+        if (op < 0.4) {
+          const key = randomKey(1, 3);
+          const data = Uint8Array.from({ length: pick([0, 1, 65, 300, 1025]) }, () => Math.floor(rand() * 256));
+          await storage.save(key, data);
+          model.set(JSON.stringify(key), { key, data });
+        } else if (op < 0.55) {
+          const key = randomKey(1, 3);
+          await storage.remove(key);
+          model.delete(JSON.stringify(key));
+        } else if (op < 0.65) {
+          const prefix = randomKey(0, 2);
+          await storage.removeRange(prefix);
+          for (const chunk of matching(prefix)) model.delete(JSON.stringify(chunk.key));
+        } else if (op < 0.8) {
+          const key = randomKey(1, 3);
+          assert.deepEqual(await storage.load(key), model.get(JSON.stringify(key))?.data, at);
+        } else {
+          const prefix = randomKey(0, 3);
+          assert.deepEqual((await storage.loadRange(prefix)).sort(byKey), matching(prefix), at);
+        }
+      }
+    } finally {
+      await storage.close();
+    }
+  }
+});
+
 test("removeRange clears 2501 keys and a second call is a no-op", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   const storage = kvStorage(db);
