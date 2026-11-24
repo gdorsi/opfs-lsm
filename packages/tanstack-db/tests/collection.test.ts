@@ -894,6 +894,35 @@ test("loading the same options twice supersedes the first fetch, which then neve
   handle.cleanup();
 });
 
+test("a load in flight when its sync run stops settles without committing", async () => {
+  const { store } = await open(dbName());
+  await store.collection("bodies").put({ id: "A", description: "a" });
+  const gate = gatedView(store.collection("bodies"));
+  let commits = 0;
+  const handle = docstoreCollectionOptions({ collection: gate.docs, syncMode: "on-demand" }).sync.sync({
+    collection: undefined as never,
+    begin: () => {},
+    write: () => {},
+    commit: () => void commits++,
+    markReady: () => {},
+    truncate: () => {},
+    fail: () => {},
+    invalidateLoadedSubsets: () => {},
+    metadata: undefined as never,
+  } as never) as { cleanup(): void; loadSubset(o: LoadSubsetOptions): Promise<void> };
+
+  const loading = handle.loadSubset({ where: eq(new IR.PropRef(["id"]), "A") });
+  await gate.reached;
+  handle.cleanup();
+  gate.open();
+  const outcome = await Promise.race([
+    loading.then(() => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("pending"), 1000)),
+  ]);
+  assert.equal(outcome, "settled");
+  assert.equal(commits, 0);
+});
+
 test("cleaning up a collection, eager or on-demand, removes its change listener", async () => {
   const { store } = await open(dbName());
   let listening = 0;
