@@ -3,15 +3,18 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import type { HostInfo } from "../core/types.ts";
 
-export function hostInfo(chrome: string, headless: boolean): HostInfo {
-  let gitSha = "unknown";
+/** The commit of the checkout, with `-dirty` when the tree has uncommitted changes. */
+export function gitStamp(): string {
   try {
-    gitSha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
     const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
-    if (dirty) gitSha += "-dirty";
+    return dirty ? `${sha}-dirty` : sha;
   } catch {
-    // not a git checkout
+    return "unknown"; // not a git checkout
   }
+}
+
+export function hostInfo(chrome: string, headless: boolean, gitSha: string): HostInfo {
   return {
     chrome,
     headless,

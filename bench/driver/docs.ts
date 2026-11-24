@@ -18,12 +18,6 @@ const DOCS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const RESULTS_DIR = path.join(DOCS_DIR, "results");
 export const PAGE = path.join(DOCS_DIR, "benchmarks.md");
 
-/**
- * Runs published before a table had to come from a clean tree. Every table
- * has been republished since, so it is empty, and none is ever added.
- */
-export const LEGACY_DIRTY: ReadonlySet<string> = new Set([]);
-
 /** Where a value is read: a contender, with the workload when the row or the table does not name it. */
 type Cell = { readonly workload?: string; readonly contender: string };
 type ValueColumn = { readonly head: string; readonly at: string | Cell };
@@ -64,15 +58,14 @@ export type Published = {
 
 /**
  * docs/results/<stamp>.jsonl. Throws when a run has uncommitted changes in its
- * tree, unless the stamp is in LEGACY_DIRTY, when a run overrode a kv
- * option, and when a run used a seed other than the default: the page
+ * tree, when a run overrode a kv option, and when a run used a seed other than the default: the page
  * publishes what an app gets by default, on the inputs the budgets hold for.
  * A failed run is kept apart in `failed`.
  */
 export function readPublished(stamp: string, dir = RESULTS_DIR): Published {
   const all = readRecords(path.join(dir, `${stamp}.jsonl`));
   const dirty = all.find((r) => r.host.gitSha.endsWith("-dirty"));
-  if (dirty && !LEGACY_DIRTY.has(stamp)) {
+  if (dirty) {
     throw new Error(`${stamp}: a run recorded ${dirty.host.gitSha}, a tree with uncommitted changes. Publish a run from a clean tree.`);
   }
   const records = all.filter((r) => !r.error);
