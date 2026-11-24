@@ -116,6 +116,67 @@ test("persisterGc removes busted and unreadable queries and keeps other prefixes
     assert.deepEqual(await restoredKeys(other), [["kept"]]);
   }));
 
+test("persisterGc removes an entry older than maxAge and keeps a fresh one", () =>
+  withDb(async (db) => {
+    const client = newClient();
+    client.setQueryData(["old"], 1, { updatedAt: Date.now() - 10_000 });
+    client.setQueryData(["new"], 2);
+    const persister = createQueryPersister(db, { maxAge: 5_000 });
+    await persister.persistQueryByKey(["old"], client);
+    await persister.persistQueryByKey(["new"], client);
+    assert.equal(await db.count(), 2);
+    await persister.persisterGc();
+    assert.equal(await db.count(), 1);
+    assert.equal(await persister.retrieveQuery(hashKey(["new"])), 2);
+  }));
+
+test("persists of one query issued together leave the last one, and a remove issued after them leaves none", () =>
+  withDb(async (db) => {
+    const persister = createQueryPersister(db);
+    const client = newClient();
+    const queryKey = ["todo", 1];
+    const writes: Promise<void>[] = [];
+    for (let i = 0; i < 20; i++) {
+      client.setQueryData(queryKey, `v${i}`);
+      writes.push(persister.persistQuery(client.getQueryCache().find({ queryKey })!));
+    }
+    await Promise.all(writes);
+    assert.equal(await persister.retrieveQuery(hashKey(queryKey)), "v19");
+
+    client.setQueryData(queryKey, "gone");
+    const last = persister.persistQuery(client.getQueryCache().find({ queryKey })!);
+    const removed = persister.removeQueries({ queryKey, exact: true });
+    await Promise.all([last, removed]);
+    assert.equal(await persister.retrieveQuery(hashKey(queryKey)), undefined);
+  }));
+
+test("a query persisted before the db closes restores, without calling queryFn, in a tab that opens the db later", async () => {
+  const name = dbName();
+  const first = await openHarnessDb({ name, forceMemory: true });
+  const queryKey = ["user", "ada"];
+  const client = newClient();
+  client.setQueryData(queryKey, { name: "Ada" });
+  await createQueryPersister(first, { refetchOnRestore: false }).persistQueryByKey(queryKey, client);
+  await first.close();
+
+  const again = await openHarnessDb({ name, forceMemory: true });
+  try {
+    let calls = 0;
+    const data = await newClient().fetchQuery({
+      queryKey,
+      queryFn: () => {
+        calls++;
+        return { name: "network" };
+      },
+      persister: createQueryPersister(again, { refetchOnRestore: false }).persisterFn,
+    });
+    assert.deepEqual(data, { name: "Ada" });
+    assert.equal(calls, 0);
+  } finally {
+    await again.close();
+  }
+});
+
 test("two persisters on one db see each other's writes and removals", () =>
   withDb(async (db) => {
     const first = createQueryPersister(db);

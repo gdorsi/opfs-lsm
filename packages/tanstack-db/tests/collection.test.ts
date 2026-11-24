@@ -579,6 +579,37 @@ test("an on-demand collection loads by id", async () => {
   assert.equal(c.get("B")?.description, "b2", "a transact on a loaded row shows on resolve");
 });
 
+for (const syncMode of ["eager", "on-demand"] as const) {
+  test(`${syncMode}: a transact while another transaction persists is stored on resolve, and shows once that transaction settles with no other write`, async () => {
+    const { kv, store } = await open(dbName());
+    const docs = store.collection("comments");
+    await docs.putMany([comment("X", 1), comment("X", 2)]);
+    const c = syncMode === "eager" ? eager(docs) : onDemand(docs);
+    await (syncMode === "eager" ? c.preload() : commentsOf(c, "X").preload());
+    assert.equal(c.get("X-2")?.body, "X2");
+
+    const persisting = Promise.withResolvers<void>();
+    const other = createTransaction({ mutationFn: () => persisting.promise });
+    other.mutate(() =>
+      c.update("X-1", (d) => {
+        d.body = "edited";
+      }),
+    );
+
+    await c.utils.transact(["X-2"], ([row]) => [{ ...row!, body: "transacted" }]);
+    assert.equal((await docs.get("X-2"))?.body, "transacted");
+    const appends: number[] = [];
+    kv.changes((e) => {
+      if (e.kind === "append") appends.push(e.seq);
+    });
+    persisting.resolve();
+    await other.when("settled");
+
+    assert.equal(c.get("X-2")?.body, "transacted");
+    assert.deepEqual(appends, []);
+  });
+}
+
 test("another handle's writes reach a loaded subset, and writes outside it stay out of memory", async () => {
   const name = dbName();
   const writer = eager((await open(name)).store.collection("comments"));
