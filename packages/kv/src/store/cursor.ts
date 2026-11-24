@@ -173,8 +173,8 @@ export function entryOf(e: LayerEntry): Entry {
 }
 
 export type ScanBounds = {
-  readonly start?: Uint8Array;
-  readonly endExclusive?: Uint8Array;
+  readonly start?: Uint8Array | undefined;
+  readonly endExclusive?: Uint8Array | undefined;
 };
 
 /**

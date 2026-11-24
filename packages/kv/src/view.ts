@@ -53,13 +53,8 @@ export interface ViewSnapshot {
 
 export function boundsOf(range?: Range): ScanBounds | undefined {
   const start = range?.start ? checkKey(range.start) : undefined;
-  const endExclusive = range?.endExclusive
-    ? checkKey(range.endExclusive)
-    : undefined;
-  if (start && endExclusive) return { start, endExclusive };
-  if (start) return { start };
-  if (endExclusive) return { endExclusive };
-  return undefined;
+  const endExclusive = range?.endExclusive ? checkKey(range.endExclusive) : undefined;
+  return start || endExclusive ? { start, endExclusive } : undefined;
 }
 
 /**
