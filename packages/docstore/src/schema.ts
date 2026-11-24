@@ -109,17 +109,6 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
     by: B,
     text: X,
   ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly text: X } }, In>;
-  /**
-   * A count index: how many documents hold each value tuple of the fields at
-   * `by`, kept in the same kv transaction as the documents. It holds one or
-   * two small rows per tuple and no entries, so only `count` reads it. A
-   * `[]` first field counts a document once per distinct element. It suits
-   * fields with few values: a status, a flag, a tag.
-   */
-  count<const N extends string, const B extends By<T>>(
-    name: Free<Ix, N>,
-    by: B,
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly count: true } }, In>;
 }
 
 class Declaration {
@@ -135,9 +124,6 @@ class Declaration {
   }
   text(name: string, by: unknown, text: unknown): never {
     return this.index(name, by, { text });
-  }
-  count(name: string, by: unknown): never {
-    return this.index(name, by, { count: true });
   }
 }
 
@@ -187,7 +173,7 @@ export type DocOf<S extends Schema, C extends CollectionName<S>> = DocsOf<S>[C];
 export type InputOf<S extends Schema, C extends CollectionName<S>> = InputsOf<S>[C];
 export type IndexesOf<S extends Schema, C extends CollectionName<S>> = S["collections"][C]["indexes"];
 
-/** What a declared index that `query` reads is, for layers that plan queries. */
+/** What a declared index is, for layers that plan queries. */
 export type IndexInfo = {
   readonly kind: "sorted" | "multi" | "text";
   /** The fields the index orders by, as declared. The first field of a multi index ends in `[]`. */
@@ -266,37 +252,16 @@ type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Wh
 /** No index: the rows in id order. The id is the one component. */
 type RowsQuery = { readonly index?: undefined; readonly match?: undefined } & Where<readonly [string], false> & PageOptions;
 
-/** The names in `Ix` of the count indexes (`Count` true) or of the others. An index of unknown kind is in both. */
-type NamesOf<Ix, Count extends boolean> = {
-  [I in keyof Ix & string]: Count extends (Ix[I] extends { readonly count: true } ? true : false) ? I : never;
-}[keyof Ix & string];
-
-type Values<T, D> = ValuesOf<T, D> extends readonly unknown[] ? ValuesOf<T, D> : never;
-
-/** Everything `query`, `queryIds` and `queryEntries` accept for a collection with indexes `Ix`. */
-export type Query<T, Ix> = RowsQuery | { [I in NamesOf<Ix, false>]: IndexQuery<I, Values<T, Ix[I]>, Ix[I]> }[NamesOf<Ix, false>];
-
-/** The array field of a count index takes one value: the sum of two of its groups would count a document that holds both twice. */
-type CountWhere<V extends readonly unknown[], D> = D extends { readonly by: `${string}[]` | readonly [`${string}[]`, ...unknown[]] }
-  ? V extends readonly [infer H, ...infer R]
-    ? (EqOf<[]> & Bound<H>) | Where<R, true, [H]>
-    : never
-  : Where<V, true>;
-
-/** A count index takes a range of its groups, by `eq` and one bound, and `limit`. It has no order, so no position in it. */
-type CountIndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & CountWhere<V, D> & {
-    /** Stop at this many documents. */
-    readonly limit?: number | undefined;
-    readonly after?: undefined;
-    readonly offset?: undefined;
-    readonly reverse?: undefined;
-    readonly match?: undefined;
-  };
-
-/** Everything `count` accepts: what `query` does, and a count index. */
-export type CountQuery<T, Ix> =
-  | Query<T, Ix>
-  | { [I in NamesOf<Ix, true>]: CountIndexQuery<I, Values<T, Ix[I]>, Ix[I]> }[NamesOf<Ix, true>];
+/** Everything `query`, `queryIds` and `count` accept for a collection with indexes `Ix`. */
+export type Query<T, Ix> =
+  | RowsQuery
+  | {
+      [I in keyof Ix & string]: IndexQuery<
+        I,
+        ValuesOf<T, Ix[I]> extends readonly unknown[] ? ValuesOf<T, Ix[I]> : never,
+        Ix[I]
+      >;
+    }[keyof Ix & string];
 
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };

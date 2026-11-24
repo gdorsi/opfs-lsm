@@ -24,8 +24,7 @@ describe("offset after a cursor, and count with offset and limit", () => {
       fc.assert(
         fc.asyncProperty(
           datasetArb,
-          // A count index has no entries to pass over.
-          queryArb.filter(({ index }) => index === undefined || MODEL[index]!.kind !== "count"),
+          queryArb,
           fc.integer({ min: 1, max: 3 }),
           fc.integer({ min: 0, max: 4 }),
           fc.integer({ min: 1, max: 6 }),

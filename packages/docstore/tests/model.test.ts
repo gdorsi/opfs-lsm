@@ -20,7 +20,7 @@ import type { QueryInput, Scalar } from "../src/schema.js";
 import { ARITY, MODEL, UNIQUE_TAGS, checkQuery, queryArbOn, schema, textArb, withUniqueTags, type Doc } from "./docs.js";
 import { mirror } from "./mirror.js";
 import { codeOf, docstoreKeys, freshName, keysUnder, openKv, storedCatalog, storedPrefix } from "./harness.js";
-import { groupCounts, stored, storedRows, type ModelIndex } from "./oracle.js";
+import { expected, stored, type ModelIndex } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 import { ingest } from "@opfs-lsm/kv/testing";
 
@@ -59,7 +59,6 @@ type IndexDecl = {
   readonly unique?: true;
   readonly text?: string;
   readonly include?: readonly string[];
-  readonly count?: true;
 };
 const DECLS = withUniqueTags.indexes as unknown as Record<string, IndexDecl>;
 const NAMES = Object.keys(DECLS);
@@ -67,11 +66,11 @@ const MODELS: Record<string, ModelIndex> = { ...MODEL, [UNIQUE_TAGS.name]: UNIQU
 
 /** The collection with the indexes `names`, declared through `collection` as an app declares it. */
 function declare(names: readonly string[]): CollectionDecl<Doc> {
-  type Loose = { readonly [K in "index" | "unique" | "text" | "count"]: (...args: unknown[]) => Loose };
+  type Loose = { readonly [K in "index" | "unique" | "text"]: (...args: unknown[]) => Loose };
   let d = collection<Doc>() as unknown as Loose;
   for (const n of names) {
-    const { by, unique, text, include, count } = DECLS[n]!;
-    d = count ? d.count(n, by) : unique ? d.unique(n, by) : text ? d.text(n, by, text) : include ? d.index(n, by, { include }) : d.index(n, by);
+    const { by, unique, text, include } = DECLS[n]!;
+    d = unique ? d.unique(n, by) : text ? d.text(n, by, text) : include ? d.index(n, by, { include }) : d.index(n, by);
   }
   return d as unknown as CollectionDecl<Doc>;
 }
@@ -163,8 +162,6 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
   let version = 1;
   /** The indexes of the stored catalog. */
   let catalog = new Map<string, IndexState>(first.map((n) => [n, "ready"]));
-  /** For each count index of the catalog, its groups when it was added, or undefined when writes landed during its build. */
-  let bases = new Map<string, ReadonlyMap<string, number> | undefined>(first.map((n) => [n, new Map()]));
   let store: Store = await openDocStore(kv, schemaAt(version, first));
   let storeNames: readonly string[] = first;
   let tabKv: Db = await openKv(name);
@@ -262,7 +259,6 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
         case "clear":
           await w().clear();
           model = new Map();
-          bases = new Map([...bases.keys()].map((n) => [n, new Map()]));
           break;
         case "query": {
           const docs = [...model.values()];
@@ -293,7 +289,6 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
         case "upgrade": {
           const built = cmd.names.filter((n) => catalog.get(n) !== "ready");
           const failing = built.filter((n) => DECLS[n]!.unique && sharesUniqueIn(model.values(), new Set([n])));
-          const added = [...model.values()];
           const opening = openDocStore(kv, schemaAt(version + 1, cmd.names));
           const writes = (async () => {
             for (const { wait, ...patch } of cmd.during) {
@@ -312,11 +307,6 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
           if (opened.status === "rejected") throw opened.reason;
           if (wrote.status === "rejected") throw wrote.reason;
           catalog = new Map(cmd.names.map((n) => [n, failing.includes(n) ? "failed" : "ready"]));
-          bases = new Map(
-            cmd.names
-              .filter((n) => DECLS[n]!.count)
-              .map((n) => [n, built.includes(n) ? (cmd.during.length > 0 ? undefined : groupCounts(added, MODELS[n]!)) : bases.get(n)]),
-          );
           version++;
           previous = store;
           previousNames = storeNames;
@@ -338,8 +328,7 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
     let entries = 0;
     for (const [n, state] of catalog) {
       const have = await keysUnder(kv, await storedPrefix(kv, "docs", n));
-      const base = bases.get(n);
-      if (!DECLS[n]!.count || base) expect([n, have]).toEqual([n, state === "failed" ? 0 : storedRows(docs, MODELS[n]!, base)]);
+      expect([n, have]).toEqual([n, state === "failed" ? 0 : expected(docs, MODELS[n]!, {}).length]);
       entries += have;
     }
     expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
@@ -352,7 +341,7 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
 
 describe("docstore against an in-memory model", () => {
   it(
-    "agrees on every read, and leaves exactly the catalog, the rows, their entries and the rows of each counted group in kv",
+    "agrees on every read, and leaves exactly the catalog, the rows and their entries in kv",
     async () => {
       await expect(
         fc.assert(fc.asyncProperty(fc.boolean(), fc.array(cmdArb, { maxLength: 40, size: "max" }), run), { numRuns: RUNS, ...replay }),

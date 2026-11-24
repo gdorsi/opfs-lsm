@@ -1,16 +1,11 @@
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { compareCodePoints, compareScalar, compareTuple } from "./order.js";
 
-/**
- * An index as the oracle reads it, written from the schema rules rather than
- * from the stored layout. A count index counts the entries that a sorted
- * index on the same fields would hold, or a multi index with `multi`.
- */
+/** An index as the oracle reads it, written from the schema rules rather than from the stored layout. */
 export type ModelIndex =
   | { readonly kind: "unique"; readonly on: readonly string[] }
   | { readonly kind: "sorted" | "multi"; readonly on: readonly string[]; readonly include?: readonly string[] }
-  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string }
-  | { readonly kind: "count"; readonly on: readonly string[]; readonly multi: boolean };
+  | { readonly kind: "text"; readonly on: readonly string[]; readonly text: string };
 
 type Doc = { readonly id: string; readonly [key: string]: unknown };
 type Hit = { readonly id: string; readonly values: readonly Scalar[]; readonly doc: Doc };
@@ -43,7 +38,7 @@ function entries(doc: Doc, ix: ModelIndex): Scalar[][] {
     if (text !== null && typeof text !== "string") return [];
   }
   const rest = values.slice(1) as Scalar[];
-  if (ix.kind === "multi" || (ix.kind === "count" && ix.multi)) {
+  if (ix.kind === "multi") {
     const first = Array.isArray(values[0]) ? (values[0] as Scalar[]) : [values[0] as Scalar];
     const distinct: Scalar[] = [];
     for (const v of first) if (!distinct.some((d) => compareScalar(d, v) === 0)) distinct.push(v);
@@ -64,29 +59,6 @@ function inBound(v: Scalar, q: QueryInput): boolean {
   if (q.lt !== undefined && compareScalar(v, q.lt) >= 0) return false;
   if (q.lte !== undefined && compareScalar(v, q.lte) > 0) return false;
   return true;
-}
-
-/** How many entries of `ix` each value tuple holds, by its JSON. For a count index, the documents in each group. */
-export function groupCounts(docs: readonly Doc[], ix: ModelIndex): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const h of indexOrder(docs, ix)) {
-    const k = JSON.stringify(h.values);
-    out.set(k, (out.get(k) ?? 0) + 1);
-  }
-  return out;
-}
-
-/**
- * The rows `ix` keeps in kv: one per entry, or for a count index one count row
- * per group whose number changed since `base`, the groups when the index was
- * added, and one base row per group of `base`.
- */
-export function storedRows(docs: readonly Doc[], ix: ModelIndex, base: ReadonlyMap<string, number> = new Map()): number {
-  if (ix.kind !== "count") return indexOrder(docs, ix).length;
-  const now = groupCounts(docs, ix);
-  let rows = base.size;
-  for (const k of new Set([...now.keys(), ...base.keys()])) if ((now.get(k) ?? 0) !== (base.get(k) ?? 0)) rows++;
-  return rows;
 }
 
 /**

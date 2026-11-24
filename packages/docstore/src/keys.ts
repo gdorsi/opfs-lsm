@@ -7,20 +7,15 @@
  *     covering  64 CC CC II <v1>..<vn> <id>   -> {"f1":..,"fk":..} (UTF-8 JSON)
  *     unique    64 CC CC II <v1>..<vn>        -> <id>
  *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
- *     count     64 CC CC II <v1>..<vn>        -> float64 BE: documents the group gained since the index was added
- *     base      64 CC CC II <v1>..<vn> 00     -> float64 BE: documents in the group when the index was added
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
  * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
  * every key that continues a prefix, an id included. A covering entry is a
  * sorted entry of an index that declares `include`: its value holds each
- * included field its document has. A group of a count index is one value
- * tuple of its fields, and its count is the sum of its two rows, an absent
- * row being 0. No field starts with 00, so every bound holds both rows of a
- * group or neither.
+ * included field its document has.
  */
-import { CorruptDatabaseError, type ChangeOp, type Range } from "@opfs-lsm/kv";
+import type { ChangeOp, Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
 import type { Cursor, QueryInput, Scalar } from "./schema.js";
@@ -211,18 +206,9 @@ export type ScanTarget =
       readonly arity: number;
       /** The first component is an array field: one document holds several entries. */
       readonly multi?: boolean;
-    }
-  | {
-      readonly kind: "count";
-      readonly prefix: Uint8Array;
-      readonly arity: number;
-      /** The first component is an array field: one document is in several groups. */
-      readonly multi?: boolean;
     };
 
-/** A target whose keys are entries, which `query` reads. A count index has rows per group and no entry. */
-export type EntryTarget = Exclude<ScanTarget, { readonly kind: "count" }>;
-export type IndexTarget = Exclude<EntryTarget, { readonly kind: "rows" }>;
+export type IndexTarget = Exclude<ScanTarget, { readonly kind: "rows" }>;
 
 /** The most combinations of listed values one query reads. */
 const MAX_RANGES = 64;
@@ -261,13 +247,6 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
     badQuery("eq fixes every component, so no bound can follow");
   }
   if (q.match !== undefined && target.kind !== "text") badQuery("match needs a text index");
-  if (target.kind === "count") {
-    if (q.after !== undefined || q.reverse !== undefined || q.offset !== undefined) {
-      badQuery("a count index has no order, so no after, reverse or offset");
-    }
-    // The sum of two of its groups would count a document that holds both values twice.
-    if (target.multi && Array.isArray(eq[0])) badQuery("the array field of a count index takes no list in eq");
-  }
 
   const lists = eq.some(Array.isArray);
   // There, two entries equal after `eq` are two documents.
@@ -340,28 +319,8 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
   return [lower, upper];
 }
 
-/** `64 CC CC II`, the prefix of every key of an index. */
-const INDEX_PREFIX = 4;
-
-export function isBaseKey(key: Uint8Array, arity: number): boolean {
-  return skipTuple(key, arity, INDEX_PREFIX) !== key.length;
-}
-
-export function encodeCount(n: number): Uint8Array {
-  const out = new Uint8Array(8);
-  new DataView(out.buffer).setFloat64(0, n);
-  return out;
-}
-
-/** An absent row counts 0. */
-export function decodeCount(bytes: Uint8Array | undefined): number {
-  if (bytes === undefined) return 0;
-  if (bytes.length !== 8) throw new CorruptDatabaseError("a docstore count is not 8 bytes");
-  return new DataView(bytes.buffer, bytes.byteOffset, 8).getFloat64(0);
-}
-
 /** Where the id starts in an entry's key. A unique entry's id is its value. */
-function idStart(target: EntryTarget, key: Uint8Array): number {
+function idStart(target: ScanTarget, key: Uint8Array): number {
   return target.kind === "rows" ? target.prefix.length : skipTuple(key, target.arity, target.prefix.length);
 }
 
@@ -371,13 +330,13 @@ export function entryRowKey(target: IndexTarget, key: Uint8Array, value: Uint8Ar
 }
 
 /** The id an entry's key ends in. A unique entry's key holds none. */
-export function keyId(target: EntryTarget, key: Uint8Array): string {
+export function keyId(target: ScanTarget, key: Uint8Array): string {
   return idOf(key, idStart(target, key));
 }
 
 /** `value` is what `queryEntries` decoded of the entry's value: the id of a unique entry, the fields of a covering one. */
 export function decodeEntries(
-  target: EntryTarget,
+  target: ScanTarget,
   entries: readonly { readonly key: Uint8Array; readonly value: unknown }[],
   eqLength: number,
 ): { id: string; values: Scalar[]; fields?: unknown }[] {
