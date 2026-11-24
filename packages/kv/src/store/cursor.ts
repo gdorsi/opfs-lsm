@@ -51,13 +51,15 @@ export class BlockEntry {
     return seqIn(this.block, this.seqAt);
   }
 
-  /** A copy to hand out, as `copyOut` makes one, made once. */
+  /** A copy to hand out, as `copyOut` makes one, made once unless the app detached it. */
   get key(): Uint8Array {
     let k = this.copied;
-    if (!k) {
-      const { block, prefix, suffixAt } = this;
+    const { prefix, suffixLength } = this;
+    // A pooled copy reads empty once the app transfers the buffer of another copy in its pool.
+    if (!k || k.length !== prefix.length + suffixLength) {
+      const { block, suffixAt } = this;
       const from = suffixAt - prefix.length;
-      const to = suffixAt + this.suffixLength;
+      const to = suffixAt + suffixLength;
       // The record's own bytes always sit before its suffix, so one copy
       // puts the suffix in its place and leaves room for the prefix.
       k = to - from > 64 ? copyOut(block.subarray(from, to)) : block.slice(from, to);
