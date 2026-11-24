@@ -217,6 +217,33 @@ describe("opening a schema", () => {
     expect(await fieldsAt(5, ["done"])).toStrictEqual(docs.map((d) => ({ done: d.done })));
   });
 
+  it("rebuilds an index a newer version makes unique, multi, or a text index of another field", async () => {
+    type Note = { id: string; slug?: string; tag?: string; title?: string; body?: string };
+    type Tagged = Omit<Note, "tag"> & { tag?: string[] };
+    const name = freshName();
+    // Each version redefines one index and keeps the other two.
+    const v1 = collection<Note>().index("bySlug", "slug").index("byTag", "tag").text("search", "slug", "title");
+    const v2 = collection<Note>().unique("bySlug", "slug").index("byTag", "tag").text("search", "slug", "title");
+    const v3 = collection<Tagged>().unique("bySlug", "slug").index("byTag", "tag[]").text("search", "slug", "title");
+    const v4 = collection<Tagged>().unique("bySlug", "slug").index("byTag", "tag[]").text("search", "slug", "body");
+    const old = await at(name, defineSchema({ version: 1, collections: { notes: v1 } }));
+    await old.store.collection("notes").putMany([
+      { id: "1", slug: "a", tag: "p", title: "milk", body: "bread" },
+      { id: "2", slug: "b", tag: "q", title: "eggs", body: "jam" },
+    ]);
+
+    const unique = (await at(name, defineSchema({ version: 2, collections: { notes: v2 } }))).store.collection("notes");
+    expect(await codeOf(unique.put({ id: "3", slug: "a" }))).toBe("unique");
+
+    const multi = (await at(name, defineSchema({ version: 3, collections: { notes: v3 } }))).store.collection("notes");
+    await multi.put({ id: "3", tag: ["q", "r"] });
+    expect((await multi.queryIds({ index: "byTag", eq: ["q"] })).ids).toEqual(["2", "3"]);
+
+    const text = (await at(name, defineSchema({ version: 4, collections: { notes: v4 } }))).store.collection("notes");
+    expect((await text.queryIds({ index: "search", match: "bread" })).ids).toEqual(["1"]);
+    expect((await text.queryIds({ index: "search", match: "milk" })).ids).toEqual([]);
+  });
+
   it("keeps the rows of a collection a newer schema leaves out, for a later schema that declares it again", async () => {
     type Note = { id: string; body: string };
     const name = freshName();

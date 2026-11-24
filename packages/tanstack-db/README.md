@@ -62,7 +62,7 @@ const status1 = createLiveQueryCollection((q) =>
 
 - A document without an indexed field, or without a text index's text field, has no entry in that index. Store `null` instead.
 - The index orders by type first (null, then false, then true, then numbers, then strings) where JavaScript coerces, so `gt(i.status, 0)` misses a `status` stored as `true`, and `lt(i.status, 9)` misses `"7"`. Keep one type, plus `null`, in an indexed field.
-- A text index holds text in NFC, so `ilike` through it misses text stored decomposed (NFD). Store `text.normalize("NFC")`.
+- A text index holds text in NFC, so `like` and `ilike` through it miss text stored decomposed (NFD). Store `text.normalize("NFC")`.
 
 ## Transact
 

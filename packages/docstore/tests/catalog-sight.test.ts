@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
 import { collection, defineSchema, openDocStore } from "../src/index.js";
 import { CATALOG_KEY, bytesEqual } from "../src/keys.js";
-import { codeOf, freshName, gate, openKv, recording, storedCatalog, wrap, wrapViews } from "./harness.js";
+import { codeOf, freshName, gate, openKv, openKvWithoutBus, recording, storedCatalog, wrap, wrapViews } from "./harness.js";
 
 type Todo = { id: string; title?: string; done?: boolean };
 
@@ -78,9 +78,11 @@ describe("a reader and the catalog", () => {
     expect((await reader.query({ index: "byTitle" })).docs).toEqual([{ id: "a", title: "y" }]);
   });
 
-  it.each<[string, (tx: BatchTx) => void]>([
+  it.each<[string, (tx: BatchTx, catalogSeq: number) => void]>([
     ["deleted the catalog", (tx) => tx.delete(CATALOG_KEY)],
     ["range-deleted the catalog", (tx) => tx.deleteRange(prefixBound(CATALOG_KEY))],
+    // The rows written after the catalog stay.
+    ["range-deleted every key from the catalog on, through the catalog's seq", (tx, through) => tx.deleteRange({ start: CATALOG_KEY }, { through })],
   ])("reads a store as empty once another layer %s", async (_, remove) => {
     const kv = await kvOn(freshName());
     const store = await openDocStore(kv, v1);
@@ -89,10 +91,11 @@ describe("a reader and the catalog", () => {
     // A second collection id, so the rows are not where a store with no catalog looks.
     await todos.clear();
     await store.whenIdle();
+    const catalogSeq = await kv.view((snap) => snap.seq);
     await todos.put({ id: "a", title: "y" });
     expect(await todos.get("a")).toEqual({ id: "a", title: "y" });
 
-    await kv.batch(remove);
+    await kv.batch((tx) => remove(tx, catalogSeq));
     expect(await todos.get("a")).toBeUndefined();
     expect(await todos.getMany(["a"])).toEqual([undefined]);
     expect(await todos.count({ index: "byTitle" })).toBe(0);
@@ -249,6 +252,16 @@ describe("opening a schema the stored catalog already satisfies", () => {
     await openDocStore(db, v1);
     expect(await kv.get(CATALOG_KEY)).toEqual(before);
     expect(updates).toEqual([]);
+  });
+
+  it("opens a lower version than another handle stored, before this handle has read that catalog", async () => {
+    const name = freshName();
+    const kv = await openKvWithoutBus(name);
+    open.push(kv);
+    await openDocStore(kv, v1);
+    await openDocStore(await kvOn(name), v2);
+    const todos = (await openDocStore(kv, byDone)).collection("todos");
+    expect(await todos.count({ index: "byDone" })).toBe(0);
   });
 
   it("writes the catalog when the declared version is higher", async () => {

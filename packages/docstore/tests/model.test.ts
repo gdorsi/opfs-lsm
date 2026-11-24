@@ -2,8 +2,10 @@
  * Random histories of writes, clears, reads, ingests, reopens and schema
  * upgrades on one database, checked against an in-memory map of the
  * documents. An upgrade adds or removes a unique multi index, and the handle
- * on the version before it stays open and keeps writing. A reader that
- * follows the change feed from a snapshot must end up with the same map.
+ * on the version before it stays open and keeps writing. A second kv handle,
+ * like a tab that hears of the others' writes only when it reads, writes and
+ * reads too. A reader that follows the change feed from a snapshot must end
+ * up with the same map.
  *
  * Replay a failure: DOCSTORE_MODEL_SEED=<seed> DOCSTORE_MODEL_PATH=<path> pnpm exec vitest run tests/model.test.ts
  * Sweep longer:     DOCSTORE_MODEL_RUNS=2000 pnpm exec vitest run tests/model.test.ts
@@ -26,7 +28,7 @@ const replay = env["DOCSTORE_MODEL_SEED"]
   ? { seed: Number(env["DOCSTORE_MODEL_SEED"]), ...(env["DOCSTORE_MODEL_PATH"] ? { path: env["DOCSTORE_MODEL_PATH"] } : {}) }
   : {};
 
-/** `previous`: through the handle on the version before the last upgrade, when one is open. */
+/** `previous`: through the handle on the version before the last upgrade, when one is open. `tab`: through the second kv handle. */
 type Cmd = (
   | { readonly kind: "putMany"; readonly docs: readonly Doc[] }
   | { readonly kind: "modify"; readonly id: string; readonly patch: Partial<Doc> }
@@ -38,7 +40,7 @@ type Cmd = (
   | { readonly kind: "ingest" }
   | { readonly kind: "reopen"; readonly idle: boolean }
   | { readonly kind: "upgrade"; readonly utags: boolean }
-) & { readonly previous: boolean };
+) & { readonly previous: boolean; readonly tab: boolean };
 
 /** The model's schema at `version`, with the unique multi index or without it. Typed as `schema`: queries name the index at run time. */
 const schemaAt = (version: number, utags: boolean) =>
@@ -89,7 +91,7 @@ const opArb = fc.oneof(
   { weight: 1, arbitrary: fc.boolean().map((idle) => ({ kind: "reopen" as const, idle })) },
   { weight: 2, arbitrary: fc.boolean().map((utags) => ({ kind: "upgrade" as const, utags })) },
 );
-const cmdArb: fc.Arbitrary<Cmd> = fc.tuple(opArb, fc.boolean()).map(([op, previous]) => ({ ...op, previous }));
+const cmdArb: fc.Arbitrary<Cmd> = fc.tuple(opArb, fc.boolean(), fc.boolean()).map(([op, previous, tab]) => ({ ...op, previous, tab }));
 
 /** Whether two documents share `u`, or, when `utags` counts, an element of `ut`. */
 function sharesUniqueIn(docs: Iterable<Doc>, utags: boolean): boolean {
@@ -114,6 +116,8 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
   let version = 1;
   let utags: UniqueTags = declared ? "ready" : "absent";
   let store: Store = await openDocStore(kv, schemaAt(version, declared));
+  let tabKv: Db = await openKv(name);
+  let tab: Store = await openDocStore(tabKv, schemaAt(version, declared));
   let previous: Store | undefined;
   let model = new Map<string, Doc>();
   const c = () => store.collection("docs");
@@ -121,8 +125,23 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
   try {
     for (const cmd of cmds) {
       const sharesUnique = (docs: Iterable<Doc>) => sharesUniqueIn(docs, utags === "ready");
-      const writer = cmd.previous && previous ? previous : store;
+      if (cmd.kind === "query" || cmd.kind === "getMany") {
+        await kv.sync();
+        await tabKv.sync();
+      }
+      const writer = cmd.tab ? tab : cmd.previous && previous ? previous : store;
       const w = () => writer.collection("docs");
+      if (cmd.tab && cmd.kind === "ingest") {
+        await ingest(tabKv);
+        continue;
+      }
+      if (cmd.tab && cmd.kind === "reopen") {
+        await tab.whenIdle();
+        await tabKv.close();
+        tabKv = await openKv(name);
+        tab = await openDocStore(tabKv, schemaAt(version, utags !== "absent"));
+        continue;
+      }
       switch (cmd.kind) {
         case "putMany": {
           const next = new Map(model);
@@ -225,6 +244,8 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
           break;
       }
     }
+    await Promise.all([store.whenIdle(), previous?.whenIdle(), tab.whenIdle()]);
+    await kv.sync();
     await reader.reaches(model);
     await Promise.all([store.whenIdle(), previous?.whenIdle()]);
     const docs = [...model.values()];
@@ -233,7 +254,8 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
     expect((await storedCatalog(kv)).dropped).toEqual([]);
     expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
   } finally {
-    await Promise.all([store.whenIdle(), previous?.whenIdle()]).catch(() => undefined);
+    await Promise.all([store.whenIdle(), previous?.whenIdle(), tab.whenIdle()]).catch(() => undefined);
+    await tabKv.close();
     await kv.close();
   }
 }

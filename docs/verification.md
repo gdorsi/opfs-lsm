@@ -216,10 +216,10 @@ pnpm --filter @opfs-lsm/kv formal:kv
 Exit 0. The log ends with `All 6 formal checks passed`. Each check prints a `PASS` line:
 
 - `PASS NoLostAcks`, after two `broken variant caught` lines (orders that record the flush before its manifest is on disk)
-- `PASS WalOverSst` (on real `pointGet`)
+- `PASS WalOverSst` (on real `pointGet`: every memtable row, run and mark, then every pair of levels with each run cold, with its layout loaded, or with its page loaded)
 - `PASS ViewPin` (copy-on-write memtable pin present)
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, a delete drops only in a bottom merge, outputs claim the base manifest's marks only), after three `broken variant caught` lines
-- `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after four `broken variant caught` lines
+- `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, and each memtable is a log prefix), after five `broken variant caught` lines
 - `PASS PowerPrefix` (every power-loss crash state, two power losses deep, recovers to a log prefix). Before it, eighteen `broken variant caught` lines show the model fails each known wrong design. The model holds the key generator of `wal`, so a crash state that loses commits also loses what they did to it. It keeps the WAL database, the `opfs-lsm-destroyed` row and OPFS as three stores with no order between them.
 - `PASS RemoveClean` (`destroyDb` from every crash state leaves no WAL database and no file, and an open after it reads empty)
 - `PASS WalLost` (after every recovery and a flush, losing only the WAL database changes no read: a row a crash left behind never empties a database born after it)

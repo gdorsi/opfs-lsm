@@ -38,6 +38,23 @@ test("updates round-trip and documents stay apart", async () => {
   await db.close();
 });
 
+test("a name with a lone surrogate throws and never reaches the doc UTF-8 would turn it into", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const replaced = await reopen(db, "doc�");
+  replaced.doc.getText("t").insert(0, "other doc");
+  await replaced.p.destroy();
+
+  for (const name of ["doc\ud800", "doc\udc00"]) {
+    const doc = new Y.Doc();
+    doc.getText("t").insert(0, "mine ");
+    assert.throws(() => new KvPersistence(db, name, doc), /lone surrogate/);
+    doc.getText("t").insert(0, "later ");
+  }
+  const again = await reopen(db, "doc�");
+  assert.equal(again.doc.getText("t").toString(), "other doc");
+});
+
 test("content the doc held before the persistence was attached is stored", async (t) => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   t.after(() => db.close());

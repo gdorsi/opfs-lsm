@@ -219,10 +219,10 @@ export interface Db {
    * and concurrent updates lose nothing. A key that only the values name is
    * read with `tx.read`. `body` usually runs once. It runs again when
    * another write landed between its read and its commit, when it writes
-   * nothing, and when the browser refuses the write for lack of space: three
-   * times at most, and once more each time `tx.read` waits for bytes. Only
-   * its last run counts, so keep it free of side effects. The updates of one
-   * handle run one at a time, in call order.
+   * nothing or throws, and when the browser refuses the write for lack of
+   * space: three times at most, and once more each time `tx.read` waits for
+   * bytes. Only its last run counts, so keep it free of side effects. The
+   * updates of one handle run one at a time, in call order.
    */
   update<T>(
     keys: readonly Uint8Array[],
@@ -1142,10 +1142,10 @@ class DbImpl implements Db {
    * ops, and `write` runs `body` again inside a transaction, which cannot
    * lose. `write` runs it alone when an append of this handle is in flight,
    * whose row the memtable lacks, or when a read still waits for a page, and
-   * again when `body` wrote nothing, so that what it returns was read at the
-   * committed head. It also runs it alone after a row lost (`beaten`): while
-   * another tab keeps writing, every row would lose, and cost a round trip
-   * more than the transaction alone.
+   * again when `body` wrote nothing or threw, so that what it returns or
+   * throws was read at the committed head. It also runs it alone after a row
+   * lost (`beaten`): while another tab keeps writing, every row would lose,
+   * and cost a round trip more than the transaction alone.
    *
    * `tx.read` reads in the turn `body` runs in, so at the state its keys
    * were read at. A key of it that misses makes the run a miss, and the
@@ -1207,10 +1207,15 @@ class DbImpl implements Db {
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
     const next = nextSeq(this.mem.appliedThrough);
     if (!this.appending && !this.beaten) {
-      const planned = plan();
+      let planned: ReturnType<typeof plan> | undefined;
+      try {
+        planned = plan();
+      } catch {
+        // This handle can lag another tab's write: the run in `write`, at the head, throws for good.
+      }
       // `write` loads what missed again and surfaces a failure, so the one of this load is dropped.
       if (planned instanceof Miss) planned.ready.catch(() => undefined);
-      else if (planned.ops.length) {
+      else if (planned?.ops.length) {
         if (rowValid(next, await this.commit(planned.ops, next))) return planned.result;
         this.beaten = true;
       }

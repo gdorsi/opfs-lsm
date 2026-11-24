@@ -202,6 +202,8 @@ const textEncoder = new TextEncoder();
 
 /** `y` + u16 name length + UTF-8 name. The length keeps "a" from prefixing "a/b". */
 function docPrefix(name: string): Uint8Array {
+  // UTF-8 turns every lone surrogate into U+FFFD, so the name would share another doc's updates.
+  if (!name.isWellFormed()) throw new Error("document name has a lone surrogate");
   const bytes = textEncoder.encode(name);
   const out = new Uint8Array(3 + bytes.byteLength);
   out[0] = 0x79;

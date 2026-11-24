@@ -18,7 +18,7 @@ kv is Baseline 2026. [Baseline](https://web.dev/baseline) names the year a featu
 - Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
 - `@opfs-lsm/kv/tuple` also calls `String.prototype.isWellFormed()`, which raises its minimum to Chrome and Edge 111, and Firefox and Firefox Android 119.
-- `@opfs-lsm/docstore` also calls `String.prototype.isWellFormed()`, itself and through `@opfs-lsm/kv/tuple`, so it has the same minimum.
+- `@opfs-lsm/docstore` also calls `String.prototype.isWellFormed()`, itself and through `@opfs-lsm/kv/tuple`, so it has the same minimum. So do `@opfs-lsm/yjs` and `@opfs-lsm/tanstack-query`, which call it on a document name and on a storage key.
 
 Versions are from [MDN browser-compat-data](https://github.com/mdn/browser-compat-data) 8.1.8. The engine is tested in desktop Chrome and on Android. In Chromium 160 on a Pixel 4a, the two-tab proofs and every benchmark workload pass, and no kill in the kill-and-recover loop lost an acked write. The Android run has limits:
 

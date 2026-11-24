@@ -5,6 +5,7 @@ import {
 import { prefixBound, type Db } from "@opfs-lsm/kv";
 
 const NAMESPACE = 0x71;
+const MAX_KEY_BYTES = 8 * 1024;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
@@ -21,7 +22,10 @@ export function createQueryPersister(
     ...options,
     storage: {
       async getItem(key) {
-        const bytes = await db.get(encodeKey(key));
+        const encoded = encodeKey(key);
+        // kv rejects a longer key, so no entry has one, and the query falls back to queryFn.
+        if (encoded.byteLength > MAX_KEY_BYTES) return null;
+        const bytes = await db.get(encoded);
         return bytes === undefined ? null : decoder.decode(bytes);
       },
 

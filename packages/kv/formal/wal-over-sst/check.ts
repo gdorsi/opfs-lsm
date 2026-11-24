@@ -2,6 +2,10 @@
  * Every (mem hit, SST hit, mark) triple: pointGet prefers the mem row
  * (incl. tombstones), and an SST version a range delete covers reads as
  * absent. Runs against the real pointGet over a one-run level.
+ *
+ * Then every pair of levels, each run cold, with only its layout loaded, or
+ * with its page loaded: a cold get walks past a level that misses its
+ * layout, and the newer level still answers before the older one.
  */
 import { encodeSstRef, sstKeyRange } from "../../tests/oracle/sst-ref.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
@@ -96,4 +100,43 @@ for (const mem of KINDS) {
     }
   }
 }
-console.log(`PASS WalOverSst — ${n} triples on real pointGet`);
+
+/** How much of a run is loaded before the get. */
+type Warmth = "cold" | "layout" | "page";
+const WARMTHS: Warmth[] = ["cold", "layout", "page"];
+/** Past every key of a run: a get of it loads the layout and no page. */
+const PAST = new Uint8Array([3]);
+
+/** A run holding `kind` at KEY; a miss holds the keys around it, so the get reads its Bloom filter. */
+async function run(seq: number, kind: Kind, warmth: Warmth): Promise<SstReader> {
+  const entries =
+    kind === "miss"
+      ? [0, 2].map((k) => ({ kind: "put" as const, key: new Uint8Array([k]), value: A, seq }))
+      : [kind === "tomb" ? { kind: "del" as const, key: KEY, seq } : { kind: "put" as const, key: KEY, value: kind === "valueA" ? A : B, seq }];
+  const body = encodeSstRef(entries);
+  const reader = new SstReader(bytesFile(body), new PageCache(), sstKeyRange(body));
+  if (warmth !== "cold") await untilHit(() => reader.get(warmth === "layout" ? PAST : KEY));
+  return reader;
+}
+
+let pairs = 0;
+for (const newer of KINDS) {
+  for (const older of KINDS) {
+    for (const warmNewer of WARMTHS) {
+      for (const warmOlder of WARMTHS) {
+        pairs++;
+        const readers = [await run(SST_SEQ + 1, newer, warmNewer), await run(SST_SEQ, older, warmOlder)];
+        const levels = runLevels(["l0/2-2.sst", "l1/1-1.sst"], readers);
+        const got = await untilHit(() => pointGet(undefined, levels, KEY, NO_MARKS));
+        const want = expected("miss", newer === "miss" ? older : newer, "none");
+        if (!eq(got, want)) {
+          console.error(
+            `FAIL levels newer=${newer} (${warmNewer}) older=${older} (${warmOlder}) got=${got ? [...got] : "undef"} want=${want ? [...want] : "undef"}`,
+          );
+          process.exit(1);
+        }
+      }
+    }
+  }
+}
+console.log(`PASS WalOverSst — ${n} triples and ${pairs} two-level cold gets on real pointGet`);
