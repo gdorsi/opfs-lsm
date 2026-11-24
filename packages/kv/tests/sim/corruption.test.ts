@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { type Db } from "../../src/index.js";
 import { encodeRun, ensureEngine } from "../../src/store/engine.js";
@@ -425,6 +425,20 @@ describe("recovery never turns corruption into data loss", () => {
     expect(await survivors(f)).toBe(f.state.size);
     expect((await walMeta(f.name)).generation).toBe(gen + 1);
     expect(await run(`${which}: removed, a merged manifest stands in`, async () => f, async () => undefined)).toEqual(HEALTHY);
+  });
+
+  it("R1: an idle compaction pass on a host that never checked the recorded manifest deletes nothing", async () => {
+    const f = await standard();
+    await standIn(f, await l1(f));
+    const before = await snapshot(f);
+    const host = new EngineHost(() => f.fs, { idleFlushMs: 1 });
+    host.watch(f.name, { maxWalBytes: 1e12, compactionMemoryBytes: 32 * 1024 * 1024, reserveBytes: 1024 });
+    await vi.waitFor(async () => expect(await f.fs.read("reserve", 0, 1)).toBeDefined());
+    await navigator.locks.request(`opfs-lsm-compact/${f.name}`, async () => undefined);
+    host.unwatch(f.name);
+
+    expect(await snapshot(f)).toEqual(before);
+    expect(await survivors(f)).toBe(f.state.size);
   });
 
   it("R1: a stand-in that misses an ingested seq is not taken", async () => {
