@@ -57,21 +57,24 @@ let world: World | undefined;
 type Restore = () => void;
 
 export function installSeams(): Restore {
-  const proto = TabWal.prototype;
-  const append = proto.append;
-  const appendAfter = proto.appendAfter;
-  proto.append = async function (this: TabWal, record) {
-    const op = currentOp.getStore();
-    const seq = await append.call(this, record);
-    if (seq !== undefined) world?.history.commit(op, decodeOps(record, seq), seq);
-    return seq;
+  const open = TabWal.open;
+  TabWal.open = async (...args) => {
+    const wal = await open(...args);
+    const { append, appendAfter } = wal;
+    wal.append = async (record) => {
+      const op = currentOp.getStore();
+      const seq = await append(record);
+      if (seq !== undefined) world?.history.commit(op, decodeOps(record, seq), seq);
+      return seq;
+    };
+    wal.appendAfter = (async (since: number, decide: Parameters<typeof appendAfter>[1]) => {
+      const op = currentOp.getStore();
+      const out = await appendAfter(since, decide);
+      if (out?.seq !== undefined) world?.history.commit(op, out.ops, out.seq);
+      return out;
+    }) as typeof appendAfter;
+    return wal;
   };
-  proto.appendAfter = async function (this: TabWal, since: number, decide: Parameters<typeof appendAfter>[1]) {
-    const op = currentOp.getStore();
-    const out = await appendAfter.call(this, since, decide);
-    if (out?.seq !== undefined) world?.history.commit(op, out.ops, out.seq);
-    return out;
-  } as typeof appendAfter;
   // Node runs a queued Web Lock callback in the async context of whoever
   // released the lock, so a commit inside it would be credited to that op.
   // Browsers have no such context; run the callback in the requester's.
@@ -88,8 +91,7 @@ export function installSeams(): Restore {
   const realChannel = g.BroadcastChannel;
   g.BroadcastChannel = SimChannel;
   return () => {
-    proto.append = append;
-    proto.appendAfter = appendAfter;
+    TabWal.open = open;
     locks.request = request;
     g.BroadcastChannel = realChannel;
   };
