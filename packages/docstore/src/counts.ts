@@ -13,7 +13,7 @@ import type { Entry, UpdateTx, ViewSnapshot } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import type { IndexPlan } from "./catalog.js";
 import { decodeDoc, indexEntries } from "./derive.js";
-import { baseKey, bytesEqual, decodeCount, encodeCount, isBaseKey, keyString } from "./keys.js";
+import { after, bytesEqual, decodeCount, encodeCount, isBaseKey, keyString } from "./keys.js";
 
 type Tally = { readonly key: Uint8Array; n: number };
 
@@ -100,8 +100,8 @@ export async function readBases(snap: ViewSnapshot, plan: IndexPlan, rowPrefix: 
     const k = keyString(row.key);
     const base = (groups.get(k)?.n ?? 0) - row.value;
     groups.delete(k);
-    if (base !== 0) bases.push({ key: baseKey(row.key), value: encodeCount(base) });
+    if (base !== 0) bases.push({ key: after(row.key), value: encodeCount(base) });
   }
-  for (const g of groups.values()) bases.push({ key: baseKey(g.key), value: encodeCount(g.n) });
+  for (const g of groups.values()) bases.push({ key: after(g.key), value: encodeCount(g.n) });
   return { bases };
 }
