@@ -7,6 +7,8 @@ import {
   ingest,
   openHarnessDb,
 } from "../src/testing.js";
+import type { ReadFs } from "../src/opfs/async-fs.js";
+import { loadLatestGeneration } from "./latest-generation.js";
 
 const enc = new TextEncoder();
 let names = 0;
@@ -93,5 +95,55 @@ describe("a failed openDb", () => {
     await expect(openHarnessDb(options)).rejects.toBeInstanceOf(CorruptDatabaseError);
 
     expect(open()).toEqual({ idb: 0, channels: 0 });
+  });
+
+  it("leaves the host flushing at the maxWalBytes of the handles still open", async () => {
+    const { fs, options } = await storedDatabase();
+    const db = await openHarnessDb({ ...options, maxWalBytes: 100 });
+    const unreadable = (inner: ReadFs): ReadFs => ({
+      read: (path, offset, length) => inner.read(path, offset, length),
+      list: (dir) => inner.list(dir),
+      open: () => Promise.reject(new Error("run unreadable")),
+    });
+    await expect(openHarnessDb({ ...options, wrapFs: unreadable })).rejects.toThrow("run unreadable");
+
+    const seq = await db.put(enc.encode("big"), new Uint8Array(150));
+    await vi.waitFor(async () => expect((await loadLatestGeneration(fs))?.through).toBe(seq), { timeout: 2000, interval: 5 });
+    await ingest(db);
+    await db.close();
+  });
+});
+
+describe("an openDb whose WAL database the browser deletes while it loads", () => {
+  it("leaves the host flushing at the maxWalBytes of the handles opened later", async () => {
+    const { fs, options } = await storedDatabase();
+    let arrived!: () => void;
+    const loading = new Promise<void>((resolve) => (arrived = resolve));
+    let lift!: () => void;
+    const gate = new Promise<void>((resolve) => (lift = resolve));
+    const gated = (inner: ReadFs): ReadFs => ({
+      read: (path, offset, length) => inner.read(path, offset, length),
+      list: (dir) => inner.list(dir),
+      open: async (path) => {
+        arrived();
+        await gate;
+        return inner.open(path);
+      },
+    });
+    const opening = openHarnessDb({ ...options, wrapFs: gated, maxWalBytes: 100 });
+    await loading;
+    const deleted = new Promise((resolve) => {
+      indexedDB.deleteDatabase(`opfs-lsm-wal/${options.name}`).onsuccess = resolve;
+    });
+    await deleted;
+    lift();
+    const closed = await opening.catch(() => undefined);
+    await closed?.close();
+
+    const db = await openHarnessDb(options);
+    const seq = await db.put(enc.encode("big"), new Uint8Array(150));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await loadLatestGeneration(fs))?.through).toBeLessThan(seq);
+    await db.close();
   });
 });

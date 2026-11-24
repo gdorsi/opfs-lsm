@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { StorageFullError, type Db } from "../src/index.js";
+import { ClosedError, StorageFullError, type Db } from "../src/index.js";
 import { RESERVE_PATH } from "../src/host/reserve.js";
 import {
   attachEngineHostPort,
@@ -299,6 +299,35 @@ describe("a WAL append the browser refuses", () => {
     await Promise.all([refused, put]);
     expect(makeRoom).toHaveBeenCalledTimes(1);
     expect([await read(a, "a"), await read(a, "c"), await read(a, "d")]).toEqual(["1", "3", "4"]);
+  });
+
+  it("rejects with ClosedError an update whose own transaction recovers while its handle closes", async () => {
+    const a = await openFlushed();
+    const b = await open();
+    await a.update([utf("first")], (_, tx) => {
+      void b.put(utf("b"), utf("2"));
+      tx.put(utf("a"), utf("1"));
+    });
+    const release = host.makeRoom.bind(host);
+    let asked!: () => void;
+    const recovering = new Promise<void>((resolve) => (asked = resolve));
+    let go!: () => void;
+    const held = new Promise<void>((resolve) => (go = resolve));
+    vi.spyOn(host, "makeRoom").mockImplementation(async (n) => {
+      asked();
+      await held;
+      await release(n);
+    });
+    fillOrigin();
+
+    const refused = a.update([utf("first")], (_, tx) => tx.put(utf("c"), utf("3")));
+    await recovering;
+    const closing = a.close();
+    go();
+    await closing;
+    await expect(refused).rejects.toBeInstanceOf(ClosedError);
+    await b.sync();
+    expect(await read(b, "c")).toBeUndefined();
   });
 
   it("lands in two handles refused in the same turn, with one release", async () => {

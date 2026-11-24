@@ -163,23 +163,31 @@ test("random saves, removes and range removes read back as a Map of keys holds t
     const model = new Map<string, { key: string[]; data: Uint8Array }>();
     const matching = (prefix: string[]) =>
       [...model.values()].filter((chunk) => segmentsStartWith(chunk.key, prefix)).sort(byKey);
+    const write = (op: number): Promise<void> => {
+      if (op < 0.4) {
+        const key = randomKey(1, 3);
+        const data = Uint8Array.from({ length: pick([0, 1, 65, 300, 1025]) }, () => Math.floor(rand() * 256));
+        model.set(JSON.stringify(key), { key, data });
+        return storage.save(key, data);
+      }
+      if (op < 0.55) {
+        const key = randomKey(1, 3);
+        model.delete(JSON.stringify(key));
+        return storage.remove(key);
+      }
+      const prefix = randomKey(0, 2);
+      for (const chunk of matching(prefix)) model.delete(JSON.stringify(chunk.key));
+      return storage.removeRange(prefix);
+    };
     try {
       for (let step = 0; step < 200; step++) {
         const at = `run ${run} step ${step}`;
         const op = rand();
-        if (op < 0.4) {
-          const key = randomKey(1, 3);
-          const data = Uint8Array.from({ length: pick([0, 1, 65, 300, 1025]) }, () => Math.floor(rand() * 256));
-          await storage.save(key, data);
-          model.set(JSON.stringify(key), { key, data });
-        } else if (op < 0.55) {
-          const key = randomKey(1, 3);
-          await storage.remove(key);
-          model.delete(JSON.stringify(key));
-        } else if (op < 0.65) {
-          const prefix = randomKey(0, 2);
-          await storage.removeRange(prefix);
-          for (const chunk of matching(prefix)) model.delete(JSON.stringify(chunk.key));
+        if (op < 0.65) {
+          await write(op);
+        } else if (op < 0.7) {
+          // Repo.delete starts its range removes without waiting, so writes in flight together must land in call order.
+          await Promise.all(Array.from({ length: 2 + Math.floor(rand() * 3) }, () => write(rand() * 0.65)));
         } else if (op < 0.8) {
           const key = randomKey(1, 3);
           assert.deepEqual(await storage.load(key), model.get(JSON.stringify(key))?.data, at);

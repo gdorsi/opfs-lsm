@@ -121,3 +121,17 @@ test("a name fits while its update keys fit 8 KiB, and a longer one rejects when
     await assert.rejects(new KvPersistence(db, "x".repeat(length), new Y.Doc()).whenSynced, ConstraintError);
   }
 });
+
+test("a doc whose merged state is over 8 MiB still flushes, and every update reloads", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const { doc, p } = await reopen(db, "big", 9);
+  p.trimDelayMs = 0;
+  for (let i = 0; i < 9; i++) doc.getText("t").insert(0, String(i).repeat(1 << 20));
+  await sleep(50);
+  await p.flush();
+  await p.destroy();
+
+  const again = await reopen(db, "big", 1_000_000);
+  assert.equal(again.doc.getText("t").length, 9 << 20);
+});

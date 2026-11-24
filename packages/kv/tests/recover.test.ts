@@ -197,6 +197,21 @@ describe("reconcile", () => {
     wal.close();
   });
 
+  it("falls back past a manifest whose runs are gone when the recorded one is gone", async () => {
+    // A sweep removed the run of manifest 2, a crash leftover; manifest 3 was recorded, then lost.
+    const wal = await walWith(4);
+    const fs = new MemoryFs();
+    await manifest(fs, 1, 1, ["l0/1-1.sst"]);
+    const leftover = await manifest(fs, 2, 2, ["l0/2-2.sst", "l0/1-1.sst"]);
+    await fs.remove(leftover.runs[0]!.path);
+    await advance(wal, { through: 1, generation: 1 });
+    await advance(wal, { through: 3, generation: 3 });
+    expect((await reconcile(wal, fs, undefined)).generation).toBe(1);
+    expect(await wal.meta()).toMatchObject({ head: 4, ingestedThrough: 1, generation: 1 });
+    expect(await seqs(wal)).toEqual([2, 3, 4]);
+    wal.close();
+  });
+
   it("drops the WAL when the seqs between the manifest and it are gone, and moves the head past the state it left", async () => {
     const wal = await walWith(4);
     const fs = new MemoryFs();

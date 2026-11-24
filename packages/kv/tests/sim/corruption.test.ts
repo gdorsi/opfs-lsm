@@ -1,4 +1,4 @@
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { CommitError, CorruptDatabaseError } from "../../src/errors.js";
 import { type Db } from "../../src/index.js";
 import { encodeRun, ensureEngine } from "../../src/store/engine.js";
@@ -380,6 +380,22 @@ describe("recovery never turns corruption into data loss", () => {
     }
   }
 
+  /**
+   * A compaction's power-loss shape with the old manifest kept: the
+   * recorded manifest lost the run at `lost`, and a newer manifest with the
+   * same `through` lists one run that merges all of the recorded ones.
+   */
+  async function standIn(f: Fixture, lost: string): Promise<void> {
+    const gen = (await walMeta(f.name)).generation!;
+    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
+    const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
+    const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
+    const path = `l1/c${gen + 1}.0.sst`;
+    await put(f.fs, path, merged.body);
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end, marksThrough: old.through }] }));
+    await f.fs.remove(lost);
+  }
+
   it("R1: a missing run of the recorded generation fails open as corrupt", async () => {
     const r = await run("L0 run: removed", standard, async (f) => f.fs.remove(await l0(f)));
     expect(crashes(r)).toEqual([]);
@@ -399,22 +415,30 @@ describe("recovery never turns corruption into data loss", () => {
     expect(await snapshot(f)).toEqual(before);
   });
 
-  it("R1: a manifest that holds every ingested seq stands in, and nothing is lost", async () => {
-    // A compaction's power-loss shape with the old manifest kept: the
-    // recorded manifest lost a run, and a newer manifest with the same
-    // `through` lists one run that merges all of the recorded ones.
+  it.each([
+    ["L0 run", l0],
+    ["L1 run", l1],
+  ])("R1: a manifest that holds every ingested seq stands in for a missing %s, and nothing is lost", async (which, gone) => {
     const f = await standard();
     const gen = (await walMeta(f.name)).generation!;
-    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
-    const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
-    const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
-    const path = `l1/c${gen + 1}.0.sst`;
-    await put(f.fs, path, merged.body);
-    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end, marksThrough: old.through }] }));
-    await f.fs.remove(await l0(f));
+    await standIn(f, await gone(f));
     expect(await survivors(f)).toBe(f.state.size);
     expect((await walMeta(f.name)).generation).toBe(gen + 1);
-    expect(await run("L0 run: removed, a merged manifest stands in", async () => f, async () => undefined)).toEqual(HEALTHY);
+    expect(await run(`${which}: removed, a merged manifest stands in`, async () => f, async () => undefined)).toEqual(HEALTHY);
+  });
+
+  it("R1: an idle compaction pass on a host that never checked the recorded manifest deletes nothing", async () => {
+    const f = await standard();
+    await standIn(f, await l1(f));
+    const before = await snapshot(f);
+    const host = new EngineHost(() => f.fs, { idleFlushMs: 1 });
+    host.watch(f.name, { maxWalBytes: 1e12, compactionMemoryBytes: 32 * 1024 * 1024, reserveBytes: 1024 });
+    await vi.waitFor(async () => expect(await f.fs.read("reserve", 0, 1)).toBeDefined());
+    await navigator.locks.request(`opfs-lsm-compact/${f.name}`, async () => undefined);
+    host.unwatch(f.name);
+
+    expect(await snapshot(f)).toEqual(before);
+    expect(await survivors(f)).toBe(f.state.size);
   });
 
   it("R1: a stand-in that misses an ingested seq is not taken", async () => {
@@ -442,6 +466,26 @@ describe("recovery never turns corruption into data loss", () => {
     const before = await snapshot(f);
     await expect(survivors(f)).rejects.toBeInstanceOf(CorruptDatabaseError);
     expect(await hostFlushAndCompact(f)).toBe("corrupt");
+    expect(await snapshot(f)).toEqual(before);
+  });
+
+  it("R2: the host that published the recorded manifest sweeps nothing once it is gone", async () => {
+    const name = `corrupt-${++dbs}`;
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1e12 });
+    for (let i = 0; i < 5; i++) {
+      await db.put(utf(`k${i}`), utf(`v${i}`));
+      await ingest(db);
+    }
+    await db.close();
+    const f: Fixture = { name, fs, state: new Map() };
+    expect((await files(fs, "l1")).length).toBeGreaterThan(0);
+    await fs.remove(await recorded(f));
+    const before = await snapshot(f);
+
+    await host.ingest(name, true);
+
     expect(await snapshot(f)).toEqual(before);
   });
 
