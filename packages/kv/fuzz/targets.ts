@@ -24,7 +24,7 @@ import { Miss, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "..
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../src/store/sst.js";
+import { decodeIndex, SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../src/store/sst.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
 import { loadsDone, ownedEntry } from "../tests/runs.js";
 
@@ -298,11 +298,16 @@ export async function checkDecodeSst(buf: Uint8Array, changed: boolean): Promise
   });
 }
 
-/** `decodeGeneration`: CRC-checked, so the same rules as `checkDecodeSst`. */
+/**
+ * `decodeGeneration`: CRC-checked, so the same rules as `checkDecodeSst`. A
+ * tab decodes a run's index when it first reads the run, so each is decoded
+ * here too, and a manifest with one that does not decode is refused.
+ */
 export async function checkManifest(buf: Uint8Array, changed: boolean): Promise<GenerationMeta | undefined> {
   return bounded("decodeGeneration", () => {
     try {
       const meta = decodeGeneration(buf);
+      for (const run of meta.runs) decodeIndex(run.index, run.bytes);
       if (changed) throw new RuleBroken("decodeGeneration accepted a manifest whose bytes changed under its CRC");
       return meta;
     } catch (err) {

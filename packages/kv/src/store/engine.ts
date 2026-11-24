@@ -3,7 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import { packIndex, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
+import { encodeIndex, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, unavailable } from "../errors.js";
@@ -316,14 +316,14 @@ function readRun(bytes: Uint8Array): EncodedRun {
 /**
  * The `RunEnd` of the run head that `bytes` starts with, whose two keys start
  * at `keys` and whose index rows follow them to the end of `bytes`. Copies
- * the keys and packs the rows.
+ * the keys and encodes the rows.
  */
 function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   const entries = view.getUint32(0, true);
   const size = view.getUint32(4, true);
   const firstLen = view.getUint32(8, true);
   const rows = keys + firstLen + view.getUint32(12, true);
-  const index = packIndex(bytes.subarray(rows));
+  const index = encodeIndex(bytes.subarray(rows));
   if (entries === 0) return { bytes: size, index };
   return {
     bytes: size,

@@ -9,7 +9,7 @@ import {
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
 import type { EncodedRun, SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeRunRef as encodeRunTs, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
+import { decodeSst, encodeRunRef as encodeRunTs, indexBlob, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
 import { mergeRuns, readerOfBytes, runGet } from "./runs.js";
 
 const enc = new TextEncoder();
@@ -70,7 +70,7 @@ describe("engine WASM", () => {
 function expectReportMatchesFile(run: EncodedRun): void {
   expect(run.end.bytes).toBe(run.body.byteLength);
   expect(run.end.range).toEqual(sstKeyRange(run.body));
-  expect(run.end.index).toEqual(sstBlockIndex(run.body));
+  expect(run.end.index).toEqual(indexBlob(sstBlockIndex(run.body)));
 }
 
 describe("the end of a run", () => {

@@ -5,12 +5,12 @@ import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import { levelOfDir, levelRunPath } from "./levels.js";
 import { decodeMarks, encodeMarks, NO_MARKS, type Marks } from "./marks.js";
-import type { BlockIndex, RunEnd, SstEntry } from "./sst.js";
+import type { RunEnd, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 6: each run's block index. */
+/** Version 6: a head that names the runs, then each run's block index. */
 const GEN_VERSION = 6;
 
 /**
@@ -51,30 +51,24 @@ function genPath(generation: Generation): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
 }
 
-/** Bytes of `v` as an unsigned LEB128. */
-function varintLen(v: number): number {
-  let n = 1;
-  for (; v >= 0x80; v = Math.floor(v / 0x80)) n++;
-  return n;
-}
+/** Where a manifest's head says how many bytes it is. */
+const HEAD_BYTES_AT = 24;
 
+/** The manifest file of `meta`: its head, then each run's block index, in run order. */
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
   const marks = encodeMarks(meta.marks);
-  let size = 4 + 4 + 8 + 8 + marks.byteLength + 4;
+  let head = 4 + 4 + 8 + 8 + 4 + marks.byteLength + 4 + 4;
+  let indexes = 0;
   meta.runs.forEach((r, i) => {
-    size += 2 + paths[i]!.byteLength + 4 + 1 + 8;
-    if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
-    const { sepBytes, sepEnd, blockStart } = r.index;
-    size += 4 + sepBytes.byteLength;
-    sepEnd.forEach((end, b) => {
-      size += varintLen(end - (sepEnd[b - 1] ?? 0)) + varintLen(blockStart[b + 1]! - blockStart[b]!);
-    });
+    head += 2 + paths[i]!.byteLength + 4 + 1 + 8 + 4;
+    if (r.range) head += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
+    indexes += r.index.byteLength;
   });
-  size += 4;
-  const out = new Uint8Array(size);
+  const out = new Uint8Array(head + indexes);
   const view = new DataView(out.buffer);
+  let at = head;
   let o = 0;
   view.setUint32(o, GEN_MAGIC, true);
   o += 4;
@@ -84,14 +78,12 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   o += 8;
   view.setBigUint64(o, BigInt(meta.through), true);
   o += 8;
+  view.setUint32(o, head, true);
+  o += 4;
   out.set(marks, o);
   o += marks.byteLength;
   view.setUint32(o, paths.length, true);
   o += 4;
-  const varint = (v: number): void => {
-    for (; v >= 0x80; v = Math.floor(v / 0x80)) out[o++] = (v & 0x7f) | 0x80;
-    out[o++] = v;
-  };
   meta.runs.forEach((r, i) => {
     const p = paths[i]!;
     view.setUint16(o, p.byteLength, true);
@@ -109,23 +101,31 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
     }
     view.setBigUint64(o, BigInt(r.marksThrough), true);
     o += 8;
-    // The index: u32 blocks, each block's separator length and byte length as varints, then the separators.
-    const { sepBytes, sepEnd, blockStart } = r.index;
-    view.setUint32(o, sepEnd.length, true);
+    view.setUint32(o, r.index.byteLength, true);
     o += 4;
-    sepEnd.forEach((end, b) => {
-      varint(end - (sepEnd[b - 1] ?? 0));
-      varint(blockStart[b + 1]! - blockStart[b]!);
-    });
-    out.set(sepBytes, o);
-    o += sepBytes.byteLength;
+    out.set(r.index, at);
+    at += r.index.byteLength;
   });
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   return out;
 }
 
-export function decodeGeneration(buf: Uint8Array): GenerationMeta {
-  if (buf.byteLength < 36) {
+/**
+ * The head of a manifest file, copied: the bytes IndexedDB keeps. It names
+ * the runs and leaves out their block indexes, so its size follows the count
+ * of runs, not of blocks.
+ */
+export function manifestHead(file: Uint8Array): Uint8Array {
+  return file.slice(0, new DataView(file.buffer, file.byteOffset).getUint32(HEAD_BYTES_AT, true));
+}
+
+/**
+ * The manifest a whole manifest file holds. A run's index is not read here:
+ * `decodeIndex` checks it. With `head`, `buf` may end with its head, and then
+ * its runs have no index.
+ */
+export function decodeGeneration(buf: Uint8Array, head = false): GenerationMeta {
+  if (buf.byteLength < 40) {
     throw new CorruptDatabaseError("generation too short");
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -137,11 +137,13 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
   }
   const generation = asGeneration(Number(view.getBigUint64(8, true)));
   const through = asSeq(Number(view.getBigUint64(16, true)));
-  const crcOff = buf.byteLength - 4;
+  let indexAt = view.getUint32(HEAD_BYTES_AT, true);
+  if (indexAt < 40 || indexAt > buf.byteLength) throw new CorruptDatabaseError("generation truncated");
+  const crcOff = indexAt - 4;
   if (crc32(buf.subarray(0, crcOff)) !== view.getUint32(crcOff, true)) {
     throw new CorruptDatabaseError("generation crc mismatch");
   }
-  const { marks, end } = decodeMarks(buf, 24, crcOff, through);
+  const { marks, end } = decodeMarks(buf, HEAD_BYTES_AT + 4, crcOff, through);
   let o = end;
   const dec = new TextDecoder("utf-8", { ignoreBOM: true });
   const runs: RunMeta[] = [];
@@ -152,36 +154,11 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     o += n;
     return o - n;
   };
-  const key = (): Uint8Array => {
+  /** A `u32` length and that many bytes, copied. */
+  const span = (): Uint8Array => {
     const len = view.getUint32(take(4), true);
     const at = take(len);
     return buf.slice(at, at + len);
-  };
-  const varint = (): number => {
-    let v = 0;
-    for (let shift = 0; shift < 35; shift += 7) {
-      const b = buf[take(1)]!;
-      v += (b & 0x7f) * 2 ** shift;
-      if (b < 0x80) return v;
-    }
-    throw new CorruptDatabaseError("generation varint");
-  };
-  /** The index of a run of `bytes` bytes. Its blocks end inside the run, so a reader given a file of that size reads inside it. */
-  const index = (bytes: number): BlockIndex => {
-    const blocks = view.getUint32(take(4), true);
-    // A block takes two bytes at least, so a count the bytes cannot hold sizes no array.
-    if (blocks * 2 > crcOff - o) throw new CorruptDatabaseError("generation truncated");
-    const sepEnd = new Uint32Array(blocks);
-    const blockStart = new Uint32Array(blocks + 1);
-    let seps = 0;
-    let start = 0;
-    for (let b = 0; b < blocks; b++) {
-      sepEnd[b] = seps += varint();
-      blockStart[b + 1] = start += varint();
-    }
-    if (start > bytes) throw new CorruptDatabaseError("generation blocks past the run");
-    const at = take(seps);
-    return { sepBytes: buf.slice(at, at + seps), sepEnd, blockStart };
   };
   const runCount = view.getUint32(take(4), true);
   for (let i = 0; i < runCount; i++) {
@@ -189,26 +166,28 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const at = take(len);
     const path = dec.decode(buf.subarray(at, at + len));
     const bytes = view.getUint32(take(4), true);
-    const range = buf[take(1)] === 1 ? { smallest: key(), largest: key() } : undefined;
+    const range = buf[take(1)] === 1 ? { smallest: span(), largest: span() } : undefined;
     const marksThrough = asSeq(Number(view.getBigUint64(take(8), true)));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
-    const run = { path, bytes, marksThrough, index: index(bytes) };
+    // A copy: a reader keeps its run's index, and a view would keep this whole file with it.
+    const index = buf.slice(indexAt, (indexAt += view.getUint32(take(4), true)));
+    const run = { path, bytes, marksThrough, index };
     runs.push(range ? { ...run, range } : run);
   }
-  if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
+  if (o !== crcOff || (!head && indexAt !== buf.byteLength)) throw new CorruptDatabaseError("generation trailing");
   return { generation, runs, through, marks };
 }
 
 /**
- * The manifest of `generation` from IndexedDB's copy of its bytes. Undefined
- * when the copy is another generation's or does not decode: the manifest
- * file decides then.
+ * The run paths of `generation` from IndexedDB's copy of its manifest head.
+ * Undefined when the copy is another generation's or does not decode: the
+ * manifest file decides then.
  */
-export function manifestFromCopy(copy: Uint8Array | undefined, generation: Generation): GenerationMeta | undefined {
+export function runsOfCopy(copy: Uint8Array | undefined, generation: Generation): string[] | undefined {
   if (!(copy instanceof Uint8Array)) return undefined;
   try {
-    const meta = decodeGeneration(copy);
-    return meta.generation === generation ? meta : undefined;
+    const meta = decodeGeneration(copy, true);
+    return meta.generation === generation ? meta.runs.map((r) => r.path) : undefined;
   } catch (err) {
     if (err instanceof CorruptDatabaseError) return undefined;
     throw err;
@@ -264,7 +243,7 @@ export async function isIntact(fs: ReadFs, meta: GenerationMeta): Promise<boolea
   return true;
 }
 
-/** Write the manifest of `meta`, and return its bytes for the transaction that records it. */
+/** Write the manifest of `meta`, and return its head for the transaction that records it. */
 export async function publishGeneration(
   fs: AsyncFs,
   meta: GenerationMeta,
@@ -273,7 +252,7 @@ export async function publishGeneration(
   const w = await fs.create(genPath(meta.generation));
   await w.write(body);
   await w.finish();
-  return body;
+  return manifestHead(body);
 }
 
 /** Write a non-empty L0 run that applied the range deletes through `marksThrough`. */

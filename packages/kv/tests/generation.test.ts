@@ -2,11 +2,14 @@ import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
-import { decodeGeneration, encodeGeneration, publishGeneration, publishL0 } from "../src/store/generation.js";
+import { decodeGeneration, encodeGeneration, manifestHead, publishGeneration, publishL0, runsOfCopy } from "../src/store/generation.js";
+import { PageCache } from "../src/store/page-cache.js";
+import { bytesFile, SstReader } from "../src/store/sst-reader.js";
+import { decodeIndex, encodeIndex, readFooter } from "../src/store/sst.js";
 import { loadLatestGeneration } from "./latest-generation.js";
-import { encodeRunRef, encodeSstRef, sstBlockIndex, sstKeyRange, sstRunEnd } from "./oracle/sst-ref.js";
+import { encodeRunRef, encodeSstRef, indexBlob, sstBlockIndex, sstKeyRange, sstRunEnd } from "./oracle/sst-ref.js";
 import { NO_MARKS } from "../src/store/marks.js";
-import { NO_BLOCKS } from "./runs.js";
+import { NO_BLOCKS, runGet } from "./runs.js";
 import { indexWorkload } from "./sst-workloads.js";
 
 const NAME = "generation-coherence";
@@ -35,49 +38,58 @@ afterEach(async () => {
   await wipe();
 });
 
-/** `buf` after `change`, with the CRC of the changed bytes: a manifest written on purpose. */
+/** `buf` with the CRC of the bytes before its last four. */
+function sealed(buf: Uint8Array): Uint8Array {
+  const end = buf.byteLength - 4;
+  new DataView(buf.buffer).setUint32(end, crc32(buf.subarray(0, end)), true);
+  return buf;
+}
+
+/** `buf` after `change`, with the CRC of its changed head: a manifest written on purpose. */
 function rewritten(buf: Uint8Array, change: (view: DataView) => void): Uint8Array {
   const out = buf.slice();
   const view = new DataView(out.buffer);
   change(view);
-  view.setUint32(out.byteLength - 4, crc32(out.subarray(0, out.byteLength - 4)), true);
+  sealed(out.subarray(0, view.getUint32(24, true)));
   return out;
 }
 
 describe("manifest", () => {
   it("round-trips each run's size, key range, marksThrough and block index, and the marks", () => {
     const blocks = encodeSstRef(indexWorkload(300), 256);
+    // Separators of no byte and of many, and block sizes of one to five varint bytes.
+    const edges = {
+      sepBytes: new Uint8Array(300).fill(7),
+      sepEnd: Uint32Array.of(0, 1, 1, 300, 300),
+      blockStart: Uint32Array.of(0, 5, 5 + 2 ** 7, 5 + 2 ** 15, 5 + 2 ** 22, 2 ** 32 - 41),
+    };
     const meta = {
       generation: 3,
       runs: [
         { path: "l0/1-2.sst", ...sstRunEnd(blocks), marksThrough: 9 },
         { path: "l1/c2.0.sst", bytes: 2 ** 32 - 1, marksThrough: 0, index: NO_BLOCKS },
-        // Separators of no byte and of many, and block sizes of one to five varint bytes.
         {
           path: "l2/c9.1.sst",
           bytes: 2 ** 32 - 1,
           range: { smallest: new Uint8Array(0), largest: new Uint8Array(300).fill(7) },
           marksThrough: 5,
-          index: {
-            sepBytes: new Uint8Array(300).fill(7),
-            sepEnd: Uint32Array.of(0, 1, 1, 300, 300),
-            blockStart: Uint32Array.of(0, 5, 5 + 2 ** 7, 5 + 2 ** 15, 5 + 2 ** 22, 2 ** 32 - 41),
-          },
+          index: indexBlob(edges),
         },
       ],
       through: 9,
       marks: [{ start: utf("c"), endExclusive: utf("d"), through: 6, at: 7 }],
     };
-    expect(meta.runs[0]!.index!.sepEnd.length).toBeGreaterThan(100);
-    expect(decodeGeneration(encodeGeneration(meta))).toEqual(meta);
+    expect(sstBlockIndex(blocks).sepEnd.length).toBeGreaterThan(100);
+    const back = decodeGeneration(encodeGeneration(meta));
+    expect(back).toEqual(meta);
+    expect(back.runs.map((r) => decodeIndex(r.index, r.bytes))).toEqual([sstBlockIndex(blocks), decodeIndex(NO_BLOCKS, 0), edges]);
   });
 
   it("stores a block of a run in four bytes and its separator", () => {
-    const { index } = sstRunEnd(encodeSstRef(indexWorkload(2_000)));
-    const size = (runIndex: typeof index) =>
-      encodeGeneration({ generation: 1, runs: [{ path: "l0/1-1.sst", bytes: 2 ** 31, marksThrough: 0, index: runIndex }], through: 0, marks: NO_MARKS }).byteLength;
+    const body = encodeSstRef(indexWorkload(2_000));
+    const index = sstBlockIndex(body);
     expect(index.sepEnd.length).toBeGreaterThan(10);
-    expect(size(index) - size(NO_BLOCKS)).toBeLessThanOrEqual(index.sepBytes.byteLength + 4 * index.sepEnd.length);
+    expect(sstRunEnd(body).index.byteLength - NO_BLOCKS.byteLength).toBeLessThanOrEqual(index.sepBytes.byteLength + 4 * index.sepEnd.length);
   });
 
   it("refuses marks or a run that reach past the manifest's through", () => {
@@ -96,21 +108,99 @@ describe("manifest", () => {
     expect(() => decodeGeneration(buf)).toThrow("bad generation version");
   });
 
-  it("refuses a block index that its bytes or its run cannot hold, whatever the CRC says", () => {
+  describe("a run's block index", () => {
     const index = { sepBytes: utf("ab"), sepEnd: Uint32Array.of(1, 2), blockStart: Uint32Array.of(0, 100, 200) };
-    const meta = { generation: 2, runs: [{ path: "l0/1-1.sst", bytes: 200, marksThrough: 7, index }], through: 7, marks: NO_MARKS };
-    const valid = encodeGeneration(meta);
-    expect(decodeGeneration(valid)).toEqual(meta);
-    // The index ends the manifest: a u32 block count, a separator length and a block size for each block, one byte each here, the two separator bytes, then the CRC.
-    const count = valid.byteLength - 14;
-    const changes: [string, (view: DataView) => void][] = [
-      ["more blocks than the bytes left could hold", (view) => view.setUint32(count, 0xffffffff, true)],
-      ["one block more than it holds", (view) => view.setUint32(count, 3, true)],
-      ["a separator longer than the bytes left", (view) => view.setUint8(count + 6, 2)],
-      ["a block that ends past the run", (view) => view.setUint8(count + 7, 101)],
-      ["a length of more than five bytes", (view) => [4, 5, 6, 7, 8].forEach((i) => view.setUint8(count + i, 0xff))],
+    const valid = indexBlob(index);
+    // A u32 block count, a separator length and a block size for each block, one byte each here, the two separator bytes, then the CRC.
+    const changes: [string, (blob: Uint8Array) => Uint8Array][] = [
+      ["more blocks than the bytes left could hold", (b) => (new DataView(b.buffer).setUint32(0, 0xffffffff, true), b)],
+      ["one block more than it holds", (b) => (new DataView(b.buffer).setUint32(0, 3, true), b)],
+      ["a separator longer than the bytes left", (b) => ((b[6] = 2), b)],
+      ["a block that ends past the run", (b) => ((b[7] = 101), b)],
+      ["a length of more than five bytes", (b) => (b.fill(0xff, 4, 9), b)],
+      ["bytes after the separators", (b) => Uint8Array.of(...b.subarray(0, -4), 0, 0, 0, 0, 0)],
     ];
-    for (const [what, change] of changes) expect(() => decodeGeneration(rewritten(valid, change)), `with ${what}`).toThrow(CorruptDatabaseError);
+
+    it("decodes to the index it was written from", () => {
+      expect(decodeIndex(valid, 200)).toEqual(index);
+    });
+
+    it.each(changes)("is refused with %s, under a CRC of those bytes", (_, change) => {
+      expect(() => decodeIndex(sealed(change(valid.slice())), 200)).toThrow("sst index");
+    });
+
+    it("is refused when it is too short to hold a count", () => {
+      expect(() => decodeIndex(sealed(new Uint8Array(7)), 200)).toThrow(CorruptDatabaseError);
+    });
+
+    it("is refused when a byte changed under its CRC", () => {
+      for (let i = 0; i < valid.length; i++) {
+        const changed = valid.slice();
+        changed[i]! ^= 1;
+        expect(() => decodeIndex(changed, 200)).toThrow("sst index");
+      }
+    });
+
+    it("is not read by the manifest: a malformed one fails the first read of its run, and no other", async () => {
+      const bad = new Uint8Array(valid.length);
+      new DataView(bad.buffer).setUint32(0, 0xffffffff, true);
+      const body = encodeSstRef([{ kind: "put", key: utf("k"), value: utf("v"), seq: 1 }]);
+      const good = { path: "l0/1-1.sst", ...sstRunEnd(body), marksThrough: 1 };
+      const meta = { generation: 2, runs: [{ ...good, path: "l0/2-2.sst", index: bad }, good], through: 1, marks: NO_MARKS };
+      const runs = decodeGeneration(encodeGeneration(meta)).runs.map((r) => new SstReader(bytesFile(body), new PageCache(), r));
+      expect(() => runs[0]!.get(utf("k"))).toThrow(CorruptDatabaseError);
+      expect(() => runs[0]!.cursor()).toThrow(CorruptDatabaseError);
+      expect((await runGet(runs[1]!, utf("k")))?.seq).toBe(1);
+    });
+
+    it("is encoded from the index rows of a run's file as its decoded index says", () => {
+      const body = encodeSstRef(indexWorkload(300), 256);
+      const { indexStart, indexEnd } = readFooter(body, body.byteLength);
+      expect(encodeIndex(body.subarray(indexStart, indexEnd))).toEqual(indexBlob(sstBlockIndex(body)));
+    });
+  });
+});
+
+describe("a manifest's head", () => {
+  const body = encodeSstRef(indexWorkload(300), 256);
+  const meta = {
+    generation: 4,
+    runs: [
+      { path: "l0/3-4.sst", ...sstRunEnd(body), marksThrough: 4 },
+      { path: "l1/c2.0.sst", ...sstRunEnd(body), marksThrough: 2 },
+    ],
+    through: 4,
+    marks: NO_MARKS,
+  };
+  const file = encodeGeneration(meta);
+  const head = manifestHead(file);
+
+  it("names the runs and holds no block index, in a buffer of its own", () => {
+    expect(runsOfCopy(head, 4)).toEqual(["l0/3-4.sst", "l1/c2.0.sst"]);
+    expect(head.byteLength).toBe(file.byteLength - 2 * sstRunEnd(body).index.byteLength);
+    expect(head.buffer.byteLength).toBe(head.byteLength);
+    expect(file.subarray(0, head.byteLength)).toEqual(head);
+  });
+
+  it("is what publishGeneration returns for the transaction that records the manifest", async () => {
+    const fs = new MemoryFs();
+    expect(await publishGeneration(fs, meta)).toEqual(head);
+    expect(await fs.read(mft(4), 0, Number.POSITIVE_INFINITY)).toEqual(file);
+  });
+
+  it("names no runs for another generation, or when it does not decode", () => {
+    expect(runsOfCopy(head, 5)).toBeUndefined();
+    expect(runsOfCopy(undefined, 4)).toBeUndefined();
+    expect(runsOfCopy(head.subarray(0, -1), 4)).toBeUndefined();
+    const changed = head.slice();
+    changed[30]! ^= 1;
+    expect(runsOfCopy(changed, 4)).toBeUndefined();
+  });
+
+  it("is not a manifest file: the indexes it leaves out, a file cut short and bytes after the last index are refused", () => {
+    for (const buf of [head, file.subarray(0, -1), Uint8Array.of(...file, 0)]) {
+      expect(() => decodeGeneration(buf)).toThrow("generation trailing");
+    }
   });
 });
 
@@ -128,7 +218,7 @@ describe("publishL0", () => {
     expect(run.path).toBe("l0/1-500.sst");
     expect(run.bytes).toBe(file.byteLength);
     expect(run.range).toEqual(sstKeyRange(file));
-    expect(run.index).toEqual(sstBlockIndex(file));
+    expect(run.index).toEqual(indexBlob(sstBlockIndex(file)));
     expect(file).toEqual(encodeRunRef(entries).body);
   });
 

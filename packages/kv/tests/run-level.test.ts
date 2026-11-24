@@ -5,7 +5,7 @@ import { Miss, untilHit, type LayerCursor, type ScanBounds } from "../src/store/
 import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { scanStep } from "../src/view.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { encodeSstRef, sstRunEnd } from "./oracle/sst-ref.js";
+import { encodeSstRef, sstBlockIndex, sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { entries, loadsDone, ownedEntry, readerOfBytes, runGet } from "./runs.js";
@@ -55,7 +55,8 @@ type Reads = { blocks: number; tails: number };
 function countedReader(body: Uint8Array, reads: Reads, cache = new PageCache()): SstReader {
   const file = bytesFile(body);
   const end = sstRunEnd(body);
-  const dataEnd = end.index.blockStart[end.index.sepEnd.length]!;
+  const index = sstBlockIndex(body);
+  const dataEnd = index.blockStart[index.sepEnd.length]!;
   const read = (offset: number, length: number) => (reads[offset < dataEnd ? "blocks" : "tails"]++, file.read(offset, length));
   return new SstReader({ size: file.size, read }, cache, end);
 }

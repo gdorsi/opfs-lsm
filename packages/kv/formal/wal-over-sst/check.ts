@@ -8,7 +8,7 @@
  * both: a get walks past a level it reads without its filter, and the newer
  * level still answers before the older one.
  */
-import { encodeSstRef, sstRunEnd } from "../../tests/oracle/sst-ref.js";
+import { encodeSstRef, sstBlockIndex, sstRunEnd } from "../../tests/oracle/sst-ref.js";
 import { cacheUsage, loadsDone } from "../../tests/runs.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
 import { untilHit } from "../../src/store/cursor.js";
@@ -117,7 +117,8 @@ async function run(seq: number, kind: Kind, warmth: Warmth): Promise<SstReader> 
       : [kind === "tomb" ? { kind: "del" as const, key: KEY, seq } : { kind: "put" as const, key: KEY, value: kind === "valueA" ? A : B, seq }];
   const body = encodeSstRef(entries);
   const end = sstRunEnd(body);
-  const blocksEnd = end.index.blockStart[end.index.sepEnd.length]!;
+  const index = sstBlockIndex(body);
+  const blocksEnd = index.blockStart[index.sepEnd.length]!;
   const file = bytesFile(body);
   const read = (offset: number, length: number) =>
     warmth === "block" && offset >= blocksEnd ? Promise.reject(new Error("tail unreadable")) : file.read(offset, length);

@@ -1,6 +1,7 @@
 import { sharedPrefix } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { Seq } from "../seq.js";
+import { crc32 } from "./crc32.js";
 import { BlockEntry, NO_PREFIX, seqIn } from "./cursor.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
@@ -72,19 +73,29 @@ export type RunEnd = {
   readonly bytes: number;
   /** Undefined for an empty run, which has no keys. */
   readonly range?: KeyRange;
-  readonly index: BlockIndex;
+  /** The run's block index as `encodeIndex` writes it. A reader checks it with `decodeIndex` when it first needs it. */
+  readonly index: Uint8Array;
 };
 
 /**
- * The `BlockIndex` of a run's index rows, as its encoder reports them (per
- * block: u32 len | first key, u32 len | last key, u32 offset, u32 length).
- * Blocks sit back to back from offset 0, so a row's offset is not read.
+ * The encoded index of a run, from its index rows as its encoder reports them
+ * (per block: u32 len | first key, u32 len | last key, u32 offset, u32
+ * length). Blocks sit back to back from offset 0, so a row's offset is not
+ * read. The result is u32 blocks, each block's separator length and byte
+ * length as varints, the separators, then a CRC-32 of all of it: `BlockIndex`
+ * less its prefix sums.
  */
-export function packIndex(rows: Uint8Array): BlockIndex {
+export function encodeIndex(rows: Uint8Array): Uint8Array {
   const view = new DataView(rows.buffer, rows.byteOffset, rows.byteLength);
-  const sepBytes = new Uint8Array(rows.byteLength);
-  const sepEnd: number[] = [];
-  const blockStart = [0];
+  // A row takes 16 bytes at least and adds at most 10 of varint.
+  const head = new Uint8Array(4 + rows.byteLength);
+  const seps = new Uint8Array(rows.byteLength);
+  let h = 4;
+  const varint = (v: number): void => {
+    for (; v >= 0x80; v = Math.floor(v / 0x80)) head[h++] = (v & 0x7f) | 0x80;
+    head[h++] = v;
+  };
+  let blocks = 0;
   let sepLen = 0;
   let o = 0;
   let prevLast: Uint8Array | undefined;
@@ -93,16 +104,63 @@ export function packIndex(rows: Uint8Array): BlockIndex {
     o += 4 + len;
     return rows.subarray(o - len, o);
   };
-  while (o < rows.byteLength) {
+  for (; o < rows.byteLength; blocks++) {
     const first = key();
     const sep = prevLast ? first.subarray(0, sharedPrefix(prevLast, first) + 1) : first;
-    sepBytes.set(sep, sepLen);
-    sepEnd.push((sepLen += sep.byteLength));
+    seps.set(sep, sepLen);
+    sepLen += sep.byteLength;
     prevLast = key();
-    blockStart.push(blockStart[sepEnd.length - 1]! + view.getUint32(o + 4, true));
+    varint(sep.byteLength);
+    varint(view.getUint32(o + 4, true));
     o += 8;
   }
-  return { sepBytes: sepBytes.slice(0, sepLen), sepEnd: Uint32Array.from(sepEnd), blockStart: Uint32Array.from(blockStart) };
+  new DataView(head.buffer).setUint32(0, blocks, true);
+  const end = h + sepLen;
+  const out = new Uint8Array(end + 4);
+  out.set(head.subarray(0, h));
+  out.set(seps.subarray(0, sepLen), h);
+  new DataView(out.buffer).setUint32(end, crc32(out.subarray(0, end)), true);
+  return out;
+}
+
+/**
+ * The `BlockIndex` of an index `encodeIndex` wrote for a run of `bytes`
+ * bytes. A manifest holds it as bytes it has not read, so every check is
+ * here: the CRC, the block count the bytes can hold, varints, blocks that end
+ * inside the run, and nothing after the separators. Throws
+ * `CorruptDatabaseError`.
+ */
+export function decodeIndex(blob: Uint8Array, bytes: number): BlockIndex {
+  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+  const end = blob.byteLength - 4;
+  const bad = (): never => {
+    throw new CorruptDatabaseError("sst index");
+  };
+  if (end < 4 || crc32(blob.subarray(0, end)) !== view.getUint32(end, true)) bad();
+  const blocks = view.getUint32(0, true);
+  // A block takes two bytes at least, so a count the bytes cannot hold sizes no array.
+  if (blocks * 2 > end - 4) bad();
+  let o = 4;
+  // A read past the bytes gives no byte, which ends no varint.
+  const varint = (): number => {
+    let v = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const b = blob[o++]!;
+      v += (b & 0x7f) * 2 ** shift;
+      if (b < 0x80) return v;
+    }
+    return bad();
+  };
+  const sepEnd = new Uint32Array(blocks);
+  const blockStart = new Uint32Array(blocks + 1);
+  let seps = 0;
+  let start = 0;
+  for (let b = 0; b < blocks; b++) {
+    sepEnd[b] = seps += varint();
+    blockStart[b + 1] = start += varint();
+  }
+  if (start > bytes || o + seps !== end) bad();
+  return { sepBytes: blob.subarray(o, end), sepEnd, blockStart };
 }
 
 /** A run's bytes and its `RunEnd`. */

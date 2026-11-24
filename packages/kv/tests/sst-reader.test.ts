@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstGet, sstRunEnd } from "./oracle/sst-ref.js";
+import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstBlockIndex, sstGet, sstRunEnd } from "./oracle/sst-ref.js";
 import { SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
 import { bytesFile, cacheUsage, drain, loadsDone, runGet } from "./runs.js";
@@ -21,7 +21,8 @@ type Tail = (read: () => Promise<Uint8Array>) => Promise<Uint8Array>;
 function openRun(body: Uint8Array, cache: PageCache, reads = new Reads(), tail: Tail = (read) => read()): SstReader {
   const file = bytesFile(body);
   const end = sstRunEnd(body);
-  const dataEnd = end.index.blockStart[end.index.sepEnd.length]!;
+  const index = sstBlockIndex(body);
+  const dataEnd = index.blockStart[index.sepEnd.length]!;
   return new SstReader(
     {
       size: file.size,
@@ -194,8 +195,9 @@ describe("lazy sst reader", () => {
     }));
     const body = encodeSstRef(entries);
     const end = sstRunEnd(body);
-    const blocks = end.index.sepEnd.length;
-    const dataEnd = end.index.blockStart[blocks]!;
+    const index = sstBlockIndex(body);
+    const blocks = index.sepEnd.length;
+    const dataEnd = index.blockStart[blocks]!;
 
     function coldRun(reads: Reads): SstReader {
       const read = coalesceReads(async (offset, length) => {
@@ -238,7 +240,7 @@ describe("lazy sst reader", () => {
     it("reads no block past the one a short scan ends in", async () => {
       const reads = new Reads();
       expect(await drain(coldRun(reads).cursor({ start: utf("k000010"), endExclusive: utf("k000020") }))).toHaveLength(10);
-      expect(reads).toMatchObject({ count: 1, bytes: end.index.blockStart[1], tails: 0 });
+      expect(reads).toMatchObject({ count: 1, bytes: index.blockStart[1], tails: 0 });
     });
 
     it("reads no block that starts at a scan's end bound", async () => {

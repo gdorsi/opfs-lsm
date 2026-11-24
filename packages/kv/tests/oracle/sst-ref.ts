@@ -56,6 +56,28 @@ function blockIndexOf(index: readonly BlockIndexEntry[]): BlockIndex {
 }
 
 /**
+ * `index` as a manifest records it: u32 blocks, each block's separator length
+ * and byte length as varints, the separators, then a CRC-32. Written from the decoded
+ * index, so a test checks `encodeIndex` and `decodeIndex` against it.
+ */
+export function indexBlob(index: BlockIndex): Uint8Array {
+  const { sepBytes, sepEnd, blockStart } = index;
+  const head = [...new Uint8Array(Uint32Array.of(sepEnd.length).buffer)];
+  sepEnd.forEach((end, b) => {
+    for (let v of [end - (sepEnd[b - 1] ?? 0), blockStart[b + 1]! - blockStart[b]!]) {
+      for (; v >= 0x80; v = Math.floor(v / 0x80)) head.push((v & 0x7f) | 0x80);
+      head.push(v);
+    }
+  });
+  const end = head.length + sepBytes.byteLength;
+  const out = new Uint8Array(end + 4);
+  out.set(head);
+  out.set(sepBytes, head.length);
+  new DataView(out.buffer).setUint32(end, crc32(out.subarray(0, end)), true);
+  return out;
+}
+
+/**
  * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
  * records use varints and a shared prefix, so they are never larger.
  * Compaction cuts runs by this without encoding them.
@@ -270,7 +292,7 @@ export function encodeRunRef(
     end: {
       bytes: out.byteLength,
       ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
-      index: blockIndexOf(index),
+      index: indexBlob(blockIndexOf(index)),
     },
   };
 }
@@ -399,7 +421,7 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   return out;
 }
 
-/** The block index of a whole run file, read from its tail. Encoders report the same index in `RunEnd`. */
+/** The block index of a whole run file, read from its tail. Encoders report the same index, encoded as `indexBlob` does, in `RunEnd`. */
 export function sstBlockIndex(buf: Uint8Array): BlockIndex {
   const meta = parseFooter(buf);
   return blockIndexOf(readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount));
@@ -424,7 +446,7 @@ export function sstKeyRange(buf: Uint8Array): KeyRange | undefined {
  */
 export function sstRunEnd(buf: Uint8Array): RunEnd {
   const range = sstKeyRange(buf);
-  return { bytes: buf.byteLength, ...(range && { range }), index: sstBlockIndex(buf) };
+  return { bytes: buf.byteLength, ...(range && { range }), index: indexBlob(sstBlockIndex(buf)) };
 }
 
 /** Point lookup in a decoded (sorted) SST. */

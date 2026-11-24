@@ -7,7 +7,7 @@ import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.j
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
-import type { BlockIndex, EncodedRun, RecordWalker, SstEntry } from "../src/store/sst.js";
+import { encodeIndex, type EncodedRun, type RecordWalker, type SstEntry } from "../src/store/sst.js";
 import { sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
@@ -18,8 +18,8 @@ export function cacheUsage(cache: PageCache) {
   return { budget: cache.budget, resident: cache["resident"], metadata: cache["queueBytes"].meta, inFlight: cache["loading"].size };
 }
 
-/** The index of a manifest entry whose file no test reads. */
-export const NO_BLOCKS: BlockIndex = { sepBytes: new Uint8Array(0), sepEnd: new Uint32Array(0), blockStart: new Uint32Array(1) };
+/** The index of a manifest entry whose file no test reads: no blocks. */
+export const NO_BLOCKS = encodeIndex(new Uint8Array(0));
 
 /** Resolves once `cache` has no load in flight. A get starts its run's Bloom filter load and does not wait for it. */
 export async function loadsDone(cache: PageCache): Promise<void> {

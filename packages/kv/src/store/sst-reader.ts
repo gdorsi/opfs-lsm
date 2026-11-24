@@ -9,6 +9,7 @@ import {
   blockBytes,
   blockEntries,
   compareAt,
+  decodeIndex,
   findInBlock,
   readFooter,
   reverseBlockEntries,
@@ -46,7 +47,7 @@ export class SstReader {
   private readonly runId: number;
   /** Undefined for a run with no keys. */
   readonly range: KeyRange | undefined;
-  private readonly index: BlockIndex;
+  private decoded: BlockIndex | undefined;
   /** Whether `file` is the size the manifest records. */
   private readonly sized: boolean;
 
@@ -58,13 +59,17 @@ export class SstReader {
   constructor(
     private readonly file: RunFile,
     private readonly cache: PageCache,
-    run: RunEnd,
+    private readonly run: RunEnd,
     readonly marksThrough = asSeq(Number.POSITIVE_INFINITY),
   ) {
     this.runId = cache.nextRunId();
     this.range = run.range;
-    this.index = run.index;
     this.sized = file.size === run.bytes;
+  }
+
+  /** The run's block index, checked when first needed: opening a tab reads no run's. */
+  private get index(): BlockIndex {
+    return (this.decoded ??= decodeIndex(this.run.index, this.run.bytes));
   }
 
   /**

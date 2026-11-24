@@ -35,7 +35,7 @@ import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
-import { loadGeneration, manifestFromCopy, type RunMeta } from "./store/generation.js";
+import { loadGeneration, runsOfCopy, type GenerationMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -708,40 +708,37 @@ class DbImpl implements Db {
   /**
    * Make `generation` the loaded one, opening its runs when needed. `ahead`
    * says its tail holds seqs past the memtable, and `copy` is the manifest
-   * copy that tail read, which saves reading the file before the runs open.
+   * head that tail read. It names the runs, so they open while the manifest
+   * file is read. The file is read either way: it holds the block indexes,
+   * and a power loss can keep the copy and lose the file with its runs.
    * False when its manifest or one of its runs is gone.
    */
   private async load(generation: Generation, ahead: boolean, copy?: Uint8Array): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
-    const known = manifestFromCopy(copy, generation);
-    const meta = known ?? (await loadGeneration(this.fs, generation));
-    if (!meta) return false;
-    const paths = meta.runs.map((r) => r.path);
+    const manifest = loadGeneration(this.fs, generation);
+    const paths = runsOfCopy(copy, generation) ?? (await manifest)?.runs.map((r) => r.path);
+    if (!paths) return false;
     const runs: (Run | undefined)[] = [];
     let next = 0;
     let gone = false;
-    // A power loss can keep the copy and lose the file with its runs, so
-    // the file is still read, while the runs open.
-    const onDisk = async (): Promise<void> => {
-      if (known && !(await loadGeneration(this.fs, generation))) gone = true;
-    };
     const openNext = async (): Promise<void> => {
       while (next < paths.length && !gone) {
         const i = next++;
-        runs[i] = await this.openRun(meta.runs[i]!);
+        runs[i] = await this.openRun(paths[i]!, i, manifest);
         if (!runs[i]) gone = true;
       }
     };
-    const settled = await Promise.allSettled([
-      onDisk(),
+    const [read, ...opens] = await Promise.allSettled([
+      manifest,
       ...Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
     ]);
     const held = runs.filter((r) => r !== undefined);
-    const failed = settled.find((r) => r.status === "rejected");
-    if (failed || gone || this.closed || this.has(generation, ahead)) {
+    const failed = [read, ...opens].find((r) => r.status === "rejected");
+    const meta = read.status === "fulfilled" ? read.value : undefined;
+    if (failed || gone || !meta || this.closed || this.has(generation, ahead)) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
-      return !gone;
+      return !gone && !!meta;
     }
     if (this.loaded) this.release(this.loaded);
     this.loaded = {
@@ -755,20 +752,22 @@ class DbImpl implements Db {
   }
 
   /**
-   * The open run of `meta`, counted for one more `Layers`. Undefined when
-   * the file is gone, which the generation retries handle. Reads no run
-   * bytes: the reader loads its blocks and its Bloom filter on first use.
+   * The open run at `path`, run `i` of `manifest`, counted for one more
+   * `Layers`. Undefined when the file or the manifest is gone, which the
+   * generation retries handle. Reads no run bytes: the reader loads its
+   * blocks and its Bloom filter on first use.
    */
-  private async openRun(meta: RunMeta): Promise<Run | undefined> {
-    const { path } = meta;
+  private async openRun(path: string, i: number, manifest: Promise<GenerationMeta | undefined>): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
       const file = await this.fs.open(path);
       if (!file) return undefined;
+      // A manifest that does not decode fails the load, which awaits it too.
+      const meta = (await manifest.catch(() => undefined))?.runs[i];
       run = this.runs.get(path);
-      if (run) {
-        file.close();
-      } else {
+      if (run || !meta) file.close();
+      if (!run) {
+        if (!meta) return undefined;
         run = { path, file, reader: new SstReader(file, this.cache, meta, meta.marksThrough), layers: 0 };
         this.runs.set(path, run);
       }

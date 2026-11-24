@@ -2,8 +2,8 @@ import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { encodeRun as encodeWasmRun } from "../src/store/engine.js";
-import type { BlockIndex, SstEntry } from "../src/store/sst.js";
-import { encodeSstRef, sstRunEnd } from "../tests/oracle/sst-ref.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { encodeSstRef, indexBlob, sstRunEnd } from "../tests/oracle/sst-ref.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import {
   checkDecodeSst,
@@ -192,8 +192,8 @@ function marksArb(through: number): fc.Arbitrary<Marks> {
   return fc.array(mark, { maxLength: 4 });
 }
 
-/** A run's block index and a size its blocks end inside. Block sizes take one to four varint bytes. */
-const indexArb: fc.Arbitrary<{ index: BlockIndex; bytes: number }> = fc
+/** A run's encoded block index and a size its blocks end inside. Block sizes take one to four varint bytes. */
+const indexArb: fc.Arbitrary<{ index: Uint8Array; bytes: number }> = fc
   .record({
     blocks: fc.array(
       fc.record({ sep: fc.uint8Array({ maxLength: 12 }), size: fc.oneof(fc.nat(200), fc.nat(40_000), fc.nat(5_000_000)) }),
@@ -204,7 +204,7 @@ const indexArb: fc.Arbitrary<{ index: BlockIndex; bytes: number }> = fc
   .map(({ blocks, tail }) => {
     const sepEnd = Uint32Array.from(blocks, ((n) => (b) => (n += b.sep.byteLength))(0));
     const blockStart = Uint32Array.from([0, ...blocks.map(((n) => (b) => (n += b.size))(0))]);
-    const index = { sepBytes: Uint8Array.from(blocks.flatMap((b) => [...b.sep])), sepEnd, blockStart };
+    const index = indexBlob({ sepBytes: Uint8Array.from(blocks.flatMap((b) => [...b.sep])), sepEnd, blockStart });
     return { index, bytes: blockStart[blocks.length]! + tail };
   });
 

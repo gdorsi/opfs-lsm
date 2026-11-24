@@ -10,7 +10,7 @@ import {
 } from "../../src/store/generation.js";
 import { levelOf } from "../../src/store/levels.js";
 import type { SstEntry } from "../../src/store/sst.js";
-import { decodeSst } from "../oracle/sst-ref.js";
+import { decodeSst, indexBlob, sstBlockIndex } from "../oracle/sst-ref.js";
 import { show, type OracleEntry } from "./oracle.js";
 
 /**
@@ -237,6 +237,7 @@ async function checkRun(
   ) {
     bad(`manifest range does not match keys ${show(first.key)}..${show(last.key)}`);
   }
+  if (compareBytes(run.index, indexBlob(sstBlockIndex(buf))) !== 0) bad("manifest block index does not match the run");
   for (const e of entries) {
     const seq = e.seq ?? 0;
     if (seq < 1 || seq > through) {

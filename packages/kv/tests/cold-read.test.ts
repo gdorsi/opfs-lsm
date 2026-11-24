@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Db } from "../src/index.js";
 import type { ReadFs } from "../src/opfs/async-fs.js";
 import { ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
-import { sstRunEnd } from "./oracle/sst-ref.js";
+import { sstBlockIndex } from "./oracle/sst-ref.js";
 import { collect } from "./runs.js";
 
 const NAME = "cold-read";
@@ -43,7 +43,7 @@ function recording(inner: ReadFs, reads: Read[], holdTails: boolean): ReadFs {
     async open(path) {
       const file = await inner.open(path);
       if (!file) return undefined;
-      const { index } = sstRunEnd((await inner.read(path, 0, Number.POSITIVE_INFINITY))!);
+      const index = sstBlockIndex((await inner.read(path, 0, Number.POSITIVE_INFINITY))!);
       const blocksEnd = index.blockStart[index.sepEnd.length]!;
       return {
         size: file.size,
@@ -97,7 +97,7 @@ describe("the first reads of a handle that just opened", () => {
       const runs = await fs.list(level);
       expect(runs.length, `level ${level}`).toBeGreaterThan(0);
       for (const name of runs) {
-        const { index } = sstRunEnd((await fs.read(`${level}/${name}`, 0, Number.POSITIVE_INFINITY))!);
+        const index = sstBlockIndex((await fs.read(`${level}/${name}`, 0, Number.POSITIVE_INFINITY))!);
         expect(index.sepEnd.length, `${level}/${name}`).toBeGreaterThan(1);
       }
     }

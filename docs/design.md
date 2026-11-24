@@ -30,7 +30,7 @@ IndexedDB  "opfs-lsm-wal/<name>"
   ├── wal    seq -> bytes              one record per acked batch
   └── meta   "ingestedThrough" -> seq  no record at or below it is read
              "generation"      -> n    the manifest tabs read
-             "manifest"        -> bytes  a copy of the manifest last flushed or compacted
+             "manifest"        -> bytes  the head of the manifest last flushed or compacted
              "topGeneration"   -> n    highest manifest number recovery has seen
              "destroyedTop"    -> n    manifests numbered up to this predate a destroy
 
@@ -210,8 +210,9 @@ A manifest, `m/<generation>.mft`, lists the runs of one generation. Its byte lay
 `through` is the seq the runs reach. The runs hold the fold of every seq up to it and no seq
 past it. An ingest sets it to the last seq it folded. A compaction keeps the value of its base.
 
-A manifest also holds each run's block index, the marks of the range deletes up to `through` that
-its runs may still hold versions for, and each run's `marksThrough` (see [Range deletes](#range-deletes)).
+Its head also holds the marks of the range deletes up to `through` that its runs may still hold
+versions for, and each run's `marksThrough` (see [Range deletes](#range-deletes)). After the head
+comes each run's block index, under a CRC of its own that a tab checks when it first reads the run.
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -303,10 +304,10 @@ acked before the call. The broadcast is an optimization. The WAL tail is the sou
 A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation
 never holds a seq past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the
 manifest and opens its runs outside the transaction, then reads the tail again. An open starts that load when the
-transaction names the generation, before it reads the records. A flush or a compaction records the manifest's bytes in
-`meta.manifest` with its generation, and such a tail reads them: when the copy decodes to that generation, the tab
-opens the runs from it while it reads the manifest file. The load still fails without the file: a power loss can keep
-the copy and lose the file and its runs. Recovery never reads it.
+transaction names the generation, before it reads the records. A flush or a compaction records the manifest's head in
+`meta.manifest` with its generation, and such a tail reads it: when the copy decodes to that generation, the tab
+opens the runs it names while it reads the manifest file for their block indexes. The load fails without the file: a
+power loss can keep the copy and lose the file and its runs. Recovery never reads the copy.
 
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.

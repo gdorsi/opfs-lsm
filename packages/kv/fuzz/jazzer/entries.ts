@@ -5,6 +5,7 @@
  * (`../targets.ts`). These cover the TypeScript decoders; the wasm engine
  * has its own targets (`engine-entries.ts`).
  */
+import { decodeIndex } from "../../src/store/sst.js";
 import {
   checkDecodeSst,
   checkManifest,
@@ -62,7 +63,9 @@ export async function sstRead(data: Uint8Array): Promise<void> {
   fixManifestCrc(manifest);
   const run = (await checkManifest(manifest, false))?.runs[0];
   const buf = repaired(data.slice(fileAt), data[0]!);
-  if (!run || run.index.blockStart[run.index.sepEnd.length]! > buf.byteLength) return;
+  if (!run) return;
+  const { blockStart, sepEnd } = decodeIndex(run.index, run.bytes);
+  if (blockStart[sepEnd.length]! > buf.byteLength) return;
   const keys = [...indexKeys(buf), ...(run.range ? [run.range.smallest, run.range.largest] : []), ...FIXED_KEYS];
   await checkRunRead(buf, { keys, run: { ...run, bytes: buf.byteLength }, pattern: PATTERN });
 }

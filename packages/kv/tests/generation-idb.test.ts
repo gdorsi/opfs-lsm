@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { TabWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
-import { decodeGeneration } from "../src/store/generation.js";
+import { CorruptDatabaseError } from "../src/errors.js";
+import { decodeGeneration, manifestHead } from "../src/store/generation.js";
 
 const NAME = "generation-idb";
 const enc = new TextEncoder();
@@ -152,7 +153,7 @@ describe("generation recorded in IndexedDB", () => {
     await db.close();
   });
 
-  it("stores the bytes of the manifest it records, at a flush and at a compaction", async () => {
+  it("stores the head of the manifest it records, at a flush and at a compaction", async () => {
     const inner = new MemoryFs();
     const db = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
     expect(await manifestCopy()).toBeUndefined();
@@ -162,8 +163,9 @@ describe("generation recorded in IndexedDB", () => {
       await ingest(db);
       const [file] = await inner.list("m");
       const copy = await manifestCopy();
-      expect(copy).toEqual(await inner.read(`m/${file}`, 0, Number.POSITIVE_INFINITY));
-      expect(decodeGeneration(copy!).generation).toBe(Number(file!.replace(".mft", "")));
+      const manifest = (await inner.read(`m/${file}`, 0, Number.POSITIVE_INFINITY))!;
+      expect(copy).toEqual(manifestHead(manifest));
+      expect(decodeGeneration(manifest).generation).toBe(Number(file!.replace(".mft", "")));
     }
     expect((await inner.list("l1")).length).toBeGreaterThan(0);
     await db.close();
@@ -199,6 +201,34 @@ describe("generation recorded in IndexedDB", () => {
     TabWal.open = open;
     expect(text(await db.get(utf("k7")))).toBe("v7");
     expect(text(await db.get(utf("tail")))).toBe("t");
+    await db.close();
+  });
+
+  /** A database of one run holding `a`, closed, with byte `at` of its manifest file changed. `at` counts from the end when negative. */
+  const damagedManifest = async (at: number): Promise<MemoryFs> => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    await first.put(utf("a"), utf("1"));
+    await ingest(first);
+    await first.close();
+    const [file] = await inner.list("m");
+    const damaged = (await inner.read(`m/${file}`, 0, Number.POSITIVE_INFINITY))!.slice();
+    damaged[at < 0 ? damaged.length + at : at]! ^= 0xff;
+    const w = await inner.create(`m/${file}`);
+    await w.write(damaged);
+    await w.finish();
+    return inner;
+  };
+
+  it("a reopen refuses a manifest file whose head does not decode, though the copy does", async () => {
+    const inner = await damagedManifest(8);
+    await expect(openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes })).rejects.toThrow(CorruptDatabaseError);
+  });
+
+  it("a reopen takes a manifest file with a damaged block index, and a read of that run fails", async () => {
+    const inner = await damagedManifest(-1);
+    const db = await openHarnessDb({ name: NAME, writerId: "w2", fs: inner, maxWalBytes });
+    await expect(db.get(utf("a"))).rejects.toThrow(CorruptDatabaseError);
     await db.close();
   });
 

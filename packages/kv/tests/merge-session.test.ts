@@ -9,7 +9,7 @@ import { publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeRunRef, entryRecordSize, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
+import { decodeSst, encodeRunRef, entryRecordSize, indexBlob, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
@@ -202,7 +202,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
           for (const run of out.runs) {
             expect(run.meta.bytes).toBe(run.body.byteLength);
             expect(run.meta.range).toEqual(sstKeyRange(run.body));
-            expect(run.meta.index).toEqual(sstBlockIndex(run.body));
+            expect(run.meta.index).toEqual(indexBlob(sstBlockIndex(run.body)));
           }
         }
         expect(w.runs.length).toBe(ts.runs.length);
