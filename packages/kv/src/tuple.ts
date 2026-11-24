@@ -1,3 +1,4 @@
+import { pooledCopier } from "./bytes.js";
 import type { KeyBounds } from "./db.js";
 import { CorruptDatabaseError } from "./errors.js";
 
@@ -103,14 +104,19 @@ function writeValue(v: TupleValue): void {
   }
 }
 
+const copyLong = pooledCopier();
+
+/** A key of up to 64 bytes sits on the JS heap. A longer one comes from a pool, since its own buffer would cost several times the copy. */
 function take(): Uint8Array {
-  return buf.slice(0, len);
+  return len > 64 ? copyLong(buf.subarray(0, len)) : buf.slice(0, len);
 }
 
 /**
  * `prefix ++ enc(v1) ++ .. ++ enc(vn) ++ tail`. Throws a TypeError for a value
  * of another type, and a RangeError for a lone surrogate, a number that is not
- * finite, or a `tail` that starts with FF.
+ * finite, or a `tail` that starts with FF. A key of 65 bytes to 1 KiB is a
+ * view of a buffer shared with other keys: read it through `byteOffset` and
+ * `byteLength`, and `slice()` it before you post or transfer it.
  */
 export function encodeTuple(values: readonly TupleValue[], prefix?: Uint8Array, tail?: Uint8Array): Uint8Array {
   if (tail !== undefined && tail[0] === 0xff) throw new RangeError("a tuple tail must not start with byte FF");

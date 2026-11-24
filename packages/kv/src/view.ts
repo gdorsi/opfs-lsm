@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError, ConstraintError } from "./errors.js";
 import type { Entry, Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, entryOf, Miss, untilHit, valueOf, type LayerEntry, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, keyOf, Miss, untilHit, valueOf, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
@@ -306,7 +306,7 @@ export class ViewSnapshotImpl implements ViewSnapshot {
   }
 
   rangeValues<T>(range: Range, decode: Decode<T>): Promise<{ key: Uint8Array; value: T }[]> {
-    return this.scan(range, (e) => ({ key: e.block ? e.key : new Uint8Array(e.key), value: decode(valueOf(e)) }));
+    return this.scan(range, (e) => ({ key: keyOf(e), value: decode(valueOf(e)) }));
   }
 
   async count(range?: Range): Promise<number> {

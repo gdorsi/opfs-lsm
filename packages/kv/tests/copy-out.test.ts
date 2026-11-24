@@ -41,4 +41,40 @@ describe("values a read hands out", () => {
     reads.forEach((values, r) => values.forEach((v, i) => expect(v!.every((b) => b === mark(r, i))).toBe(true)));
     expect(await db.getMany(keys)).toEqual(keys.map((_, i) => value(i)));
   });
+
+  it("hands out keys as copies too, of any length, and keeps its own copy of a key it was given", async () => {
+    // Keys on both sides of the pooled span, each with its own value.
+    const lengths = [1, 63, 64, 65, 66, 100, 500, 1024, 1025, 3000];
+    const longKey = (i: number) => {
+      const k = new Uint8Array(lengths[i % lengths.length]! + 4).fill(0x61 + (i % 26));
+      new DataView(k.buffer).setUint32(0, i);
+      return k;
+    };
+    const n = 200;
+    db = await openHarnessDb({ name: `copy-out-keys-${process.pid}`, forceMemory: true });
+    const given = Array.from({ length: n }, (_, i) => longKey(i));
+    const write = (from: number, to: number) =>
+      db!.batch((tx) => {
+        for (let i = from; i < to; i++) {
+          tx.put(given[i]!, key(i));
+          // The batch has its copy: the caller may reuse the buffer.
+          given[i]!.fill(0xee);
+        }
+      });
+    await write(0, n / 2);
+    await ingest(db);
+    await write(n / 2, n);
+    const keys = Array.from({ length: n }, (_, i) => longKey(i));
+    expect(await db.getMany(keys)).toEqual(keys.map((_, i) => key(i)));
+
+    const scans = [await Array.fromAsync(db.range()), await db.view((snap) => snap.rangeValues({}, (v) => v.slice()))];
+    for (const entries of scans) {
+      expect(entries.map((e) => [...e.key])).toEqual(keys.map((k) => [...k]));
+      for (const e of entries) e.key.fill(0xdd);
+    }
+    // Changing the keys a scan returned changed no other key of it and nothing stored.
+    for (const entries of scans) expect(entries.every((e) => e.key.every((b) => b === 0xdd))).toBe(true);
+    expect((await Array.fromAsync(db.range({ reverse: true }))).map((e) => [...e.key]).reverse()).toEqual(keys.map((k) => [...k]));
+    expect(await db.getMany(keys)).toEqual(keys.map((_, i) => key(i)));
+  });
 });

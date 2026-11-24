@@ -133,6 +133,7 @@ export type Range = {
   readonly valueContains?: readonly Uint8Array[];
 };
 
+/** Copies, as `Db.get` hands them out: one of 65 bytes to 1 KiB, key or value, is a view of a shared buffer. */
 export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
 /** `start` inclusive, `endExclusive` exclusive, either open. `prefixBound` returns one. */
@@ -184,8 +185,8 @@ export interface Db {
   readonly name: string;
   readonly writerId: WriterId;
   /**
-   * A copy of the value. Every read hands out copies, and a copy of 65 bytes
-   * to 1 KiB is a view of a buffer shared with other copies, as Node's
+   * A copy of the value. Every read hands out copies of keys and values, and
+   * a copy of 65 bytes to 1 KiB is a view of a buffer shared with other copies, as Node's
    * Buffer pool makes them: read it through `byteOffset`, a multiple of 8,
    * and `byteLength`. Posting or storing it clones the whole shared buffer,
    * and transferring that buffer detaches the other copies, so `slice()` it

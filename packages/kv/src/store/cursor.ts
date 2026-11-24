@@ -51,14 +51,16 @@ export class BlockEntry {
     return seqIn(this.block, this.seqAt);
   }
 
-  /** A copy that owns its buffer, made once. */
+  /** A copy to hand out, as `copyOut` makes one, made once. */
   get key(): Uint8Array {
     let k = this.copied;
     if (!k) {
       const { block, prefix, suffixAt } = this;
-      // The record's own bytes always sit before its suffix, so one slice
-      // copies the suffix to its place and leaves room for the prefix.
-      k = block.slice(suffixAt - prefix.length, suffixAt + this.suffixLength);
+      const from = suffixAt - prefix.length;
+      const to = suffixAt + this.suffixLength;
+      // The record's own bytes always sit before its suffix, so one copy
+      // puts the suffix in its place and leaves room for the prefix.
+      k = to - from > 64 ? copyOut(block.subarray(from, to)) : block.slice(from, to);
       if (prefix.length > 0) k.set(prefix);
       this.copied = k;
     }
@@ -160,9 +162,14 @@ export function valueOf(e: LayerEntry): Uint8Array {
   return e.block ? e.block.subarray(e.valueAt, e.valueAt + e.valueLength) : e.value!;
 }
 
-/** A put as a read hands it out: a key that owns its buffer and a value `copyOut` made. */
+/** A put's key as a read hands it out: a copy, as `copyOut` makes one. */
+export function keyOf(e: LayerEntry): Uint8Array {
+  return e.block ? e.key : copyOut(e.key);
+}
+
+/** A put as a read hands it out: copies of its key and its value. */
 export function entryOf(e: LayerEntry): Entry {
-  return { key: e.block ? e.key : new Uint8Array(e.key), value: copyOut(valueOf(e)) };
+  return { key: keyOf(e), value: copyOut(valueOf(e)) };
 }
 
 export type ScanBounds = {

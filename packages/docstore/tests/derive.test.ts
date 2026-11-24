@@ -68,6 +68,34 @@ describe("entries come from the stored JSON", () => {
   });
 });
 
+describe("covering index", () => {
+  const fieldsOf = (c: BoundCollection, doc: JsonDoc) => entries(c, doc).map((e) => JSON.parse(new TextDecoder().decode(e.value)) as unknown);
+
+  it("holds the JSON of the included fields the document has, in the order `include` lists them", () => {
+    const c = coll({ x: { by: "a", include: ["t", "n", "missing", "list"] } });
+    const [e] = entries(c, { id: "1", a: 1, t: "x", list: [1, { k: null }], n: 2, other: true });
+    expect(new TextDecoder().decode(e!.value)).toBe('{"t":"x","n":2,"list":[1,{"k":null}]}');
+  });
+
+  it("copies a field named __proto__ like any other, wherever `include` lists it", () => {
+    for (const include of [["__proto__", "t"], ["t", "__proto__"], ["t", "__proto__", "n"]]) {
+      const c = coll({ x: { by: "a", include } });
+      const doc = JSON.parse('{"id":"1","a":1,"t":"x","n":2,"__proto__":{"y":1}}') as JsonDoc;
+      const [fields] = fieldsOf(c, doc) as [Record<string, unknown>];
+      expect(Object.entries(fields)).toEqual(include.map((f) => [f, f === "__proto__" ? { y: 1 } : f === "t" ? "x" : 2]));
+    }
+  });
+
+  it("keeps every value it made while it makes more, of any length and with any character", () => {
+    const c = coll({ x: { by: "a", include: ["t"] } });
+    // Short and long, ASCII and not, across more bytes than one shared buffer holds.
+    const texts = Array.from({ length: 400 }, (_, i) => (i % 7 === 0 ? "é€😀\u0000" : "t").repeat(1 + ((i * 37) % 300)) + i);
+    const made = texts.map((t, i) => entries(c, { id: String(i), a: i, t })[0]!.value);
+    expect(made.map((v) => (JSON.parse(new TextDecoder().decode(v)) as { t: string }).t)).toEqual(texts);
+    expect(made.map((v) => [...v])).toEqual(texts.map((t) => [...utf8.encode(JSON.stringify({ t }))]));
+  });
+});
+
 describe("multi index", () => {
   const c = coll({ tags: { by: ["tags[]", "at"] } });
 

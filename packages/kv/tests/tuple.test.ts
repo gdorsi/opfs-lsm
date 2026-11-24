@@ -211,6 +211,16 @@ describe("encodeTuple", () => {
     }
   });
 
+  it("returns each key as its own bytes, short or long: a later key overwrites none", () => {
+    // Lengths around 64 bytes, where a key starts to come from a shared buffer, and enough keys to fill several.
+    const strings = Array.from({ length: 600 }, (_, i) => String(i).padStart(1 + ((i * 13) % 200), "k"));
+    const keys = strings.map((s, i) => encodeTuple([s, i]));
+    expect(keys.map((k) => decodeTuple(k).values)).toEqual(strings.map((s, i) => [s, i]));
+    for (const k of keys) k.fill(0xee);
+    expect(keys.every((k) => k.every((b) => b === 0xee))).toBe(true);
+    expect(decodeTuple(encodeTuple([strings[5]!, 5])).values).toEqual([strings[5]!, 5]);
+  });
+
   it("rejects a tail that starts with FF and keeps encoding afterwards", () => {
     fc.assert(
       fc.property(tupleArb, fc.uint8Array({ maxLength: 3 }), (values, rest) => {

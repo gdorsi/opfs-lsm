@@ -27,8 +27,8 @@ export function sharedPrefix(a: Uint8Array, b: Uint8Array): number {
 }
 
 /**
- * A read hands out each value as a copy, and a write keeps a copy of each
- * value it is given. Chrome and Node keep an array of at most 64 bytes on the
+ * A read hands out each key and value as a copy, and a write keeps a copy of
+ * each key and value it is given. Chrome and Node keep an array of at most 64 bytes on the
  * JS heap and give a longer one its own buffer, which costs several times the
  * copy, so a copy of up to `POOLED` bytes is a view of a shared `POOL_BYTES`
  * buffer, as Node's Buffer pool does. Like Node's, each copy starts at a
@@ -41,7 +41,7 @@ const POOL_BYTES = 8192;
  * A copier with a pool of its own. Reads and writes each keep one, so an app
  * that transfers the buffer of a value it read detaches no stored value.
  */
-function pooledCopier(): (src: Uint8Array) => Uint8Array {
+export function pooledCopier(): (src: Uint8Array) => Uint8Array {
   let pool = new Uint8Array(0);
   let used = 0;
   return (src) => {
@@ -61,7 +61,7 @@ function pooledCopier(): (src: Uint8Array) => Uint8Array {
 /** A copy of `src` to hand out. Its buffer may hold other copies: it starts at `byteOffset`. */
 export const copyOut = pooledCopier();
 
-/** A copy of `src` to store. Its buffer may hold other stored values. */
+/** A copy of `src` to store. Its buffer may hold other stored keys and values. */
 export const copyIn = pooledCopier();
 
 /** Smallest key strictly after every key that starts with `prefix`. */
