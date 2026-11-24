@@ -17,6 +17,7 @@ const checks = [
   "formal/update-exact/check.ts",
   "formal/reclaim-hold/check.ts",
   "formal/power-loss/check.ts",
+  "formal/crash-table/check.ts",
 ] as const;
 
 let failed = 0;

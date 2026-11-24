@@ -68,6 +68,9 @@ jobs:
           - name: crash-enum
             files: tests/sim/crash-enum.test.ts
             env: KV_CRASH_RUNS=300 KV_CRASH_PAIRS=200 KV_CRASH_REPORT=1
+          - name: tab-follow
+            files: tests/sim/tab-follow.test.ts
+            env: KV_FOLLOW_DEPTH=4
           - name: fuzz
             files: fuzz/
             env: KV_FUZZ_RUNS=50000 KV_FUZZ_REPORT=1

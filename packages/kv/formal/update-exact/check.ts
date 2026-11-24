@@ -23,6 +23,8 @@
  *   state just before that row's seq;
  * - PrefixExact: a tab's memtable is the state after its `appliedThrough`;
  * - AckedInLog: an update that resolved wrote a row that has its ops;
+ * - ReadYourWrites: a put or an update resolves with its tab's memtable at
+ *   or past its seq;
  * - a body runs at most twice, and every update resolves.
  * The state of the key is named by the seq that last wrote it, so two
  * states never look alike.
@@ -30,7 +32,8 @@
  * Broken variants (the writer lands its row whatever its seq, a reader
  * applies a row whatever its header, the header takes `appliedThrough` after
  * an await, a recovery drops the records and keeps the head, the body reads
- * the load whatever landed since) must each fail.
+ * the load whatever landed since, a row that lands past a gap waits for no
+ * catch-up) must each fail.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -46,6 +49,7 @@ type Variant = {
   readonly stampAfterAwait?: boolean;
   readonly dropKeepsHead?: boolean;
   readonly warmIgnoresLanded?: boolean;
+  readonly landNoCatchUp?: boolean;
 };
 
 /** `validAt` 0: no header. `basedOn`: the state the body read, `BLIND` for a put, which reads nothing. */
@@ -87,7 +91,7 @@ type State = {
   /** Tabs at or past this seq read the records. One below it loads the manifest recovery recorded. */
   droppedAt: number;
   dropsLeft: number;
-  /** A property a step broke: UpdateExact at a commit, AckedInLog when an update resolves. */
+  /** A property a step broke: UpdateExact at a commit, AckedInLog and ReadYourWrites when a write resolves. */
   fault?: string;
   tabs: Tab[];
 };
@@ -156,9 +160,14 @@ function land(s: State, tab: Tab, seq: number, live: boolean, v: Variant): void 
   if (tab.applied + 1 === seq) {
     if (live) tab.state = seq;
     tab.applied = seq;
-  } else if (tab.applied < seq && live) {
+  } else if (tab.applied < seq && live && !v.landNoCatchUp) {
     catchUp(s, tab, v);
   }
+}
+
+/** A write resolves: its tab reads it from then on. */
+function resolved(s: State, who: string, tab: Tab, seq: number): void {
+  if (tab.applied < seq) s.fault ??= `ReadYourWrites: ${who}'s write resolved at seq ${seq} with its memtable at seq ${tab.applied}`;
 }
 
 type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "plan" | "stamp" | "rowCommits" | "rowLands" | "warmTx" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
@@ -219,6 +228,7 @@ function step(s: State, a: Action, v: Variant): string {
       return `${who}: the put commits at seq ${tab.put}`;
     case "putLands":
       land(s, tab, tab.put as number, true, v);
+      resolved(s, who, tab, tab.put as number);
       tab.put = "idle";
       return `${who}: the put lands`;
     case "updateAlone":
@@ -260,6 +270,7 @@ function step(s: State, a: Action, v: Variant): string {
         return `${who}: the row lands with no ops, the update waits for a transaction`;
       }
       ack(s, u.seq);
+      resolved(s, who, tab, u.seq);
       tab.update = { at: "idle" };
       return `${who}: the row lands with its ops, the update resolves`;
     }
@@ -279,6 +290,7 @@ function step(s: State, a: Action, v: Variant): string {
       if (u.at !== "written") throw new Error("model: written");
       land(s, tab, u.seq, true, v);
       ack(s, u.seq);
+      resolved(s, who, tab, u.seq);
       tab.update = { at: "idle" };
       return `${who}: the row lands, the update resolves`;
   }
@@ -426,6 +438,7 @@ const broken: [string, Variant, number][] = [
   ["the header takes appliedThrough after an await", { stampAfterAwait: true }, 0],
   ["a recovery that drops the WAL records keeps the head", { dropKeepsHead: true }, 1],
   ["the body reads the warm load whatever landed since", { warmIgnoresLanded: true }, 0],
+  ["a row that lands past a gap waits for no catch-up", { landNoCatchUp: true }, 0],
 ];
 for (const [name, v, recoveries] of broken) {
   if (!explore(v, recoveries)) {
@@ -439,7 +452,7 @@ const found = explore({}, 1);
 if (found) {
   console.error("FAIL UpdateExact");
   console.error(found);
-  console.error("\nHarm: an update wrote from a state another write had replaced, or a tab reads a state no log prefix gives.");
+  console.error("\nHarm: an update wrote from a state another write had replaced, a tab reads a state no log prefix gives, or a tab does not read a write of its own that resolved.");
   process.exit(1);
 }
 console.log(`PASS UpdateExact — ${states} states: two tabs, up to ${UPDATES} updates and ${PUTS} puts each, one recovery`);

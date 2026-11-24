@@ -12,7 +12,10 @@
  * compact), keep writing, and crash again at every triple of the recovery's
  * ops. Properties:
  * - PowerPrefix: every read is the state after one log prefix (the writes
- *   since its last destroy), and the database always opens;
+ *   since its last destroy), and the database always opens. At the crash
+ *   during or after a recovery, the browser may also throw away both
+ *   IndexedDB databases: each OPFS prefix alone is a crash state too, and
+ *   there a manifest past the head can list a run a sweep removed;
  * - ProcessAll: a cut that is a prefix of the global order (a process
  *   crash) reads every acked write;
  * - RecoveryStable: recovery's ingest and compaction change no read, leave
@@ -30,7 +33,8 @@
  *   it.
  * Broken variants (build on the newest manifest, no head raise, an adopt or
  * a destroy that moves the head and not the key generator, no fallback, no
- * newer-manifest adoption, destroy files before its commit, a destroy
+ * newer-manifest adoption, a newer manifest adopted with its runs gone,
+ * destroy files before its commit, a destroy
  * commit at the default durability, a fallback to a manifest whose runs are
  * gone, and six wrong removals or births) must
  * each fail, so the model is strong enough to see the bugs the crash suite
@@ -231,6 +235,12 @@ function recover(st: Disk, log: readonly number[], mustHold: number | undefined,
     const proc = isProcessCut(sys.ops, cut) ? kept.length + committed(sys.ops, cut).length : undefined;
     recover(replay(st, sys.ops, cut), full, proc, depth + 1, v, `${where} → recovery crash (${describe(cut, sys.ops)})`, destroyedThrough);
   }
+  // With both databases gone the row is gone too, so no destroy is held: a log prefix is all that is left to promise.
+  const n = count(sys.ops).opfs;
+  for (let opfs = 0; opfs <= n; opfs++) {
+    const files = replay(st, sys.ops, { idb: 0, reg: 0, opfs }).opfs;
+    recover({ idb: undefined, reg: undefined, opfs: files }, full, undefined, depth + 1, v, `${where} → recovery crash (IndexedDB thrown away, opfs ${opfs}/${n})`);
+  }
 }
 
 function checkWorkload(cmds: readonly Cmd[], v: Variant, depth: number): void {
@@ -398,6 +408,7 @@ function main(): void {
     ["destroy moves the head and leaves the key generator behind", { destroyKeepsGenerator: true }],
     ["no fallback when the recorded manifest is gone", { noFallback: true }],
     ["a newer manifest past the head is never adopted", { noNewerAdopt: true }],
+    ["a newer manifest past the head is adopted with its runs gone", { adoptBroken: true }],
     ["a manifest number is reused after recovery records an older one", { reuseNumbers: true }],
     ["destroy removes the files before its commit", { destroyFilesFirst: true }],
     ["destroy commits at the default durability", { destroyRelaxed: true }],
