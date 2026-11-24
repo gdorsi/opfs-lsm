@@ -40,6 +40,7 @@ export type OracleRange = {
   readonly start?: Uint8Array;
   readonly endExclusive?: Uint8Array;
   readonly limit?: number;
+  readonly offset?: number;
   readonly valueContains?: readonly Uint8Array[];
   readonly reverse?: boolean;
 };
@@ -137,7 +138,8 @@ export class Oracle {
         (!range.valueContains || containsAll(value, range.valueContains)),
     );
     if (range.reverse) out.reverse();
-    return range.limit === undefined ? out : out.slice(0, range.limit);
+    const from = range.offset ?? 0;
+    return out.slice(from, range.limit === undefined ? undefined : from + range.limit);
   }
 
   /** Every `p` in `[lo, head]` where `get(key)` returns `observed`. */
@@ -191,12 +193,6 @@ export class Reader {
   get(key: Uint8Array, observed: Uint8Array | undefined): void {
     this.settle(this.oracle.getCandidates(key, observed, this.floor), () =>
       `get(${show(key)}) = ${showValue(observed)}; expected ${showValue(this.oracle.valueAt(key))} at head ${this.oracle.head}`,
-    );
-  }
-
-  range(range: OracleRange, observed: readonly OracleEntry[]): void {
-    this.settle(this.oracle.rangeCandidates(range, observed, this.floor), () =>
-      `range(${showRange(range)}) = ${showEntries(observed)}; expected ${showEntries(this.oracle.rangeAt(range))} at head ${this.oracle.head}`,
     );
   }
 
@@ -308,6 +304,7 @@ function showRange(r: OracleRange): string {
   if (r.start) parts.push(`start ${show(r.start)}`);
   if (r.endExclusive) parts.push(`end ${show(r.endExclusive)}`);
   if (r.limit !== undefined) parts.push(`limit ${r.limit}`);
+  if (r.offset !== undefined) parts.push(`offset ${r.offset}`);
   if (r.valueContains) parts.push(`contains ${r.valueContains.map(show).join("+")}`);
   if (r.reverse) parts.push("reverse");
   return parts.join(", ");
