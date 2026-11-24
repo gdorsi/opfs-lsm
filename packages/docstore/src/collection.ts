@@ -1,7 +1,7 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { CountDeltas } from "./counts.js";
+import { applyDeltas, tally, type CountDeltas } from "./counts.js";
 import { decodeDocs, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
@@ -210,7 +210,7 @@ function planChanges(
       }
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
-      const counts = coll.counted ? new CountDeltas() : undefined;
+      const counts: CountDeltas | undefined = coll.counted ? new Map() : undefined;
       let existed = 0;
       const rows = values.slice(0, n);
       const kept = rows.map((old, i) => (docs[i] ? bytesEqual(old, docs[i]!.bytes) : old === undefined));
@@ -230,7 +230,7 @@ function planChanges(
           before = entriesOf(coll, idbs[i]!, old, "stored", undefined, stored);
           if (stored) groups = stored;
         }
-        counts?.tally(groups, afterGroups[i]!);
+        if (counts) tally(counts, groups, afterGroups[i]!);
         const diff = diffEntries(before, after[i]!);
         for (const k of diff.remove) {
           // Empty unless a unique index is building: no string per key then.
@@ -241,7 +241,7 @@ function planChanges(
       }
       for (const k of removes) tx.delete(k);
       for (const e of writes) tx.put(e.key, e.value);
-      counts?.apply(tx);
+      if (counts) applyDeltas(counts, tx);
       return existed;
     },
   };
