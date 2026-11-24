@@ -1,4 +1,4 @@
-import { compareBytes } from "../bytes.js";
+import { compareBytes, sharedPrefix } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
@@ -357,7 +357,8 @@ function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunInd
     const length = view.getUint32(o + 4, true);
     o += 8;
     if (offset !== blockStart[i]) throw new CorruptDatabaseError("sst blocks not contiguous");
-    const sep = prevLast ? first.subarray(0, separatorLength(prevLast, first)) : first;
+    // The shortest prefix of `first` that sorts after the previous block's last key.
+    const sep = prevLast ? first.subarray(0, Math.min(sharedPrefix(prevLast, first) + 1, first.byteLength)) : first;
     sepBytes.set(sep, sepLen);
     sepLen += sep.byteLength;
     sepEnd[i] = sepLen;
@@ -378,14 +379,6 @@ function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunInd
     pageFirst: Uint32Array.from(pages),
     last: prevLast ? prevLast.slice() : new Uint8Array(0),
   };
-}
-
-/** Length of the shortest prefix of `first` that sorts after `prevLast`. */
-function separatorLength(prevLast: Uint8Array, first: Uint8Array): number {
-  const n = Math.min(prevLast.byteLength, first.byteLength);
-  let i = 0;
-  while (i < n && prevLast[i] === first[i]) i++;
-  return Math.min(i + 1, first.byteLength);
 }
 
 /** `from` is how many leading bytes of the entry's key are known to equal the bound's. */
