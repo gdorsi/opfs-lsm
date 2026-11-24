@@ -44,6 +44,8 @@ export default ({ command }: { command: string }) => {
     // adds `hide-nav` only after it hydrates, which moves the painted page up by the navbar's height.
     // It also keeps what the demo's frame posts before the page's scripts run, for `HomeDemo.vue` to read.
     head: [
+      ["link", { rel: "icon", type: "image/svg+xml", href: `${base}favicon.svg` }],
+      ["link", { rel: "apple-touch-icon", href: `${base}apple-touch-icon.png` }],
       [
         "script",
         {},
