@@ -113,3 +113,37 @@ describe("a failed openDb", () => {
     await db.close();
   });
 });
+
+describe("an openDb whose WAL database the browser deletes while it loads", () => {
+  it("leaves the host flushing at the maxWalBytes of the handles opened later", async () => {
+    const { fs, options } = await storedDatabase();
+    let arrived!: () => void;
+    const loading = new Promise<void>((resolve) => (arrived = resolve));
+    let lift!: () => void;
+    const gate = new Promise<void>((resolve) => (lift = resolve));
+    const gated = (inner: ReadFs): ReadFs => ({
+      read: (path, offset, length) => inner.read(path, offset, length),
+      list: (dir) => inner.list(dir),
+      open: async (path) => {
+        arrived();
+        await gate;
+        return inner.open(path);
+      },
+    });
+    const opening = openHarnessDb({ ...options, wrapFs: gated, maxWalBytes: 100 });
+    await loading;
+    const deleted = new Promise((resolve) => {
+      indexedDB.deleteDatabase(`opfs-lsm-wal/${options.name}`).onsuccess = resolve;
+    });
+    await deleted;
+    lift();
+    const closed = await opening.catch(() => undefined);
+    await closed?.close();
+
+    const db = await openHarnessDb(options);
+    const seq = await db.put(enc.encode("big"), new Uint8Array(150));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await loadLatestGeneration(fs))?.through).toBeLessThan(seq);
+    await db.close();
+  });
+});

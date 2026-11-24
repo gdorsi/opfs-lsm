@@ -594,7 +594,7 @@ class DbImpl implements Db {
   private updating: Promise<unknown> = Promise.resolve();
   /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
   private beaten = false;
-  /** The host counts this handle among its watchers. An open that failed before `watch` must not take another tab's place. */
+  /** The host counts this handle among its watchers. An open that failed or closed before `watch` must not take another tab's place. */
   private watched = false;
 
   constructor(
@@ -1357,6 +1357,8 @@ class DbImpl implements Db {
   }
 
   watch(policy: WatchPolicy): void {
+    // A handle the browser closed while it loaded has already run its close.
+    if (this.closed) return;
     this.ingestClient.watch(this.name, policy);
     this.watched = true;
   }
