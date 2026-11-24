@@ -469,6 +469,26 @@ describe("recovery never turns corruption into data loss", () => {
     expect(await snapshot(f)).toEqual(before);
   });
 
+  it("R2: the host that published the recorded manifest sweeps nothing once it is gone", async () => {
+    const name = `corrupt-${++dbs}`;
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs);
+    const db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1e12 });
+    for (let i = 0; i < 5; i++) {
+      await db.put(utf(`k${i}`), utf(`v${i}`));
+      await ingest(db);
+    }
+    await db.close();
+    const f: Fixture = { name, fs, state: new Map() };
+    expect((await files(fs, "l1")).length).toBeGreaterThan(0);
+    await fs.remove(await recorded(f));
+    const before = await snapshot(f);
+
+    await host.ingest(name, true);
+
+    expect(await snapshot(f)).toEqual(before);
+  });
+
   it("an empty recorded manifest is a power loss: the newest intact one stands in", async () => {
     // OPFS can leave a file created and never closed. Not corruption.
     const f = await standard();
