@@ -1,8 +1,9 @@
 import { prefixBound, type Db } from "@opfs-lsm/kv";
+import { ingest } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore, type Query } from "../src/index.js";
 import { idOf, rowPrefix, type CollectionId } from "../src/keys.js";
-import { codeOf, freshName, openKv, recording, storedCatalog, wrap } from "./harness.js";
+import { codeOf, freshName, openKv, openKvWithoutBus, recording, storedCatalog, wrap } from "./harness.js";
 
 type Note = {
   id: string;
@@ -601,6 +602,54 @@ describe("two handles on one database", () => {
     expect((rejected as PromiseRejectedResult).reason).toMatchObject({ code: "unique" });
     await a.kv.sync();
     expect((await a.notes.queryIds({ index: "bySlug" })).ids).toHaveLength(1);
+  });
+
+  it("lets a handle take a unique value another handle freed, before it has read that write", async () => {
+    const name = freshName();
+    const a = await notes(name);
+    const kv = await openKvWithoutBus(name);
+    open.push(kv);
+    const b = (await openDocStore(kv, schema)).collection("notes");
+    await a.notes.put({ id: "a", slug: "s" });
+    await kv.sync();
+    await a.notes.delete("a");
+    await b.put({ id: "b", slug: "s" });
+    expect(await b.getMany(["a", "b"])).toEqual([undefined, { id: "b", slug: "s" }]);
+  });
+
+  it("gives modify on a collection with a unique index the document another handle wrote, before this handle has read that write", async () => {
+    const name = freshName();
+    const a = await notes(name);
+    const kv = await openKvWithoutBus(name);
+    open.push(kv);
+    const b = (await openDocStore(kv, schema)).collection("notes");
+    await a.notes.put({ id: "n", n: 1 });
+    await kv.sync();
+    await a.notes.put({ id: "n", n: 2 });
+    const next = await b.modify("n", (d) => {
+      if (d.n !== 2) throw new Error(`fn got n ${d.n}`);
+      return { ...d, n: 3 };
+    });
+    expect(next).toEqual({ id: "n", n: 3 });
+  });
+
+  it.each([
+    ["", false],
+    [", though a flush folded that schema's record", true],
+  ])("lets two documents share a value once another handle's newer schema removed its unique index, before this handle has read that schema%s", async (_, flush) => {
+    const name = freshName();
+    const a = await notes(name);
+    const kv = await openKvWithoutBus(name);
+    open.push(kv);
+    const b = (await openDocStore(kv, schema)).collection("notes");
+    const withoutSlug = defineSchema({
+      version: 2,
+      collections: { notes: collection<Note>().index("byCreated", "createdAt").index("byTag", "tags[]").index("byTitle", "title") },
+    });
+    await openDocStore(a.kv, withoutSlug);
+    if (flush) await ingest(a.kv);
+    await b.putMany([{ id: "x", slug: "s" }, { id: "y", slug: "s" }]);
+    expect(await b.getMany(["x", "y"])).toEqual([{ id: "x", slug: "s" }, { id: "y", slug: "s" }]);
   });
 
   it("loses no update when both handles change the same two documents at once, 50 times each", async () => {

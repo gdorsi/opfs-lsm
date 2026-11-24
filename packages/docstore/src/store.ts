@@ -222,9 +222,20 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   }
 
   async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
-    for (;;) {
+    for (let synced = false; ; ) {
       const bound = this.bound;
-      const plan = await planner(collectionOf(bound, name));
+      let plan: WritePlan<R>;
+      try {
+        plan = await planner(collectionOf(bound, name));
+      } catch (err) {
+        // The planner reads this handle's state, which can lag another tab's write: its error holds once it has read every write acked before the call.
+        if (synced) throw err;
+        await this.kv.sync();
+        // A catalog write that a flush folded reaches the feed as a gap, which does not say what it wrote.
+        this.adopt(await this.kv.get(CATALOG_KEY));
+        synced = true;
+        continue;
+      }
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
         if (!catalog) {
           tx.put(CATALOG_KEY, encodeCatalog(reconcile(undefined, this.declared)!));
