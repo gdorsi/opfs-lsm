@@ -66,10 +66,27 @@ function inBound(v: Scalar, q: QueryInput): boolean {
   return true;
 }
 
-/** The rows `ix` keeps in kv: one per entry, or for a count index with no base rows, one per group that holds a document. */
-export function storedRows(docs: readonly Doc[], ix: ModelIndex): number {
-  const hits = indexOrder(docs, ix);
-  return ix.kind === "count" ? new Set(hits.map((h) => JSON.stringify(h.values))).size : hits.length;
+/** How many entries of `ix` each value tuple holds, by its JSON. For a count index, the documents in each group. */
+export function groupCounts(docs: readonly Doc[], ix: ModelIndex): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const h of indexOrder(docs, ix)) {
+    const k = JSON.stringify(h.values);
+    out.set(k, (out.get(k) ?? 0) + 1);
+  }
+  return out;
+}
+
+/**
+ * The rows `ix` keeps in kv: one per entry, or for a count index one count row
+ * per group whose number changed since `base`, the groups when the index was
+ * added, and one base row per group of `base`.
+ */
+export function storedRows(docs: readonly Doc[], ix: ModelIndex, base: ReadonlyMap<string, number> = new Map()): number {
+  if (ix.kind !== "count") return indexOrder(docs, ix).length;
+  const now = groupCounts(docs, ix);
+  let rows = base.size;
+  for (const k of new Set([...now.keys(), ...base.keys()])) if ((now.get(k) ?? 0) !== (base.get(k) ?? 0)) rows++;
+  return rows;
 }
 
 /**

@@ -57,30 +57,23 @@ export class Backpressure {
    * room, after every write held before it, in the turn the wait ends: a later
    * write that found room would otherwise append first.
    */
-  admit<T>(write: () => T): T | Promise<T> {
-    if (!this.turn && !this.full) return write();
-    const turn = (this.turn = this.turn ? this.turn.then(() => this.room()) : this.room());
+  admit(): void | Promise<void>;
+  admit<T>(write: () => T | PromiseLike<T>): T | Promise<T>;
+  admit(write?: () => unknown): unknown {
+    // At the hard cap, wait for the flush in flight, or start one, and look
+    // again. After a flush that failed or left the generation where it was,
+    // writes go on until the table has grown an eighth of the limit more, so a
+    // host that cannot help neither stops writes nor is asked on every one.
+    const full = () => this.bytes() >= this.caps.hard && (this.flushing || this.bytes() >= this.askAt);
+    if (!this.turn && !full()) return write?.();
+    const room = async () => {
+      while (full()) await (this.flushing ?? this.start());
+    };
+    const turn = (this.turn = this.turn ? this.turn.then(room) : room());
     return turn.then(() => {
       if (this.turn === turn) this.turn = undefined;
-      return write();
+      return write?.();
     });
-  }
-
-  /**
-   * At the hard cap, wait for the flush in flight, or start one, and look
-   * again. After a flush that failed or left the generation where it was,
-   * writes go on until the table has grown an eighth of the limit more, so a
-   * host that cannot help neither stops writes nor is asked on every one.
-   */
-  private get full(): boolean {
-    return this.bytes() >= this.caps.hard;
-  }
-
-  private async room(): Promise<void> {
-    while (this.full) {
-      if (!this.flushing && this.bytes() < this.askAt) return;
-      await (this.flushing ?? this.start());
-    }
   }
 
   private start(): Promise<boolean> {

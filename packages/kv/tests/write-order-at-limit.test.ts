@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Db } from "../src/index.js";
+import { ClosedError, type Db } from "../src/index.js";
 import {
   EngineHost,
   MemoryFs,
@@ -81,5 +81,34 @@ describe("two puts of one key from one handle at the memtable limit", () => {
     expect(dec.decode((await db.get(key))!), "the value of the put called last").toBe("second");
     expect(await first, "the put called first takes the lower seq").toBeLessThan(await second);
   });
-});
 
+  it("a put that waits at the limit rejects with ClosedError once the handle closes", async () => {
+    await wipe();
+    const fs = new MemoryFs();
+    const host = createLocalIngestClient(new EngineHost(() => fs));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let asked = 0;
+    const tabClient: IngestClient = {
+      ...host,
+      watch: () => undefined,
+      ingest: (name, waitForCompaction) => {
+        asked++;
+        return gate.then(() => host.ingest(name, waitForCompaction));
+      },
+    };
+    const db = await openHarnessDb({ name: NAME, fs, ingest: tabClient, memtableBytes: MiB, maxWalBytes: 1e12 });
+    let held: Promise<number> | undefined;
+    for (let i = 0; i < 500 && !held; i++) {
+      const put = db.put(filler(i), new Uint8Array(16 * 1024).fill(i % 251));
+      if (asked > 0 && !(await settlesWithin(put))) held = put;
+      else await put;
+    }
+    expect(held, "a put waits at the memtable limit").toBeDefined();
+    const second = db.put(enc.encode("k"), enc.encode("v"));
+    const outcomes = Promise.allSettled([held, second]);
+    await db.close();
+    release();
+    for (const o of await outcomes) expect(o.status === "rejected" && o.reason).toBeInstanceOf(ClosedError);
+  });
+});

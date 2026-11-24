@@ -142,6 +142,10 @@ test("unicode query keys, data and prefixes come back unchanged", () =>
     await persist(persister, entries);
     const client = await restored(persister);
     for (const [queryKey, data] of entries) assert.equal(client.getQueryData(queryKey), data);
+
+    const bomPrefixed = createQueryPersister(db, { prefix: "﻿key" });
+    await persist(bomPrefixed, [[["bom"], "prefixed"]]);
+    assert.deepEqual(await restoredKeys(bomPrefixed), [["bom"]]);
   }));
 
 test("a serialized query or a prefix with a lone surrogate rejects and writes nothing", () =>
@@ -173,6 +177,27 @@ test("a query whose storage key is over 8 KiB is never found, and persisting it 
     await assert.rejects(persister.persistQueryByKey(queryKey, client), ConstraintError);
     assert.equal(await persister.retrieveQuery(hashKey(queryKey)), undefined);
     assert.equal(await db.count(), 0);
+  }));
+
+// kv's key limit is 8 KiB, and the persister's namespace takes one byte of it.
+test("the longest storage key kv holds persists and restores, and one byte longer is never found", () =>
+  withDb(async (db) => {
+    const persister = createQueryPersister(db, { refetchOnRestore: false });
+    const atLimit = ["x".repeat(8 * 1024 - 1 - `tanstack-query-[""]`.length)];
+    assert.equal(new TextEncoder().encode(`tanstack-query-${hashKey(atLimit)}`).byteLength, 8 * 1024 - 1);
+    await persist(persister, [[atLimit, "kept"]]);
+    assert.equal(await persister.retrieveQuery(hashKey(atLimit)), "kept");
+    const restored = await newClient().fetchQuery({
+      queryKey: atLimit,
+      queryFn: () => assert.fail("queryFn ran for a persisted query"),
+      persister: persister.persisterFn,
+    });
+    assert.equal(restored, "kept");
+
+    const overLimit = [`${atLimit[0]}x`];
+    assert.equal(await persister.retrieveQuery(hashKey(overLimit)), undefined);
+    await assert.rejects(persist(persister, [[overLimit, "dropped"]]), ConstraintError);
+    assert.equal(await db.count(), 1);
   }));
 
 test("kv entries outside the persister's namespace are not restored or collected", () =>

@@ -632,7 +632,13 @@ export class TabWal extends IdBWal {
   }
 
   private async appendOnce<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
-    const tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    let tx: IDBTransaction;
+    try {
+      tx = this.db.transaction([WAL_STORE, META_STORE], "readwrite");
+    } catch {
+      // As in `commitGroup`: the connection closed, here by a `close` that waited out a recovery.
+      throw new ClosedError("database is closed");
+    }
     const done = txDone(tx);
     const tail = await readTail(tx, since);
     let decision: ReturnType<typeof decide>;

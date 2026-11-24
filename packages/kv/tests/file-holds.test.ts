@@ -7,6 +7,7 @@ import {
   __resetMemoryFsForTests,
   ingest,
 } from "../src/testing.js";
+import type { Db } from "../src/index.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { BrowserFs, findBrowserFs, findRemovableBrowserFs, openBrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
@@ -103,6 +104,71 @@ describe("run files outlive compaction while a tab reads them", () => {
     expect(dec.decode((await it.next()).value!.key)).toBe("k1");
 
     await it.return!();
+    await ingest(db);
+    expect(l0(fs)).toEqual([]);
+    await db.close();
+  });
+
+  const coldReads: [string, (db: Db) => Promise<unknown>, unknown][] = [
+    ["get", async (db) => dec.decode((await db.get(utf("k1")))!), "v1"],
+    ["getMany", async (db) => (await db.getMany([utf("k0"), utf("k2")])).map((v) => dec.decode(v!)), ["v0", "v2"]],
+    ["count", (db) => db.count(), 3],
+  ];
+
+  it.each(coldReads)("a cold %s keeps the runs it waits on until it has read them", async (_what, read, want) => {
+    const fs = new MemoryFs();
+    const { db, host } = await openWithHost(fs);
+    await threeRuns(db);
+    const inputs = l0(fs);
+    let lift = () => {};
+    let arrived = () => {};
+    let gate: Promise<void> | undefined;
+    const gated: AsyncFs = {
+      read: (path, offset, length) => fs.read(path, offset, length),
+      list: (dir) => fs.list(dir),
+      remove: (path) => fs.remove(path),
+      removeUnlessOpen: (path) => fs.removeUnlessOpen(path),
+      create: (path) => fs.create(path),
+      open: async (path) => {
+        const file = await fs.open(path);
+        return (
+          file && {
+            size: file.size,
+            read: async (offset, length) => {
+              if (gate) {
+                arrived();
+                await gate;
+              }
+              return file.read(offset, length);
+            },
+            close: () => file.close(),
+          }
+        );
+      },
+    };
+    const reader = await openHarnessDb({
+      name: NAME,
+      writerId: "r",
+      fs: gated,
+      ingest: createLocalIngestClient(host),
+      maxWalBytes: 1e12,
+    });
+    gate = new Promise((resolve) => (lift = resolve));
+    const waiting = new Promise<void>((resolve) => (arrived = resolve));
+    const got = read(reader);
+    await waiting;
+
+    await db.put(utf("k3"), utf("v3"));
+    await ingest(db);
+    await ingest(db);
+    await reader.sync();
+    await ingest(db);
+    expect(l0(fs)).toEqual(expect.arrayContaining(inputs));
+
+    gate = undefined;
+    lift();
+    expect(await got).toEqual(want);
+    await reader.close();
     await ingest(db);
     expect(l0(fs)).toEqual([]);
     await db.close();

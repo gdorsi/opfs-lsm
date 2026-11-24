@@ -31,7 +31,8 @@
  * Broken variants (build on the newest manifest, no head raise, an adopt or
  * a destroy that moves the head and not the key generator, no fallback, no
  * newer-manifest adoption, destroy files before its commit, a destroy
- * commit at the default durability, and six wrong removals or births) must
+ * commit at the default durability, a fallback to a manifest whose runs are
+ * gone, and six wrong removals or births) must
  * each fail, so the model is strong enough to see the bugs the crash suite
  * found.
  *
@@ -359,7 +360,7 @@ function sourceSync(): string[] {
   need("host/compact.ts", /await raiseGeneration\(wal, generation, manifest\);\s*return generation;/, "install removes no file");
   need("recover.ts", /export async function recordEmpty[\s\S]*?const floor = atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, meta\.head\)\), top \}\);\s*const head = await emptyWal\(wal, \{ expect: meta, \.\.\.floor, pastAppends: true \}\);/, "destroy records generation 0 past every seq the WAL or a manifest names, and past a row already there");
   need("idb/wal.ts", /async function emptyWal\([\s\S]*?durability: "strict"[\s\S]*?const head = appended \? asSeq\(Math\.max\(emptied\.head, nextSeq\(now\.head\)\)\) : emptied\.head;[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
-  need("recover.ts", /for \(const n of numbers\) \{\s*if \(n <= meta\.destroyedTop\) break;/, "rule 3 adopts no manifest from before a destroy");
+  need("recover.ts", /for \(const n of numbers\) \{\s*if \(n <= meta\.destroyedTop\) break;\s*const m = await probeManifest\(fs, n\);\s*if \(m === "corrupt"\)[^\n]*\n\s*if \(m !== "missing" && \(await isIntact\(fs, m\)\)\) return m;/, "rule 3 adopts no manifest from before a destroy, and skips one whose runs are gone");
   need("host/engine-host.ts", /await recordEmpty\(wal, fs, undefined\);[\s\S]*?await unlessHeld\(this\.name, \(\) => reclaimManifests\(fs, asGeneration\(Number\.POSITIVE_INFINITY\)\)\);\s*await this\.reclaim\(fs, wal\);/, "destroy commits, then removes the manifests and sweeps, each unless a tab holds the reclaim lock");
   need("destroy.ts", /withLock\(openLock\(name\),[\s\S]*?withLock\(compactLock\(name\),[\s\S]*?withLock\(ingestLock\(name\),[\s\S]*?const files = await findFiles\(\);\s*const wal = await openAlone\(name\);[\s\S]*?if \(!wal && !files\) return;\s*const known = await readDestroyed\(name\);\s*const floor = wal \? await recordEmpty\(wal, files, known\) : await floorOfFiles\(files!, known\);\s*if \(floor\) await recordDestroyed\(name, floor\);\s*await files\?\.removeFolder\(\);\s*if \(wal\) await deleteWal\(wal\);/, "destroyDb fences, commits empty, writes the row, removes the files, then deletes the WAL database");
   need("idb/destroyed.ts", /export async function recordDestroyed[\s\S]*?durability: "strict"[\s\S]*?Math\.max\(old\?\.head \?\? 0, floor\.head\), top: Math\.max\(old\?\.top \?\? 0, floor\.top\)/, "the row is written strict and never moves down");
@@ -401,6 +402,7 @@ function main(): void {
     ["destroy removes the files before its commit", { destroyFilesFirst: true }],
     ["destroy commits at the default durability", { destroyRelaxed: true }],
     ["recovery falls back to a manifest from before a destroy", { fallBehindDestroy: true }],
+    ["recovery falls back to a manifest whose runs are gone", { fallBackToBroken: true }],
     ["destroyDb writes no row", { removeNoRow: true }],
     ["destroyDb writes the row at the default durability", { rowRelaxed: true }],
     ["recovery ignores the row", { birthIgnoresRow: true }],

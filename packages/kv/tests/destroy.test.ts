@@ -387,13 +387,17 @@ describe("destroyDb", () => {
     await db.view(async (snap) => {
       await destroyHarnessDb(options);
       await expect(snap.get(enc.encode("k-3"))).rejects.toBeInstanceOf(ClosedError);
+      await expect(snap.rangeValues({}, (v) => v.length)).rejects.toBeInstanceOf(ClosedError);
+      await expect(snap.rangeJoin({}, (e) => e.key)).rejects.toBeInstanceOf(ClosedError);
     });
   });
 
-  it("fails a range and a count that a destroy cut off mid-read with ClosedError", async () => {
+  it("fails a range, a count and a get that a destroy cut off mid-read with ClosedError", async () => {
     const reads: [string, (db: Db) => Promise<unknown>][] = [
       ["range", (db) => keys(db)],
       ["count", (db) => db.count()],
+      ["get", (db) => db.get(enc.encode("k-3"))],
+      ["getMany", (db) => db.getMany([enc.encode("k-3"), enc.encode("k-9")])],
     ];
     for (const [what, read] of reads) {
       const folder = gatedFolder();

@@ -42,6 +42,7 @@ const schema = defineSchema({
   collections: {
     docs: collection<Doc>()
       .index("byN", "n")
+      .index("byS", "s")
       .index("byGN", ["g", "n"])
       .index("byKS", ["k", "s"])
       .index("byGS", ["g", "s"])
@@ -317,6 +318,14 @@ test("an on-demand live query shows what the same query shows over every documen
   );
   console.log(`differential: ${cases} cases passed`);
   if (process.env.TSDB_DIFF_REPORT) console.log(Object.fromEntries([...shapes].sort()));
+});
+
+test("a bound on an astral string finds the strings past it by UTF-16 unit and before it by code point", async () => {
+  const docs: Doc[] = [
+    { id: "d00", g: 0, k: false, n: null, s: "Ａ", t: "" },
+    { id: "d01", g: 0, k: false, n: null, s: "\u{1F600}", t: "" },
+  ];
+  await check(docs, [{ conds: [{ op: "gt", field: "s", value: "\u{1F600}", flip: false }], moves: [] }], [], false);
 });
 
 test("a case-sensitive like finds a Σ the text lowercases to σ", async () => {

@@ -163,10 +163,14 @@ export class KvPersistence {
     const state = Y.encodeStateAsUpdate(this.doc);
     const key = this.nextKey();
     this.stored = Math.max(1, this.stored - count + 1);
-    await this.db.batch((tx) => {
-      tx.deleteRange(prefixBound(this.prefix), { through });
-      tx.put(key, state);
-    });
+    // The batch lands whole or not at all, so a failed merge, such as a state
+    // over the 8 MiB batch limit, loses no update and is no failure to repair.
+    await this.db
+      .batch((tx) => {
+        tx.deleteRange(prefixBound(this.prefix), { through });
+        tx.put(key, state);
+      })
+      .catch(() => {});
   }
 
   private track(write: Promise<unknown>): void {

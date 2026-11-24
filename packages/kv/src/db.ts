@@ -21,7 +21,7 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
 import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
@@ -422,14 +422,13 @@ async function openStores(
       parts.rowPostMs,
     );
     heldDb = db;
-    // Before the boot, so the `unwatch` of a close during it, or after it failed, has its `watch`.
+    await db.boot(recovering);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
-    ingest.watch(name, {
+    db.watch({
       maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
       compactionMemoryBytes: compactionMemoryOf(options.compactionMemoryBytes),
       reserveBytes,
     });
-    await db.boot(recovering);
     // The host cannot flush without the module, so a page that cannot load it does not open.
     await engine;
     return db;
@@ -595,6 +594,8 @@ class DbImpl implements Db {
   private updating: Promise<unknown> = Promise.resolve();
   /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
   private beaten = false;
+  /** The host counts this handle among its watchers. An open that failed or closed before `watch` must not take another tab's place. */
+  private watched = false;
 
   constructor(
     readonly name: DbName,
@@ -995,7 +996,7 @@ class DbImpl implements Db {
     warm?: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
     // Only its turn: the handle is checked open again below.
-    await this.pressure.admit(() => {});
+    await this.pressure.admit();
     const out = await this.retrying(async () => {
       for (;;) {
         await warm?.();
@@ -1094,8 +1095,8 @@ class DbImpl implements Db {
     this.ensureOpen();
     const ops = collectBatch(build);
     if (ops.length === 0) return this.mem.appliedThrough;
-    // A close may come while the write waits its turn at a full memtable.
-    return this.pressure.admit(() => (this.ensureOpen(), this.commit(ops)));
+    // After a close that came while it waited its turn, the append rejects with ClosedError.
+    return this.pressure.admit(() => this.commit(ops));
   }
 
   /**
@@ -1195,7 +1196,7 @@ class DbImpl implements Db {
       warmed = wanted === ks ? [at, got] : undefined;
     };
     // Only its turn: the handle is checked open again below.
-    await this.pressure.admit(() => {});
+    await this.pressure.admit();
     await warm();
     this.ensureOpen();
     // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
@@ -1347,6 +1348,13 @@ class DbImpl implements Db {
     }
   }
 
+  watch(policy: WatchPolicy): void {
+    // A handle the browser closed while it loaded has already run its close.
+    if (this.closed) return;
+    this.ingestClient.watch(this.name, policy);
+    this.watched = true;
+  }
+
   /** Have the host flush the WAL, and load what it published. */
   async flush(waitForCompaction: boolean): Promise<{ generation: number }> {
     this.ensureOpen();
@@ -1387,7 +1395,7 @@ class DbImpl implements Db {
       }
       this.bus.close();
     }
-    this.ingestClient.unwatch(this.name);
+    if (this.watched) this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
     this.release(this.installed);
