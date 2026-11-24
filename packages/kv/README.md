@@ -184,7 +184,7 @@ db.range({ ...users, offset: 1, limit: 1 });
 // yields "user/2"
 ```
 
-`limit` and `offset` are integers of 0 or more. Anything else rejects with `ConstraintError`.
+`limit` and `offset` are integers of 0 or more, or `Infinity`. Anything else rejects with `ConstraintError`.
 
 ### `valueContains`
 

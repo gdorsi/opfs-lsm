@@ -92,7 +92,7 @@ export async function reconcile(
         // A manifest numbered past the row was written by a database born after it.
         const outgrown = (numbers[0] ?? GENERATION_NONE) > known.top;
         const born = outgrown ? known : atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
-        if (!(await emptyWal(wal, { expect: meta, ...born }))) return undefined;
+        if ((await emptyWal(wal, { expect: meta, ...born })) === undefined) return undefined;
         // Only after the strict birth: losing this delete leaves a row that is ignored.
         await forgetDestroyed(wal.dbName, known);
         // Read `meta` again: it records generation 0 now, and rule 1 adopts the newer database's manifest.
@@ -147,8 +147,9 @@ export async function recordEmpty(
   known: DestroyedFloor | undefined,
 ): Promise<DestroyedFloor> {
   return untilAdopted(wal, fs, async ({ meta, numbers, top }) => {
-    const emptied = atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
-    return (await emptyWal(wal, { expect: meta, ...emptied })) ? emptied : undefined;
+    const floor = atLeast(known, { head: nextSeq(await highestThrough(fs, numbers, meta.head)), top });
+    const head = await emptyWal(wal, { expect: meta, ...floor, pastAppends: true });
+    return head === undefined ? undefined : { head, top: floor.top };
   });
 }
 

@@ -1,5 +1,5 @@
 import type { Chunk, StorageAdapterInterface, StorageKey } from "@automerge/automerge-repo";
-import { prefixBound, type Db } from "@opfs-lsm/kv";
+import { ConstraintError, prefixBound, type Db } from "@opfs-lsm/kv";
 
 /**
  * kv-backed automerge storage. `db` must be an openDb handle that has resolved
@@ -45,7 +45,7 @@ export function encodeKey(key: StorageKey): Uint8Array {
     rejectLoneSurrogate(segment);
     const bytes = textEncoder.encode(segment);
     if (bytes.byteLength > MAX_SEGMENT_BYTES) {
-      throw new Error("storage key segment longer than 65535 bytes");
+      throw new ConstraintError("storage key segment longer than 65535 bytes");
     }
     const frame = new Uint8Array(2 + bytes.byteLength);
     frame[0] = bytes.byteLength >> 8;

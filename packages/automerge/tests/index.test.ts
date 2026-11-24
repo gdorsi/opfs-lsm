@@ -90,7 +90,7 @@ test("codec prefix iff and round-trip", () => {
     false,
   );
   assert.equal(bytesStartWith(encodeKey(["docX"]), encodeKey(["doc"])), false);
-  assert.throws(() => encodeKey(["y".repeat(65_536)]), Error);
+  assert.throws(() => encodeKey(["y".repeat(65_536)]), ConstraintError);
   assert.deepEqual(decodeKey(encodeKey([])), []);
   assert.deepEqual(decodeKey(encodeKey(["﻿a", "﻿"])), ["﻿a", "﻿"]);
   assert.throws(() => decodeKey(Uint8Array.of(0)), Error);

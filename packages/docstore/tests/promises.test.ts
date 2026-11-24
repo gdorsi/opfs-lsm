@@ -52,7 +52,8 @@ describe("offset after a cursor, and count with offset and limit", () => {
         { numRuns: 1500 },
       ),
     ).resolves.toBeUndefined();
-  });
+    // 1,500 cases pass vitest's 5 s on a busy machine, as under `pnpm test`, which builds the examples alongside.
+  }, 60_000);
 });
 
 describe("documented errors and drops", () => {
