@@ -1,4 +1,4 @@
-import { errorOfCode } from "../errors.js";
+import { ClosedError, errorOfCode } from "../errors.js";
 import type { ClientToHost, HostToClient, IngestClient } from "./protocol.js";
 
 /** Tab-side client over a MessagePort. */
@@ -21,8 +21,11 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
   port.addEventListener("message", listener);
   port.start?.();
 
+  let closed = false;
   const request = (msg: ClientToHost & { id: number }) =>
     new Promise<HostToClient>((resolve, reject) => {
+      // No listener is left to settle it.
+      if (closed) return reject(new ClosedError("database is closed"));
       pending.set(msg.id, { resolve, reject });
       port.postMessage(msg);
     });
@@ -52,8 +55,9 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
       return (res as Extract<HostToClient, { type: "stats-ok" }>).stats;
     },
     close() {
+      closed = true;
       port.removeEventListener("message", listener);
-      for (const [, p] of pending) p.reject(new Error("ingest client closed"));
+      for (const [, p] of pending) p.reject(new ClosedError("database is closed"));
       pending.clear();
     },
   };
