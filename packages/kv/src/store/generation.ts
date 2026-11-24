@@ -17,7 +17,7 @@ const GEN_VERSION = 5;
  * A run of the generation: what the encoder reported when it wrote the file
  * (`RunEnd`), and where the file is.
  */
-export type RunMeta = RunEnd & {
+export type RunMeta = Omit<RunEnd, "index"> & {
   /** Relative to the db root: `l<n>/<name>.sst`. The directory is the level, see levels.ts. */
   readonly path: string;
   /**

@@ -1,3 +1,4 @@
+import { sharedPrefix } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { Seq } from "../seq.js";
 import { BlockEntry, NO_PREFIX, seqIn } from "./cursor.js";
@@ -50,15 +51,59 @@ export type KeyRange = {
 };
 
 /**
+ * Where a run's blocks are and which keys each holds: all a reader needs to
+ * pick the block of a key. Flat arrays, with no object per block. Block i
+ * holds keys in `[sep(i), sep(i + 1))`.
+ */
+export type BlockIndex = {
+  /** `sep(i)` is `sepBytes[sepEnd[i - 1] ?? 0, sepEnd[i])`: the shortest prefix of block i's first key above block i-1's last key. */
+  readonly sepBytes: Uint8Array;
+  readonly sepEnd: Uint32Array;
+  /** File offset of block i; `blockStart[blocks]` is the end of the data, where the Bloom filter starts. */
+  readonly blockStart: Uint32Array;
+};
+
+/**
  * What an encoder reports when a run ends, and what the manifest records, so
- * nobody reads a run back for its size or its keys.
+ * nobody reads a run back for its size, its keys or its blocks.
  */
 export type RunEnd = {
   /** Bytes of the whole run file. */
   readonly bytes: number;
   /** Undefined for an empty run, which has no keys. */
   readonly range?: KeyRange;
+  readonly index: BlockIndex;
 };
+
+/**
+ * The `BlockIndex` of a run's index rows, as its encoder reports them (per
+ * block: u32 len | first key, u32 len | last key, u32 offset, u32 length).
+ * Blocks sit back to back from offset 0, so a row's offset is not read.
+ */
+export function packIndex(rows: Uint8Array): BlockIndex {
+  const view = new DataView(rows.buffer, rows.byteOffset, rows.byteLength);
+  const sepBytes = new Uint8Array(rows.byteLength);
+  const sepEnd: number[] = [];
+  const blockStart = [0];
+  let sepLen = 0;
+  let o = 0;
+  let prevLast: Uint8Array | undefined;
+  const key = () => {
+    const len = view.getUint32(o, true);
+    o += 4 + len;
+    return rows.subarray(o - len, o);
+  };
+  while (o < rows.byteLength) {
+    const first = key();
+    const sep = prevLast ? first.subarray(0, sharedPrefix(prevLast, first) + 1) : first;
+    sepBytes.set(sep, sepLen);
+    sepEnd.push((sepLen += sep.byteLength));
+    prevLast = key();
+    blockStart.push(blockStart[sepEnd.length - 1]! + view.getUint32(o + 4, true));
+    o += 8;
+  }
+  return { sepBytes: sepBytes.slice(0, sepLen), sepEnd: Uint32Array.from(sepEnd), blockStart: Uint32Array.from(blockStart) };
+}
 
 /** A run's bytes and its `RunEnd`. */
 export type EncodedRun = {

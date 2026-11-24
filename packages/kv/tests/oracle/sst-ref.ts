@@ -8,6 +8,7 @@ import {
   RecordWalker,
   SST_FOOTER_BYTES,
   type BlockBytes,
+  type BlockIndex,
   type EncodedRun,
   type KeyRange,
   type SstEntry,
@@ -40,6 +41,18 @@ type BlockIndexEntry = {
   offset: number;
   length: number;
 };
+
+/** What a reader keeps of the index: each block's start, and the shortest prefix of its first key above the last key before it. */
+function blockIndexOf(index: readonly BlockIndexEntry[]): BlockIndex {
+  const seps = index.map((ix, i) => (i === 0 ? ix.firstKey : ix.firstKey.subarray(0, commonPrefix(index[i - 1]!.lastKey, ix.firstKey) + 1)));
+  const sepEnd = new Uint32Array(index.length);
+  let total = 0;
+  seps.forEach((sep, i) => (sepEnd[i] = total += sep.byteLength));
+  const sepBytes = new Uint8Array(total);
+  seps.forEach((sep, i) => sepBytes.set(sep, sepEnd[i]! - sep.byteLength));
+  const last = index[index.length - 1];
+  return { sepBytes, sepEnd, blockStart: Uint32Array.from([...index.map((ix) => ix.offset), last ? last.offset + last.length : 0]) };
+}
 
 /**
  * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
@@ -256,6 +269,7 @@ export function encodeRunRef(
     end: {
       bytes: out.byteLength,
       ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
+      index: blockIndexOf(index),
     },
   };
 }
@@ -382,6 +396,12 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
     throw new CorruptDatabaseError("sst entry count mismatch");
   }
   return out;
+}
+
+/** The block index of a whole run file, read from its tail. Encoders report the same index in `RunEnd`. */
+export function sstBlockIndex(buf: Uint8Array): BlockIndex {
+  const meta = parseFooter(buf);
+  return blockIndexOf(readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount));
 }
 
 /**

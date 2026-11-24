@@ -41,7 +41,7 @@ const MUTANTS: readonly Mutant[] = [
   { name: "merge_close leaks the session", file: "index.ts", from: "    s.free();\n    session = null;", to: "    session = null;" },
   { name: "the sort buffer is freed before the sort", file: "sst.ts", from: "    mergeSort(input, v, buf, n);\n    heap.free(buf);", to: "    heap.free(buf);\n    mergeSort(input, v, buf, n);" },
   { name: "the sort buffer is 4 bytes short", file: "sst.ts", from: "const buf = heap.alloc(n << 2);", to: "const buf = heap.alloc((n << 2) - 4);" },
-  { name: "the run's keys are read after the run end is freed", file: "sst.ts", from: "  end.appendKeys(out);\n  end.free();", to: "  end.free();\n  end.appendKeys(out);" },
+  { name: "the run's keys are read after the run end is freed", file: "sst.ts", from: "  end.appendRest(out);\n  end.free();", to: "  end.free();\n  end.appendRest(out);" },
   { name: "the encode order is freed twice", file: "sst.ts", from: "  order.free();\n  return 0;", to: "  order.free();\n  order.free();\n  return 0;" },
   { name: "the Bloom filter is not zeroed", file: "bloom.ts", from: "  memory.fill(bits, 0, len);\n", to: "" },
   { name: "free merges a block with the wrong neighbour", file: "alloc.ts", from: "if (next && block + size == next) {", to: "if (next && block + size == next + 8) {" },

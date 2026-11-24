@@ -9,7 +9,7 @@ import {
 import { CorruptDatabaseError } from "../src/errors.js";
 import { crc32 } from "../src/store/crc32.js";
 import type { EncodedRun, SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeRunRef as encodeRunTs, sstKeyRange } from "./oracle/sst-ref.js";
+import { decodeSst, encodeRunRef as encodeRunTs, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
 import { mergeRuns, readerOfBytes, runGet } from "./runs.js";
 
 const enc = new TextEncoder();
@@ -43,6 +43,7 @@ describe("engine WASM", () => {
     const { runs } = await mergeRuns([[await half(0)], [await half(30_000)]]);
     expect(runs).toHaveLength(1);
     expect(decodeSst(runs[0]!.body)).toHaveLength(60_000);
+    expectReportMatchesFile(runs[0]!);
     const reader = readerOfBytes(runs[0]!.body);
     expect((await runGet(reader, utf("k00059999")))?.kind).toBe("put");
   });
@@ -69,6 +70,7 @@ describe("engine WASM", () => {
 function expectReportMatchesFile(run: EncodedRun): void {
   expect(run.end.bytes).toBe(run.body.byteLength);
   expect(run.end.range).toEqual(sstKeyRange(run.body));
+  expect(run.end.index).toEqual(sstBlockIndex(run.body));
 }
 
 describe("the end of a run", () => {
@@ -85,7 +87,7 @@ describe("the end of a run", () => {
     ["a long shared prefix", Array.from({ length: 300 }, (_, i) => put(`${"p".repeat(200)}${String(i).padStart(4, "0")}`))],
   ];
 
-  it.each(shapes)("a run of %s reports the size and key range the file holds, from wasm and from TypeScript", async (_name, entries) => {
+  it.each(shapes)("a run of %s reports the size, key range and block index the file holds, from wasm and from TypeScript", async (_name, entries) => {
     await ensureEngine();
     for (const run of [await encodeRun(entries), encodeRunTs(entries)]) {
       expectReportMatchesFile(run);

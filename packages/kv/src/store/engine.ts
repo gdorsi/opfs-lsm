@@ -3,7 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
+import { packIndex, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, unavailable } from "../errors.js";
@@ -305,7 +305,7 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
 
 /**
  * A run record (packages/kv/engine/abi.md). The body is a view into `bytes`. The
- * keys are copies, so the manifest does not keep `bytes` alive.
+ * keys and the index are copies, so the manifest does not keep `bytes` alive.
  */
 function readRun(bytes: Uint8Array): EncodedRun {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -313,16 +313,22 @@ function readRun(bytes: Uint8Array): EncodedRun {
   return { body: bytes.subarray(RUN_HEAD_BYTES, keys), end: readEnd(bytes, view, keys) };
 }
 
-/** The `RunEnd` of the run head that `bytes` starts with, whose two keys start at `keys`. Copies the keys. */
+/**
+ * The `RunEnd` of the run head that `bytes` starts with, whose two keys start
+ * at `keys` and whose index rows follow them to the end of `bytes`. Copies
+ * the keys and packs the rows.
+ */
 function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   const entries = view.getUint32(0, true);
   const size = view.getUint32(4, true);
   const firstLen = view.getUint32(8, true);
-  const lastLen = view.getUint32(12, true);
-  if (entries === 0) return { bytes: size };
+  const rows = keys + firstLen + view.getUint32(12, true);
+  const index = packIndex(bytes.subarray(rows));
+  if (entries === 0) return { bytes: size, index };
   return {
     bytes: size,
-    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, keys + firstLen + lastLen) },
+    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, rows) },
+    index,
   };
 }
 
@@ -520,8 +526,8 @@ export function __restartEngineForTests(): void {
 }
 
 /**
- * A run of `entries` with what the encoder reports at its end: the size and
- * the key range the manifest records.
+ * A run of `entries` with what the encoder reports at its end: the size, the
+ * key range and the block index the manifest records.
  */
 export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRun> {
   const wasm = await loaded();
