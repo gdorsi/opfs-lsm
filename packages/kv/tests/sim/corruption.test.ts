@@ -380,6 +380,22 @@ describe("recovery never turns corruption into data loss", () => {
     }
   }
 
+  /**
+   * A compaction's power-loss shape with the old manifest kept: the
+   * recorded manifest lost the run at `lost`, and a newer manifest with the
+   * same `through` lists one run that merges all of the recorded ones.
+   */
+  async function standIn(f: Fixture, lost: string): Promise<void> {
+    const gen = (await walMeta(f.name)).generation!;
+    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
+    const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
+    const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
+    const path = `l1/c${gen + 1}.0.sst`;
+    await put(f.fs, path, merged.body);
+    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end, marksThrough: old.through }] }));
+    await f.fs.remove(lost);
+  }
+
   it("R1: a missing run of the recorded generation fails open as corrupt", async () => {
     const r = await run("L0 run: removed", standard, async (f) => f.fs.remove(await l0(f)));
     expect(crashes(r)).toEqual([]);
@@ -399,22 +415,16 @@ describe("recovery never turns corruption into data loss", () => {
     expect(await snapshot(f)).toEqual(before);
   });
 
-  it("R1: a manifest that holds every ingested seq stands in, and nothing is lost", async () => {
-    // A compaction's power-loss shape with the old manifest kept: the
-    // recorded manifest lost a run, and a newer manifest with the same
-    // `through` lists one run that merges all of the recorded ones.
+  it.each([
+    ["L0 run", l0],
+    ["L1 run", l1],
+  ])("R1: a manifest that holds every ingested seq stands in for a missing %s, and nothing is lost", async (which, gone) => {
     const f = await standard();
     const gen = (await walMeta(f.name)).generation!;
-    const old = decodeGeneration((await f.fs.read(await recorded(f), 0, Number.POSITIVE_INFINITY))!);
-    const bodies = await Promise.all(old.runs.map(async (r) => (await f.fs.read(r.path, 0, Number.POSITIVE_INFINITY))!));
-    const merged = (await mergeRuns(bodies.map((b) => [b]), { dropTombstones: true })).runs[0]!;
-    const path = `l1/c${gen + 1}.0.sst`;
-    await put(f.fs, path, merged.body);
-    await put(f.fs, `m/${String(gen + 1).padStart(16, "0")}.mft`, encodeGeneration({ ...old, generation: gen + 1, runs: [{ path, ...merged.end, marksThrough: old.through }] }));
-    await f.fs.remove(await l0(f));
+    await standIn(f, await gone(f));
     expect(await survivors(f)).toBe(f.state.size);
     expect((await walMeta(f.name)).generation).toBe(gen + 1);
-    expect(await run("L0 run: removed, a merged manifest stands in", async () => f, async () => undefined)).toEqual(HEALTHY);
+    expect(await run(`${which}: removed, a merged manifest stands in`, async () => f, async () => undefined)).toEqual(HEALTHY);
   });
 
   it("R1: a stand-in that misses an ingested seq is not taken", async () => {
