@@ -1,8 +1,10 @@
 /**
  * Random histories of writes, clears, reads, ingests, reopens and schema
  * upgrades on one database, checked against an in-memory map of the
- * documents. An upgrade adds or removes a unique multi index, and the handle
- * on the version before it stays open and keeps writing. A second kv handle,
+ * documents. An upgrade declares any subset of the indexes, so it adds,
+ * keeps, rebuilds and removes indexes of every kind, while a handle on an
+ * older version may write during its backfills. The handle on the version
+ * before it stays open and keeps writing. A second kv handle,
  * like a tab that hears of the others' writes only when it reads, writes and
  * reads too. A reader that follows the change feed from a snapshot must end
  * up with the same map.
@@ -13,12 +15,12 @@
 import type { Db } from "@opfs-lsm/kv";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { defineSchema, openDocStore, type DocStore } from "../src/index.js";
+import { collection, defineSchema, openDocStore, type CollectionDecl, type DocStore } from "../src/index.js";
 import type { QueryInput, Scalar } from "../src/schema.js";
 import { ARITY, MODEL, UNIQUE_TAGS, checkQuery, queryArbOn, schema, textArb, withUniqueTags, type Doc } from "./docs.js";
 import { mirror } from "./mirror.js";
-import { codeOf, docstoreKeys, freshName, openKv, storedCatalog } from "./harness.js";
-import { stored, storedRows } from "./oracle.js";
+import { codeOf, docstoreKeys, freshName, keysUnder, openKv, storedCatalog, storedPrefix } from "./harness.js";
+import { groupCounts, stored, storedRows, type ModelIndex } from "./oracle.js";
 import { denseScalarArb } from "./order.js";
 import { ingest } from "@opfs-lsm/kv/testing";
 
@@ -28,7 +30,17 @@ const replay = env["DOCSTORE_MODEL_SEED"]
   ? { seed: Number(env["DOCSTORE_MODEL_SEED"]), ...(env["DOCSTORE_MODEL_PATH"] ? { path: env["DOCSTORE_MODEL_PATH"] } : {}) }
   : {};
 
-/** `previous`: through the handle on the version before the last upgrade, when one is open. `tab`: through the second kv handle. */
+/**
+ * A write during an upgrade, made `wait` ms after the one before it. It leaves
+ * `u` and `ut` alone, so whether a unique backfill fails does not depend on
+ * when the write lands.
+ */
+type Patch = Pick<Doc, "id" | "a" | "b" | "tags" | "t"> & { readonly wait: number };
+
+/**
+ * `previous`: through the handle on the version before the last upgrade, when one is open. `tab`: through the second kv handle.
+ * An upgrade declares the indexes `names`, while the handle the flags pick writes `during`.
+ */
 type Cmd = (
   | { readonly kind: "putMany"; readonly docs: readonly Doc[] }
   | { readonly kind: "modify"; readonly id: string; readonly patch: Partial<Doc> }
@@ -39,21 +51,43 @@ type Cmd = (
   | { readonly kind: "getMany"; readonly ids: readonly string[] }
   | { readonly kind: "ingest" }
   | { readonly kind: "reopen"; readonly idle: boolean }
-  | { readonly kind: "upgrade"; readonly utags: boolean }
+  | { readonly kind: "upgrade"; readonly names: readonly string[]; readonly during: readonly Patch[] }
 ) & { readonly previous: boolean; readonly tab: boolean };
 
-/** The model's schema at `version`, with the unique multi index or without it. Typed as `schema`: queries name the index at run time. */
-const schemaAt = (version: number, utags: boolean) =>
-  defineSchema({ version, collections: { docs: utags ? withUniqueTags : schema.collections.docs } }) as unknown as typeof schema;
+type IndexDecl = {
+  readonly by: string | readonly string[];
+  readonly unique?: true;
+  readonly text?: string;
+  readonly include?: readonly string[];
+  readonly count?: true;
+};
+const DECLS = withUniqueTags.indexes as unknown as Record<string, IndexDecl>;
+const NAMES = Object.keys(DECLS);
+const MODELS: Record<string, ModelIndex> = { ...MODEL, [UNIQUE_TAGS.name]: UNIQUE_TAGS.model };
+
+/** The collection with the indexes `names`, declared through `collection` as an app declares it. */
+function declare(names: readonly string[]): CollectionDecl<Doc> {
+  type Loose = { readonly [K in "index" | "unique" | "text" | "count"]: (...args: unknown[]) => Loose };
+  let d = collection<Doc>() as unknown as Loose;
+  for (const n of names) {
+    const { by, unique, text, include, count } = DECLS[n]!;
+    d = count ? d.count(n, by) : unique ? d.unique(n, by) : text ? d.text(n, by, text) : include ? d.index(n, by, { include }) : d.index(n, by);
+  }
+  return d as unknown as CollectionDecl<Doc>;
+}
+
+/** The model's schema at `version` with the indexes `names`. Typed as `schema`: queries name the index at run time. */
+const schemaAt = (version: number, names: readonly string[]) =>
+  defineSchema({ version, collections: { docs: declare(names) } }) as unknown as typeof schema;
 type Store = DocStore<typeof schema>;
 
-/** ready: declared and built. failed: declared, and its backfill met two documents sharing an element. */
-type UniqueTags = "absent" | "ready" | "failed";
+/** An index of the stored catalog. failed: its backfill met two documents sharing a unique value. */
+type IndexState = "ready" | "failed";
 
 /** What one slot of a `modifyMany` call does to its document. */
 type Slot = { readonly id: string; readonly act: "set" | "delete" | "leave"; readonly patch: Partial<Doc> };
 
-const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "\ufeffa", "😀", "z");
+const ids = fc.constantFrom("a", "aa", "ab", "b", "\u0000", "a\u0000", "﻿a", "😀", "z");
 const uArb = fc.option(fc.constantFrom<Scalar>(null, true, 1, -0, "x", "y"), { nil: undefined });
 const tagArb = fc.constantFrom<Scalar>(null, true, 1, "a", "b", "ab");
 const fields = {
@@ -65,6 +99,10 @@ const fields = {
   ut: fc.option(fc.array(tagArb, { maxLength: 3 }), { nil: undefined }),
 };
 const docArb: fc.Arbitrary<Doc> = fc.record({ id: ids, ...fields }, { requiredKeys: ["id"] });
+const patchArb: fc.Arbitrary<Patch> = fc.record(
+  { id: ids, a: fields.a, b: fields.b, tags: fields.tags, t: fields.t, wait: fc.integer({ min: 0, max: 3 }) },
+  { requiredKeys: ["id", "wait"] },
+);
 
 const opArb = fc.oneof(
   { weight: 6, arbitrary: fc.uniqueArray(docArb, { selector: (d) => d.id, minLength: 1, maxLength: 4 }).map((docs) => ({ kind: "putMany" as const, docs })) },
@@ -89,16 +127,24 @@ const opArb = fc.oneof(
   { weight: 1, arbitrary: fc.array(ids, { maxLength: 3 }).map((ids) => ({ kind: "getMany" as const, ids })) },
   { weight: 1, arbitrary: fc.constant({ kind: "ingest" as const }) },
   { weight: 1, arbitrary: fc.boolean().map((idle) => ({ kind: "reopen" as const, idle })) },
-  { weight: 2, arbitrary: fc.boolean().map((utags) => ({ kind: "upgrade" as const, utags })) },
+  {
+    weight: 2,
+    arbitrary: fc
+      .record({
+        names: fc.subarray(NAMES),
+        during: fc.oneof(fc.constant([]), fc.uniqueArray(patchArb, { selector: (p) => p.id, minLength: 1, maxLength: 4 })),
+      })
+      .map((u) => ({ kind: "upgrade" as const, ...u })),
+  },
 );
 const cmdArb: fc.Arbitrary<Cmd> = fc.tuple(opArb, fc.boolean(), fc.boolean()).map(([op, previous, tab]) => ({ ...op, previous, tab }));
 
-/** Whether two documents share `u`, or, when `utags` counts, an element of `ut`. */
-function sharesUniqueIn(docs: Iterable<Doc>, utags: boolean): boolean {
+/** Whether two documents share `u` while `uniq` counts, or an element of `ut` while `utags` counts. */
+function sharesUniqueIn(docs: Iterable<Doc>, unique: ReadonlySet<string>): boolean {
   const seen = new Set<string>();
   for (const d of docs) {
-    const values = d.u === undefined ? [] : [`u ${JSON.stringify(d.u)}`];
-    if (utags && d.ut !== undefined) {
+    const values = unique.has("uniq") && d.u !== undefined ? [`u ${JSON.stringify(d.u)}`] : [];
+    if (unique.has(UNIQUE_TAGS.name) && d.ut !== undefined) {
       for (const t of new Set(d.ut)) values.push(`ut ${JSON.stringify(t)}`);
     }
     for (const k of values) {
@@ -112,24 +158,33 @@ function sharesUniqueIn(docs: Iterable<Doc>, utags: boolean): boolean {
 /** `declared`: the first schema already declares the unique multi index. */
 async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
   const name = freshName();
+  const first = declared ? NAMES : NAMES.filter((n) => n !== UNIQUE_TAGS.name);
   let kv: Db = await openKv(name);
   let version = 1;
-  let utags: UniqueTags = declared ? "ready" : "absent";
-  let store: Store = await openDocStore(kv, schemaAt(version, declared));
+  /** The indexes of the stored catalog. */
+  let catalog = new Map<string, IndexState>(first.map((n) => [n, "ready"]));
+  /** For each count index of the catalog, its groups when it was added, or undefined when writes landed during its build. */
+  let bases = new Map<string, ReadonlyMap<string, number> | undefined>(first.map((n) => [n, new Map()]));
+  let store: Store = await openDocStore(kv, schemaAt(version, first));
+  let storeNames: readonly string[] = first;
   let tabKv: Db = await openKv(name);
-  let tab: Store = await openDocStore(tabKv, schemaAt(version, declared));
+  let tab: Store = await openDocStore(tabKv, schemaAt(version, first));
+  let tabNames: readonly string[] = first;
   let previous: Store | undefined;
+  let previousNames: readonly string[] = first;
   let model = new Map<string, Doc>();
   const c = () => store.collection("docs");
   let reader = mirror(c());
   try {
     for (const cmd of cmds) {
-      const sharesUnique = (docs: Iterable<Doc>) => sharesUniqueIn(docs, utags === "ready");
+      const unique = new Set([...catalog].flatMap(([n, s]) => (s === "ready" && DECLS[n]!.unique ? [n] : [])));
+      const sharesUnique = (docs: Iterable<Doc>) => sharesUniqueIn(docs, unique);
       if (cmd.kind === "query" || cmd.kind === "getMany") {
         await kv.sync();
         await tabKv.sync();
       }
       const writer = cmd.tab ? tab : cmd.previous && previous ? previous : store;
+      const writerNames = cmd.tab ? tabNames : cmd.previous && previous ? previousNames : storeNames;
       const w = () => writer.collection("docs");
       if (cmd.tab && cmd.kind === "ingest") {
         await ingest(tabKv);
@@ -139,7 +194,8 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
         await tab.whenIdle();
         await tabKv.close();
         tabKv = await openKv(name);
-        tab = await openDocStore(tabKv, schemaAt(version, utags !== "absent"));
+        tab = await openDocStore(tabKv, schemaAt(version, storeNames));
+        tabNames = storeNames;
         continue;
       }
       switch (cmd.kind) {
@@ -206,18 +262,16 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
         case "clear":
           await w().clear();
           model = new Map();
+          bases = new Map([...bases.keys()].map((n) => [n, new Map()]));
           break;
         case "query": {
           const docs = [...model.values()];
-          if (cmd.index !== UNIQUE_TAGS.name) {
-            await checkQuery(w(), docs, cmd.index, cmd.q, cmd.page);
-            await w().view((snap) => checkQuery(snap, docs, cmd.index, cmd.q, cmd.page));
-          } else if (utags === "ready") {
-            const indexes = { [UNIQUE_TAGS.name]: UNIQUE_TAGS.model };
-            await checkQuery(c(), docs, cmd.index, cmd.q, cmd.page, indexes);
-            await c().view((snap) => checkQuery(snap, docs, cmd.index, cmd.q, cmd.page, indexes));
+          const state = cmd.index === undefined ? "ready" : writerNames.includes(cmd.index) ? catalog.get(cmd.index) : undefined;
+          if (state === "ready") {
+            await checkQuery(w(), docs, cmd.index, cmd.q, cmd.page, MODELS);
+            await w().view((snap) => checkQuery(snap, docs, cmd.index, cmd.q, cmd.page, MODELS));
           } else {
-            expect(await codeOf(c().queryIds(cmd.q as never))).toBe(utags === "failed" ? "index-failed" : "schema");
+            expect(await codeOf(w().queryIds(cmd.q as never))).toBe(state === "failed" ? "index-failed" : "schema");
           }
           break;
         }
@@ -232,16 +286,44 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
           reader.stop();
           await kv.close();
           kv = await openKv(name);
-          store = await openDocStore(kv, schemaAt(version, utags !== "absent"));
+          store = await openDocStore(kv, schemaAt(version, storeNames));
           previous = undefined;
           reader = mirror(c());
           break;
-        case "upgrade":
+        case "upgrade": {
+          const built = cmd.names.filter((n) => catalog.get(n) !== "ready");
+          const failing = built.filter((n) => DECLS[n]!.unique && sharesUniqueIn(model.values(), new Set([n])));
+          const added = [...model.values()];
+          const opening = openDocStore(kv, schemaAt(version + 1, cmd.names));
+          const writes = (async () => {
+            for (const { wait, ...patch } of cmd.during) {
+              await new Promise((r) => setTimeout(r, wait));
+              const doc = stored({ ...model.get(patch.id), ...patch });
+              try {
+                await w().putMany([doc]);
+                model.set(doc.id, doc);
+              } catch (err) {
+                // A write while a unique index builds over a value two documents share may meet the owner the backfill gave that value.
+                if (failing.length === 0 || (err as { code?: unknown }).code !== "unique") throw err;
+              }
+            }
+          })();
+          const [opened, wrote] = await Promise.allSettled([opening, writes]);
+          if (opened.status === "rejected") throw opened.reason;
+          if (wrote.status === "rejected") throw wrote.reason;
+          catalog = new Map(cmd.names.map((n) => [n, failing.includes(n) ? "failed" : "ready"]));
+          bases = new Map(
+            cmd.names
+              .filter((n) => DECLS[n]!.count)
+              .map((n) => [n, built.includes(n) ? (cmd.during.length > 0 ? undefined : groupCounts(added, MODELS[n]!)) : bases.get(n)]),
+          );
+          version++;
           previous = store;
-          store = await openDocStore(kv, schemaAt(++version, cmd.utags));
-          if (!cmd.utags) utags = "absent";
-          else if (utags !== "ready") utags = sharesUniqueIn(model.values(), true) ? "failed" : "ready";
+          previousNames = storeNames;
+          store = opened.value;
+          storeNames = cmd.names;
           break;
+        }
       }
     }
     await Promise.all([store.whenIdle(), previous?.whenIdle(), tab.whenIdle()]);
@@ -249,9 +331,17 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
     await reader.reaches(model);
     await Promise.all([store.whenIdle(), previous?.whenIdle()]);
     const docs = [...model.values()];
-    const indexes = utags === "ready" ? [...Object.values(MODEL), UNIQUE_TAGS.model] : Object.values(MODEL);
-    const entries = indexes.reduce((n, ix) => n + storedRows(docs, ix), 0);
-    expect((await storedCatalog(kv)).dropped).toEqual([]);
+    const kept = await storedCatalog(kv);
+    expect(kept.dropped).toEqual([]);
+    const states = Object.entries(kept.collections["docs"]!.indexes).map(([n, i]) => [n, i.state.kind]);
+    expect(Object.fromEntries(states)).toEqual(Object.fromEntries(catalog));
+    let entries = 0;
+    for (const [n, state] of catalog) {
+      const have = await keysUnder(kv, await storedPrefix(kv, "docs", n));
+      const base = bases.get(n);
+      if (!DECLS[n]!.count || base) expect([n, have]).toEqual([n, state === "failed" ? 0 : storedRows(docs, MODELS[n]!, base)]);
+      entries += have;
+    }
     expect((await docstoreKeys(kv)).length).toBe(1 + docs.length + entries);
   } finally {
     await Promise.all([store.whenIdle(), previous?.whenIdle(), tab.whenIdle()]).catch(() => undefined);
@@ -262,10 +352,10 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
 
 describe("docstore against an in-memory model", () => {
   it(
-    "agrees on every read, and leaves exactly the catalog, the rows, their entries and one row per counted group in kv",
+    "agrees on every read, and leaves exactly the catalog, the rows, their entries and the rows of each counted group in kv",
     async () => {
       await expect(
-        fc.assert(fc.asyncProperty(fc.boolean(), fc.array(cmdArb, { maxLength: 40 }), run), { numRuns: RUNS, ...replay }),
+        fc.assert(fc.asyncProperty(fc.boolean(), fc.array(cmdArb, { maxLength: 40, size: "max" }), run), { numRuns: RUNS, ...replay }),
       ).resolves.toBeUndefined();
     },
     Math.max(60_000, RUNS * 300),
