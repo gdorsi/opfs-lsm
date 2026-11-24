@@ -51,7 +51,7 @@ export type BatchOp =
 const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function checkDbName(name: string): DbName {
-  if (!NAME_RE.test(name)) {
+  if (typeof name !== "string" || !NAME_RE.test(name)) {
     throw new ConstraintError(
       `database name must match ${NAME_RE}: got ${JSON.stringify(name)}`,
     );

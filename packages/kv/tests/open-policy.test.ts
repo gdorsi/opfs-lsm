@@ -123,3 +123,58 @@ describe("openDb storage policy", () => {
     await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
   });
 });
+
+const insecure = (message: string) => new DOMException(message, "SecurityError");
+
+const failure = (opening: Promise<unknown>) =>
+  opening.then(
+    () => undefined,
+    (err: unknown) => err,
+  );
+
+describe("openDb where an API it needs is there and fails", () => {
+  it("rejects with StorageUnavailableError when navigator.storage.getDirectory rejects, as in a Firefox private window", async () => {
+    const cause = insecure("Security error when calling GetDirectory");
+    installCaps(() => Promise.reject(cause));
+
+    const failed = await failure(openDb({ name: NAME }));
+
+    expect(failed).toBeInstanceOf(StorageUnavailableError);
+    expect((failed as StorageUnavailableError).cause).toBe(cause);
+  });
+
+  it("rejects with StorageUnavailableError when new SharedWorker() throws, as on a page of an opaque origin", async () => {
+    const cause = insecure("The operation is insecure.");
+    putGlobal(
+      "SharedWorker",
+      class {
+        constructor() {
+          throw cause;
+        }
+      },
+    );
+    const folder = { getDirectoryHandle: async () => folder };
+    putGlobal("navigator", { storage: { getDirectory: async () => folder } });
+
+    const failed = await failure(openDb({ name: NAME }));
+
+    expect(failed).toBeInstanceOf(StorageUnavailableError);
+    expect((failed as StorageUnavailableError).cause).toBe(cause);
+  });
+
+  it("rejects with StorageUnavailableError when indexedDB.open() throws, as on a page of an opaque origin", async () => {
+    const cause = insecure("The operation is insecure.");
+    const real = indexedDB.open;
+    indexedDB.open = () => {
+      throw cause;
+    };
+    try {
+      const failed = await failure(openHarnessDb({ name: NAME, forceMemory: true }));
+
+      expect(failed).toBeInstanceOf(StorageUnavailableError);
+      expect((failed as StorageUnavailableError).cause).toBe(cause);
+    } finally {
+      indexedDB.open = real;
+    }
+  });
+});

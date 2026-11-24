@@ -18,6 +18,7 @@ import {
   ConstraintError,
   CorruptDatabaseError,
   StorageUnavailableError,
+  unavailable,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
@@ -369,7 +370,12 @@ export async function openOn(
   const caps = memtableCaps(options.memtableBytes);
   const connect = prepare();
   // Held until the open resolves, so `destroyDb` never meets a half-done open (design.md, "Removing").
-  return withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, connect(name)), "shared");
+  try {
+    return await withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, connect(name)), "shared");
+  } catch (cause) {
+    // What is left raw is a browser API that is there and refused: OPFS, the SharedWorker or IndexedDB.
+    throw cause instanceof DOMException ? unavailable("the browser's storage", cause) : cause;
+  }
 }
 
 async function openStores(

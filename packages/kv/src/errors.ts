@@ -52,6 +52,12 @@ export class StorageUnavailableError extends OpfsLsmError {
   }
 }
 
+/** `StorageUnavailableError` for `what`, which the browser has and which failed with `cause`. */
+export function unavailable(what: string, cause: unknown): StorageUnavailableError {
+  const detail = cause instanceof Error ? ` (${cause.name}: ${cause.message})` : "";
+  return new StorageUnavailableError(`${what} failed${detail}`, { cause });
+}
+
 export class StorageFullError extends OpfsLsmError {
   constructor(message: string, options?: ErrorOptions) {
     super("quota", message, options);

@@ -548,8 +548,8 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * An append can carry no ops: the row of an `update` that took another seq than its header names.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them, or because a repair recorded another generation. A listener reads again.
-* `closed` is the last event. Its `reason` is `"destroyed"` when the handle's WAL database was
-  asked to close: by `destroyDb`, or by the browser or DevTools deleting it.
+* `closed` is the last event. Its `reason` is `"destroyed"` when `destroyDb`, the browser or
+  DevTools deleted the handle's WAL database, or the browser closed its connection by force.
 
 ## Recovery
 

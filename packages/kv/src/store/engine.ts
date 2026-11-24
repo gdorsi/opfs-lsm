@@ -6,7 +6,7 @@
 import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
-import { CorruptDatabaseError, StorageUnavailableError } from "../errors.js";
+import { CorruptDatabaseError, unavailable } from "../errors.js";
 
 /** The module could not allocate the memory an operation needed. */
 export class EngineOutOfMemoryError extends Error {
@@ -397,8 +397,7 @@ export function importEngineWith(imports: () => WebAssembly.Imports): void {
 function loadEngine(): Promise<void> {
   initOnce ??= loadWasm().then(setEngine, (cause: unknown) => {
     initOnce = undefined;
-    const detail = cause instanceof Error ? ` (${cause.message})` : "";
-    throw new StorageUnavailableError(`the wasm engine failed to load${detail}`, { cause });
+    throw unavailable("the wasm engine", cause);
   });
   return initOnce;
 }
