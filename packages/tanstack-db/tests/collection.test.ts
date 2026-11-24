@@ -277,6 +277,8 @@ test("an own insert during the first load stays visible until the load confirms 
 
   const tx = c.insert({ id: "mine", title: "early" });
   await written.promise;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(c.has("mine"), true);
   gate.open();
   await tx.when("settled");
 
