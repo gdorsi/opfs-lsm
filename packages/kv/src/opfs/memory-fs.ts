@@ -40,6 +40,9 @@ export class MemoryFs implements RemovableFs {
     return {
       size: file.byteLength,
       read: async (offset, length) => {
+        if (this.published.get(path) !== file) {
+          throw new DOMException(`${path} was removed`, "NotFoundError");
+        }
         if (offset + length > file.byteLength) {
           throw new CorruptDatabaseError(`short read: ${path}`);
         }
