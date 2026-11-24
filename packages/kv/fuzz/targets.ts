@@ -13,7 +13,8 @@
  *   before compacting; `decodeGeneration`): changed bytes must throw
  *   `CorruptDatabaseError`, never decode.
  * - Where it does not (a tab's `SstReader`, block scans, WAL rows): any
- *   answer is allowed, within the rules above.
+ *   answer is allowed, within the rules above. A tab reads a run file with
+ *   what its manifest entry records, which the manifest's CRC covers.
  */
 import { compareBytes } from "../src/bytes.js";
 import { CommitError, CorruptDatabaseError } from "../src/errors.js";
@@ -23,9 +24,9 @@ import { Miss, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "..
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { SST_FOOTER_BYTES, type KeyRange, type SstEntry } from "../src/store/sst.js";
+import { SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../src/store/sst.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
-import { ownedEntry } from "../tests/runs.js";
+import { loadsDone, ownedEntry } from "../tests/runs.js";
 
 export class RuleBroken extends Error {
   constructor(message: string) {
@@ -182,13 +183,16 @@ async function drainBounded(what: string, cursor: LayerCursor, max: number): Pro
 export type ReadProbe = {
   /** Keys to get. */
   readonly keys: readonly Uint8Array[];
-  /** What the manifest would record for the run; undefined reads unrouted. */
-  readonly range?: KeyRange | undefined;
+  /** What the manifest records for the run: the size, key range and block index its writer reported. */
+  readonly run: RunEnd;
   /** One pattern for `scanContains`. */
   readonly pattern: Uint8Array;
 };
 
 export type ReadResult = {
+  /** Each probe key's get on the fresh reader, which starts the Bloom filter's load and does not wait for it. */
+  readonly first: (SstEntry | undefined | "error")[];
+  /** The same gets once that load has ended. */
   readonly gets: (SstEntry | undefined | "error")[];
   readonly scan: LayerEntry[] | "error";
   readonly seek: LayerEntry[] | "error";
@@ -199,15 +203,17 @@ export type ReadResult = {
 };
 
 /**
- * A tab's read of one run file, as `SstReader` does it: get each probe key,
- * scan it all, scan from the middle key, and a filtered scan, then the three
- * scans again from the largest key down. No CRC is
+ * A tab's read of one run file, as `SstReader` does it: get each probe key
+ * twice, the second time once the Bloom filter's load has ended, scan it
+ * all, scan from the middle key, and a filtered scan, then the three scans
+ * again from the largest key down. No CRC is
  * checked, so any answer is allowed; each read may throw only
  * `CorruptDatabaseError`, and must end in bounded time and memory.
  */
 export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<ReadResult> {
   return bounded("a tab read of a run", async () => {
-    const reader = new SstReader(bytesFile(buf), new PageCache(), probe.range);
+    const cache = new PageCache();
+    const reader = new SstReader(bytesFile(buf), cache, probe.run);
     const max = buf.byteLength;
     const one = async <T>(what: string, run: () => Promise<T>): Promise<T | "error"> => {
       try {
@@ -217,8 +223,12 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
         return "error";
       }
     };
+    const get = (key: Uint8Array) => one("SstReader.get", () => settleBounded("SstReader.get", () => ownedEntry(reader.get(key), key)));
+    const first: ReadResult["gets"] = [];
+    for (const key of probe.keys) first.push(await get(key));
+    await loadsDone(cache);
     const gets: ReadResult["gets"] = [];
-    for (const key of probe.keys) gets.push(await one("SstReader.get", () => settleBounded("SstReader.get", () => ownedEntry(reader.get(key), key))));
+    for (const key of probe.keys) gets.push(await get(key));
     const scan = await one("SstReader.cursor", () => drainBounded("SstReader.cursor", reader.cursor(), max));
     const mid = probe.keys[probe.keys.length >> 1];
     const seek = await one("SstReader.cursor (seek)", () =>
@@ -237,7 +247,7 @@ export async function checkRunRead(buf: Uint8Array, probe: ReadProbe): Promise<R
       drainBounded("SstReader.scanContains (reverse)", reader.scanContains([probe.pattern], undefined, true), max),
     );
     reader.close();
-    return { gets, scan, seek, contains, reverse, reverseSeek, reverseContains };
+    return { first, gets, scan, seek, contains, reverse, reverseSeek, reverseContains };
   });
 }
 
@@ -257,8 +267,10 @@ export function expectedRead(entries: readonly SstEntry[], probe: ReadProbe): Re
     return false;
   };
   const contains = sorted.filter((e) => e.kind === "put" && holds(e.value)).map(layer);
+  const gets = probe.keys.map((k) => sorted.find((e) => compareBytes(e.key, k) === 0));
   return {
-    gets: probe.keys.map((k) => sorted.find((e) => compareBytes(e.key, k) === 0)),
+    first: gets,
+    gets,
     scan: sorted.map(layer),
     seek: sorted.filter((e) => !mid || compareBytes(e.key, mid) >= 0).map(layer),
     contains,

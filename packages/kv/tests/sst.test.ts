@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { untilHit } from "../src/store/cursor.js";
-import { decodeSst, encodeSstRef, sstGet, SST_BLOCK_TARGET } from "./oracle/sst-ref.js";
+import { decodeSst, encodeSstRef, sstGet, sstRunEnd, SST_BLOCK_TARGET } from "./oracle/sst-ref.js";
 import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
 import { SST_FOOTER_BYTES } from "../src/store/sst.js";
-import { bytesFile, drain, readerOfBytes, runGet } from "./runs.js";
+import { bytesFile, cacheUsage, drain, loadsDone, readerOfBytes, runGet } from "./runs.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
@@ -55,13 +55,29 @@ describe("sst", () => {
     expect((await drain(reader.cursor())).map((e) => e.seq)).toEqual(seqs);
   });
 
-  it("rejects a footer whose version is not 2", async () => {
+  it("rejects a footer whose version is not 2, and a tab reads the run without its Bloom filter", async () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
+    const end = sstRunEnd(body);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     view.setUint32(body.byteLength - 8, 1, true);
     expect(() => decodeSst(body)).toThrow(/unsupported sst version 1/);
-    const reader = new SstReader(bytesFile(body), new PageCache(), undefined);
-    await expect(runGet(reader, utf("a"))).rejects.toThrow(/unsupported sst version 1/);
+    const cache = new PageCache();
+    const reader = new SstReader(bytesFile(body), cache, end);
+    expect(await runGet(reader, utf("a"))).toEqual({ kind: "put", key: utf("a"), value: utf("1"), seq: 7 });
+    await loadsDone(cache);
+    expect(cacheUsage(cache).metadata).toBe(0);
+  });
+
+  it("fails every read of a file that is not the size its manifest entry records, and reads none of it", async () => {
+    const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
+    for (const size of [body.byteLength - 1, body.byteLength + 1]) {
+      let reads = 0;
+      const file = { size, read: async () => (reads++, body) };
+      const reader = new SstReader(file, new PageCache(), sstRunEnd(body));
+      await expect(runGet(reader, utf("a"))).rejects.toThrow(CorruptDatabaseError);
+      await expect(drain(reader.cursor())).rejects.toThrow(CorruptDatabaseError);
+      expect(reads).toBe(0);
+    }
   });
 
   it("round-trips puts and deletes", () => {

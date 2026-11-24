@@ -11,6 +11,7 @@ import {
   type BlockIndex,
   type EncodedRun,
   type KeyRange,
+  type RunEnd,
   type SstEntry,
   type SstFooter,
 } from "../../src/store/sst.js";
@@ -415,6 +416,15 @@ export function sstKeyRange(buf: Uint8Array): KeyRange | undefined {
   const first = index[0];
   const last = index[index.length - 1];
   return first && last ? { smallest: first.firstKey, largest: last.lastKey } : undefined;
+}
+
+/**
+ * What an encoder reports at the end of a whole run file, read back from its
+ * tail: what the run's manifest entry records, for a reader of bare bytes.
+ */
+export function sstRunEnd(buf: Uint8Array): RunEnd {
+  const range = sstKeyRange(buf);
+  return { bytes: buf.byteLength, ...(range && { range }), index: sstBlockIndex(buf) };
 }
 
 /** Point lookup in a decoded (sorted) SST. */

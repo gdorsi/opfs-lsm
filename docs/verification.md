@@ -217,7 +217,7 @@ pnpm --filter @opfs-lsm/kv formal:kv
 Exit 0. The log ends with `All 8 formal checks passed`. Each check prints a `PASS` line:
 
 - `PASS NoLostAcks`, after two `broken variant caught` lines (orders that record the flush before its manifest is on disk)
-- `PASS WalOverSst` (on real `pointGet`: every memtable row, run and mark, then every pair of levels with each run cold, with its layout loaded, or with its page loaded)
+- `PASS WalOverSst` (on real `pointGet`: every memtable row, run and mark, then every pair of levels with each run cold, with its Bloom filter loaded, with its block loaded, or with both)
 - `PASS ViewPin` (on the real `Memtable`: through every short sequence of writes, a pin taken before each write reads the rows and marks it read when taken), after three `broken variant caught` lines
 - `PASS CompactPreserve` (`latestSstEntry` newest-first, both merge sessions give a tie to the newer source and drop a covered winner, a delete drops only in a bottom merge, outputs claim the base manifest's marks only), after three `broken variant caught` lines
 - `PASS UpdateExact` (every interleaving of two tabs that update and put one key, with one recovery that drops the WAL records: each update row that has its ops was written from the state just before its seq, each memtable is a log prefix, and a put or an update resolves with its tab's memtable at or past its seq), after six `broken variant caught` lines
@@ -309,7 +309,7 @@ KV_ENGINE_CASES=3000 pnpm exec vitest run fuzz/engine-checked.test.ts
 
 Jazzer.js is a dev dependency of `@opfs-lsm/kv`, with prebuilt binaries for macOS, Linux and Windows. Before a change to a decoder or the on-disk format, run each target for 10 minutes or more. A pass prints `Done N runs` and leaves no `crash-*` file. Jazzer instruments the decoder targets' JavaScript. The engine targets instrument none: their coverage is the checked twin's own counters, one per function entry, `if` arm and loop head, and they read their input as the choices of a drive case, so mutations reach the merge session behind valid runs.
 
-Corpora: the decoder seeds are files the engine wrote (a database through ingest and compaction on MemoryFs, plus a compaction's output run), and the engine seeds random bytes. `pnpm --filter @opfs-lsm/kv fuzz:corpus` writes them again after a format change. Only `seed-*` files are tracked. A run adds its new inputs next to them, and git ignores those.
+Corpora: the decoder seeds are files the engine wrote (a database through ingest and compaction on MemoryFs, plus a compaction's output run), and the engine seeds random bytes. A `sst-read` seed is a manifest of one run, then the run, since a tab reads a run with what its manifest entry records. `pnpm --filter @opfs-lsm/kv fuzz:corpus` writes them again after a format change. Only `seed-*` files are tracked. A run adds its new inputs next to them, and git ignores those.
 
 - `packages/kv/fuzz/corpus/<target>/` for Jazzer.js. A finding lands in `packages/kv/fuzz/.build/crash-*`. Replay it with `pnpm --filter @opfs-lsm/kv fuzz:jazzer <target> 0 <file>`.
 
@@ -319,7 +319,7 @@ Each bug the fuzzers found is kept as a regression test reduced to one input: `p
 
 | File | Checked by | Corrupt bytes |
 | --- | --- | --- |
-| Run, any level | Tabs: none. Compaction: CRC. | A tab read fails with `CorruptDatabaseError` when the structure breaks, or answers wrong when only data bytes changed. A footer that names more than 32 bloom hashes, or more blocks than its index can hold, fails before it sets a loop or an allocation. No input traps in wasm, and after a wasm trap the context replaces the instance. Compaction refuses the run with `CorruptDatabaseError` and stops compacting that level until the run is gone. |
+| Run, any level | Tabs: none. Compaction: CRC. | A tab reads each block where the manifest says it is. A read fails with `CorruptDatabaseError` when the structure of its block breaks or the file is not the size the manifest records, and answers wrong when only data bytes changed. A tab reads the footer only to load the bloom filter: a footer that does not parse, that names more than 32 bloom hashes, or more blocks than its index can hold, fails before it sets a loop or an allocation, and the tab reads the run without a filter. No input traps in wasm, and after a wasm trap the context replaces the instance. Compaction refuses the run with `CorruptDatabaseError` and stops compacting that level until the run is gone. |
 | Recorded manifest | CRC, everywhere | `openDb`, and the SharedWorker's next flush, compaction or sweep, throw `CorruptDatabaseError` and change nothing (design.md, "Corruption is not a power loss"). A manifest written on purpose with a valid CRC and a bad length throws `CorruptDatabaseError` too. An empty file is a power loss: recovery records the newest intact manifest. |
 | Manifest past the recorded one | CRC, recovery | Ignored. |
 | A run of the recorded generation, missing | recovery | `openDb` and the host throw `CorruptDatabaseError`, and no file or WAL record is deleted. When an intact manifest holds every ingested seq (a compaction's old or new manifest), it is recorded instead and nothing is lost. |

@@ -40,27 +40,36 @@ function indexKeys(buf: Uint8Array): Uint8Array[] {
   return keys;
 }
 
-/** Byte 0: bits 0-1 pick the repair (none, CRC, trailer), bit 2 routes by the index's key range. */
-function sstInput(data: Uint8Array): { buf: Uint8Array; withRange: boolean } | undefined {
-  if (data.byteLength < 1) return undefined;
-  const buf = data.slice(1);
-  repairSst(buf, REPAIRS[data[0]! & 3]!);
-  return { buf, withRange: (data[0]! & 4) !== 0 };
+/** `file` repaired as bits 0-1 of `flags` pick: not at all, its CRC, or its trailer. */
+function repaired(file: Uint8Array, flags: number): Uint8Array {
+  repairSst(file, REPAIRS[flags & 3]!);
+  return file;
 }
 
-/** A tab's reads of one run: `SstReader` get, scans and filtered scan. */
+/**
+ * A tab's reads of one run: `SstReader` get, scans and filtered scan. Byte 0
+ * picks the file's repair, a u16 gives the length of a manifest, and the
+ * file follows. The run's entry is the manifest's first, read as a tab reads
+ * it: through `decodeGeneration`, with the CRC rewritten so that mutations
+ * reach the index behind it. The reader fails every read of a file that is
+ * not the size its entry records, so the entry takes the file's size when
+ * its blocks end inside the file.
+ */
 export async function sstRead(data: Uint8Array): Promise<void> {
-  const input = sstInput(data);
-  if (!input) return;
-  const keys = indexKeys(input.buf);
-  const range = input.withRange && keys.length >= 2 ? { smallest: keys[0]!, largest: keys[keys.length - 1]! } : undefined;
-  await checkRunRead(input.buf, { keys: [...keys, ...FIXED_KEYS], range, pattern: PATTERN });
+  if (data.byteLength < 3) return;
+  const fileAt = 3 + (data[1]! | (data[2]! << 8));
+  const manifest = data.slice(3, fileAt);
+  fixManifestCrc(manifest);
+  const run = (await checkManifest(manifest, false))?.runs[0];
+  const buf = repaired(data.slice(fileAt), data[0]!);
+  if (!run || run.index.blockStart[run.index.sepEnd.length]! > buf.byteLength) return;
+  const keys = [...indexKeys(buf), ...(run.range ? [run.range.smallest, run.range.largest] : []), ...FIXED_KEYS];
+  await checkRunRead(buf, { keys, run: { ...run, bytes: buf.byteLength }, pattern: PATTERN });
 }
 
-/** The SharedWorker's full decode of a run, in TypeScript. */
+/** The SharedWorker's full decode of a run, in TypeScript. Byte 0 picks the repair. */
 export async function sstDecode(data: Uint8Array): Promise<void> {
-  const input = sstInput(data);
-  if (input) await checkDecodeSst(input.buf, false);
+  if (data.byteLength > 0) await checkDecodeSst(repaired(data.slice(1), data[0]!), false);
 }
 
 /** `decodeGeneration`. Byte 0 bit 0 rewrites the CRC. */

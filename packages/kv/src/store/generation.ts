@@ -5,19 +5,19 @@ import { crc32 } from "./crc32.js";
 import { encodeRun } from "./engine.js";
 import { levelOfDir, levelRunPath } from "./levels.js";
 import { decodeMarks, encodeMarks, NO_MARKS, type Marks } from "./marks.js";
-import type { RunEnd, SstEntry } from "./sst.js";
+import type { BlockIndex, RunEnd, SstEntry } from "./sst.js";
 
 const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
-/** Version 5: the marks and each run's `marksThrough`. */
-const GEN_VERSION = 5;
+/** Version 6: each run's block index. */
+const GEN_VERSION = 6;
 
 /**
  * A run of the generation: what the encoder reported when it wrote the file
  * (`RunEnd`), and where the file is.
  */
-export type RunMeta = Omit<RunEnd, "index"> & {
+export type RunMeta = RunEnd & {
   /** Relative to the db root: `l<n>/<name>.sst`. The directory is the level, see levels.ts. */
   readonly path: string;
   /**
@@ -51,6 +51,13 @@ function genPath(generation: Generation): string {
   return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
 }
 
+/** Bytes of `v` as an unsigned LEB128. */
+function varintLen(v: number): number {
+  let n = 1;
+  for (; v >= 0x80; v = Math.floor(v / 0x80)) n++;
+  return n;
+}
+
 export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   const enc = new TextEncoder();
   const paths = meta.runs.map((r) => enc.encode(r.path));
@@ -59,6 +66,11 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   meta.runs.forEach((r, i) => {
     size += 2 + paths[i]!.byteLength + 4 + 1 + 8;
     if (r.range) size += 8 + r.range.smallest.byteLength + r.range.largest.byteLength;
+    const { sepBytes, sepEnd, blockStart } = r.index;
+    size += 4 + sepBytes.byteLength;
+    sepEnd.forEach((end, b) => {
+      size += varintLen(end - (sepEnd[b - 1] ?? 0)) + varintLen(blockStart[b + 1]! - blockStart[b]!);
+    });
   });
   size += 4;
   const out = new Uint8Array(size);
@@ -76,6 +88,10 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
   o += marks.byteLength;
   view.setUint32(o, paths.length, true);
   o += 4;
+  const varint = (v: number): void => {
+    for (; v >= 0x80; v = Math.floor(v / 0x80)) out[o++] = (v & 0x7f) | 0x80;
+    out[o++] = v;
+  };
   meta.runs.forEach((r, i) => {
     const p = paths[i]!;
     view.setUint16(o, p.byteLength, true);
@@ -93,6 +109,16 @@ export function encodeGeneration(meta: GenerationMeta): Uint8Array {
     }
     view.setBigUint64(o, BigInt(r.marksThrough), true);
     o += 8;
+    // The index: u32 blocks, each block's separator length and byte length as varints, then the separators.
+    const { sepBytes, sepEnd, blockStart } = r.index;
+    view.setUint32(o, sepEnd.length, true);
+    o += 4;
+    sepEnd.forEach((end, b) => {
+      varint(end - (sepEnd[b - 1] ?? 0));
+      varint(blockStart[b + 1]! - blockStart[b]!);
+    });
+    out.set(sepBytes, o);
+    o += sepBytes.byteLength;
   });
   view.setUint32(o, crc32(out.subarray(0, o)), true);
   return out;
@@ -131,6 +157,32 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const at = take(len);
     return buf.slice(at, at + len);
   };
+  const varint = (): number => {
+    let v = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const b = buf[take(1)]!;
+      v += (b & 0x7f) * 2 ** shift;
+      if (b < 0x80) return v;
+    }
+    throw new CorruptDatabaseError("generation varint");
+  };
+  /** The index of a run of `bytes` bytes. Its blocks end inside the run, so a reader given a file of that size reads inside it. */
+  const index = (bytes: number): BlockIndex => {
+    const blocks = view.getUint32(take(4), true);
+    // A block takes two bytes at least, so a count the bytes cannot hold sizes no array.
+    if (blocks * 2 > crcOff - o) throw new CorruptDatabaseError("generation truncated");
+    const sepEnd = new Uint32Array(blocks);
+    const blockStart = new Uint32Array(blocks + 1);
+    let seps = 0;
+    let start = 0;
+    for (let b = 0; b < blocks; b++) {
+      sepEnd[b] = seps += varint();
+      blockStart[b + 1] = start += varint();
+    }
+    if (start > bytes) throw new CorruptDatabaseError("generation blocks past the run");
+    const at = take(seps);
+    return { sepBytes: buf.slice(at, at + seps), sepEnd, blockStart };
+  };
   const runCount = view.getUint32(take(4), true);
   for (let i = 0; i < runCount; i++) {
     const len = view.getUint16(take(2), true);
@@ -140,7 +192,8 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
     const range = buf[take(1)] === 1 ? { smallest: key(), largest: key() } : undefined;
     const marksThrough = asSeq(Number(view.getBigUint64(take(8), true)));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
-    runs.push(range ? { path, bytes, range, marksThrough } : { path, bytes, marksThrough });
+    const run = { path, bytes, marksThrough, index: index(bytes) };
+    runs.push(range ? { ...run, range } : run);
   }
   if (o !== crcOff) throw new CorruptDatabaseError("generation trailing");
   return { generation, runs, through, marks };

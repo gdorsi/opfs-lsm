@@ -120,7 +120,8 @@ describe("sst format", () => {
           reader.close();
         }
         expect(got).toEqual(want);
-        expect(misses).toBeGreaterThan(10);
+        // The first block, then one miss for each window of blocks the scan asks for ahead.
+        expect(misses).toBeGreaterThan(5);
       }
     }
   });

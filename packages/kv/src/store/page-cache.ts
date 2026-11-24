@@ -1,8 +1,9 @@
 import { heldReads, Miss, type Fill } from "./cursor.js";
 
 /**
- * `runId * 2^24 + slot`. A run's pages are slots from 0; its metadata is
- * `META_SLOT`. 2^24 pages of 32 KB cover any u32-addressed run file.
+ * `runId * 2^24 + slot`. A page is one block of a run: a run's blocks are
+ * slots from 0, and its Bloom filter is `META_SLOT`. Two blocks in a row
+ * hold more than 32 KiB, so 2^24 slots cover any u32-addressed run file.
  */
 type CacheKey = number;
 const SLOTS = 0x1000000;
@@ -22,7 +23,7 @@ export type Sized<T> = { readonly value: T; readonly bytes: number };
 /**
  * Which queue a new entry enters. Point gets admit to `main`; scans to
  * `probation`, so one pass over the data cannot flush what gets reuse.
- * `meta` holds run metadata, evicted only when no page can be.
+ * `meta` holds Bloom filters, evicted only when no page can be.
  */
 export type Admit = "probation" | "main" | "meta";
 
@@ -102,7 +103,7 @@ export class PageCache {
       p = started;
       this.loading.set(key, p);
     }
-    return new Miss(p, admit === "meta");
+    return new Miss(p);
   }
 
   /** Drops a run's entries. Its loads still in flight land and are discarded. */
