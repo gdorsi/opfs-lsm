@@ -174,7 +174,7 @@ seqs wrote, and the marks of the newly ingested records.
 
 One flush is in flight per tab. If the flush fails, or returns without moving the generation,
 the write goes on, and the tab asks again after the memtable grows by another 1/8 of the limit.
-A host that cannot help does not stop writes. The thresholds are checked only on a write.
+A host that never answers holds writes at the limit. The thresholds are checked only on a write.
 
 ## SST file format
 

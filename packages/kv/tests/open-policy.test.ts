@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { openDb, StorageUnavailableError } from "../src/index.js";
+import { openDb, StorageFullError, StorageUnavailableError } from "../src/index.js";
 import {
   openHarnessDb,
   __resetMemoryFsForTests,
@@ -141,6 +141,16 @@ describe("openDb where an API it needs is there and fails", () => {
 
     expect(failed).toBeInstanceOf(StorageUnavailableError);
     expect((failed as StorageUnavailableError).cause).toBe(cause);
+  });
+
+  it("rejects with StorageFullError when the refusal is a QuotaExceededError", async () => {
+    const cause = new DOMException("The quota has been exceeded.", "QuotaExceededError");
+    installCaps(() => Promise.reject(cause));
+
+    const failed = await failure(openDb({ name: NAME }));
+
+    expect(failed).toBeInstanceOf(StorageFullError);
+    expect((failed as StorageFullError).cause).toBe(cause);
   });
 
   it("rejects with StorageUnavailableError when new SharedWorker() throws, as on a page of an opaque origin", async () => {

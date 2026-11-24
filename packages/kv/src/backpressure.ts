@@ -16,7 +16,8 @@ export type MemtableCaps = {
  * a flush and stalling writes. The flush has the last eighth to finish in.
  */
 export function memtableCaps(requested = DEFAULT_MEMTABLE_BYTES): MemtableCaps {
-  const hard = Math.max(MIN_MEMTABLE_BYTES, requested);
+  // A comparison, not Math.max: NaN gets the minimum too.
+  const hard = requested > MIN_MEMTABLE_BYTES ? requested : MIN_MEMTABLE_BYTES;
   return { soft: Math.floor((hard * 7) / 8), hard };
 }
 

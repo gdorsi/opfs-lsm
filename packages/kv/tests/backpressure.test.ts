@@ -29,6 +29,7 @@ describe("memtableCaps", () => {
     expect(memtableCaps()).toEqual({ soft: 14 * MiB, hard: 16 * MiB });
     expect(memtableCaps(8 * MiB)).toEqual({ soft: 7 * MiB, hard: 8 * MiB });
     expect(memtableCaps(1)).toEqual({ soft: 896 * 1024, hard: MiB });
+    expect(memtableCaps(Number.NaN)).toEqual({ soft: 896 * 1024, hard: MiB });
   });
 });
 

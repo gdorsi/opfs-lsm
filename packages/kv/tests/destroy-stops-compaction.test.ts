@@ -55,7 +55,7 @@ describe("dangerousDestroy during a compaction pass", () => {
     const before = (await host.stats(name)).compactionSteps;
 
     const destroyed = db.dangerousDestroy();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 200));
     release();
     await destroyed;
     armed = false;

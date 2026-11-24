@@ -78,7 +78,7 @@ await todos.utils.transact(["1", "2", "9"], ([t1]) => [
 todos.get("1"); // => { id: "1", title: "Buy milk", done: true }
 ```
 
-`transact` resolves once the collection shows the write, which an on-demand collection does when a loaded query keeps the document. While another transaction on the collection is persisting, TanStack applies the synced row once that transaction settles.
+`transact` resolves once the collection shows the write, which an on-demand collection does when a loaded query keeps the document. While another transaction on the collection is persisting, `transact` resolves before the collection shows the write: TanStack applies the synced row once that transaction settles.
 
 ## Closing
 

@@ -17,7 +17,9 @@ import {
   CommitError,
   ConstraintError,
   CorruptDatabaseError,
+  StorageFullError,
   StorageUnavailableError,
+  codeOfError,
   unavailable,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
@@ -374,7 +376,8 @@ export async function openOn(
     return await withLock(openLock(name), () => openStores(name, options, caps, reserveBytes, engine, connect(name)), "shared");
   } catch (cause) {
     // What is left raw is a browser API that is there and refused: OPFS, the SharedWorker or IndexedDB.
-    throw cause instanceof DOMException ? unavailable("the browser's storage", cause) : cause;
+    if (!(cause instanceof DOMException)) throw cause;
+    throw codeOfError(cause) === "quota" ? new StorageFullError("the origin's storage is full", { cause }) : unavailable("the browser's storage", cause);
   }
 }
 
@@ -401,9 +404,9 @@ async function openStores(
     // The recorded manifest's runs are checked by the load, which opens them.
     const recovering = reconcileOpen(wal, tabFs, () => ingest.repair(name));
     recovering.catch(() => undefined);
-    const cache = new PageCache(
-      Math.max(MIN_MEMORY_BUDGET, options.cacheBytes ?? DEFAULT_BUDGET),
-    );
+    const cacheBytes = options.cacheBytes ?? DEFAULT_BUDGET;
+    // A comparison, not Math.max: NaN gets the minimum too.
+    const cache = new PageCache(cacheBytes > MIN_MEMORY_BUDGET ? cacheBytes : MIN_MEMORY_BUDGET);
     const db = new DbImpl(
       name,
       parts.writerId,

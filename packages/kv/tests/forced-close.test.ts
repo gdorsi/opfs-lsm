@@ -4,8 +4,7 @@
  * `Clear-Site-Data` header or a damaged store closes each connection by
  * force: the connection closes and `close` fires at the `IDBDatabase`, with
  * no `versionchange` first (IndexedDB 3.0, "close a database connection",
- * forced flag). fake-indexeddb has no forced close, so the test does both
- * steps.
+ * forced flag). The test does both steps by hand.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ClosedError, type ChangeEvent } from "../src/index.js";

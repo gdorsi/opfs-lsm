@@ -482,6 +482,6 @@ try {
 | `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
-| `ClosedError` | `closed` | The handle is closed, by `close()` or by `destroyDb`. | Open a new one. |
+| `ClosedError` | `closed` | The handle is closed: by `close()`, by `destroyDb`, or because the browser closed its IndexedDB connection. | Open a new one. |
 
 **Note.** Chrome can damage its IndexedDB store when it crashes, then delete it or keep failing the open. If it deletes it, writes not flushed to OPFS yet are lost, and flushed data stays.

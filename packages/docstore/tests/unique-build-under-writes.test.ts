@@ -156,6 +156,7 @@ async function run(initial: readonly { slug: string | null | undefined; ut: stri
       const state = catalog.collections["docs"]!.indexes[index]!.state.kind;
       if (state !== "ready") {
         expect(state).toBe("failed");
+        expect(await keysUnder(kv, await storedPrefix(kv, "docs", index))).toBe(0);
         continue;
       }
       const holders = new Map<string, string[]>();

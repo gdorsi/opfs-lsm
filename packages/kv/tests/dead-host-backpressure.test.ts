@@ -74,7 +74,8 @@ const within = <T>(ms: number, work: Promise<T>): Promise<T | "pending"> =>
 describe("a tab whose SharedWorker never answers", () => {
   it.fails("keeps writing past memtableBytes", async () => {
     const db = await within(1000, openDb({ name: NAME, memtableBytes: MiB }));
-    if (db === "pending") throw new Error("openDb did not settle");
+    // Returning passes the test, which `it.fails` reports: only the stalled puts below may fail it.
+    if (db === "pending") return;
 
     // 40 puts of 64 KiB are 2.5 times the limit.
     const value = new Uint8Array(64 * 1024);

@@ -57,7 +57,7 @@ test("a doc that loads under trimSize merges once updates made while it loads br
   p.trimDelayMs = 20;
   for (let i = 0; i < 4; i++) doc.getText("t").insert(0, "b");
   await p.whenSynced;
-  await sleep(80);
+  for (let waited = 0; (await db.count()) > 1 && waited < 2000; waited += 10) await sleep(10);
   // The two clients inserted at one position, so their ids decide the order.
   const merged = doc.getText("t").toString();
   assert.equal(merged.length, 10);
