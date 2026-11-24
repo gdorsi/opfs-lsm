@@ -30,14 +30,14 @@ export type Reserve =
   | { readonly kind: "released"; readonly ask: Ask };
 
 export type ReserveEvent =
-  /** A compaction pass found nothing to plan, over a manifest that holds the log up to `through`. `target` is the size the tabs ask for. */
-  | { readonly kind: "settle"; readonly through: Seq; readonly head: Seq; readonly target: number }
+  /** A compaction pass found nothing to plan, with the log ingested through `ingestedThrough`. `target` is the size the tabs ask for. */
+  | { readonly kind: "settle"; readonly ingestedThrough: Seq; readonly head: Seq; readonly target: number }
   /** The browser refused a write of the host or of a tab. Not sent while the target is 0. */
   | { readonly kind: "refused"; readonly head: Seq }
   /** A handle took the lock that answers offers. */
   | { readonly kind: "pull" }
   /** The handlers settled, or no handle has one. */
-  | { readonly kind: "done"; readonly head: Seq }
+  | { readonly kind: "done"; readonly head: Seq; readonly ingestedThrough: Seq }
   /** A tab opened the database. */
   | { readonly kind: "watch" }
   /** The last tab closed the database. */
@@ -59,7 +59,7 @@ export type ReserveEffect =
   | { readonly kind: "release" }
   /** Post the offer. */
   | { readonly kind: "offer" }
-  /** Flush and compact now: the handlers wrote, and their bytes may be too few to reach a flush trigger. */
+  /** Flush and compact now: the log holds records the answer waits for, too few bytes to reach a flush trigger. */
   | { readonly kind: "flush" };
 
 type Moved = { readonly next: Reserve; readonly effect: ReserveEffect };
@@ -73,7 +73,7 @@ function offered(head: Seq): Reserve {
 
 /**
  * The transition table (docs/reserve.md). The host refills the reserve, or
- * asks the handlers again, only at a `settle` whose manifest holds what they
+ * asks the handlers again, only at a `settle` that has ingested what they
  * wrote last time, so an answer that freed nothing is never asked in a loop.
  * A pair with no row changes nothing, which makes a duplicate event harmless.
  */
@@ -123,14 +123,14 @@ export function step(state: Reserve, event: ReserveEvent): Moved {
           case "done":
             return {
               next: { kind: "released", ask: { kind: "after", seq: event.head } },
-              effect: event.head > state.ask.head ? { kind: "flush" } : NONE,
+              effect: event.head > state.ask.head || event.head > event.ingestedThrough ? { kind: "flush" } : NONE,
             };
         }
         break;
       }
       switch (event.kind) {
         case "settle":
-          if (event.through >= state.ask.seq) {
+          if (event.ingestedThrough >= state.ask.seq) {
             return { next: state, effect: { kind: "fill", head: event.head, target: event.target } };
           }
           break;

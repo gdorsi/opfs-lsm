@@ -1,7 +1,7 @@
 /**
  * The README merges a doc "whether it reached 500 at load or while
  * open". A doc that loads under the threshold and crosses it with updates made
- * while open must count the loaded entries too.
+ * while open or while it loads must count the loaded entries too.
  */
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
@@ -42,5 +42,29 @@ test("a doc that loads under trimSize merges once updates made while open bring 
   const again = await reopen(db, "doc", 1000);
   assert.equal(again.p.loadedUpdates, 1);
   assert.equal(again.doc.getText("t").toString(), "bbbbaaaaaa");
+  await again.p.destroy();
+});
+
+test("a doc that loads under trimSize merges once updates made while it loads bring it to trimSize", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "doc", 1000);
+  for (let i = 0; i < 6; i++) seed.doc.getText("t").insert(i, "a");
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "doc", doc, 10);
+  p.trimDelayMs = 20;
+  for (let i = 0; i < 4; i++) doc.getText("t").insert(0, "b");
+  await p.whenSynced;
+  for (let waited = 0; (await db.count()) > 1 && waited < 2000; waited += 10) await sleep(10);
+  // The two clients inserted at one position, so their ids decide the order.
+  const merged = doc.getText("t").toString();
+  assert.equal(merged.length, 10);
+  await p.destroy();
+
+  const again = await reopen(db, "doc", 1000);
+  assert.equal(again.p.loadedUpdates, 1);
+  assert.equal(again.doc.getText("t").toString(), merged);
   await again.p.destroy();
 });

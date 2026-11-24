@@ -34,9 +34,9 @@ export type ChangeEvent =
   | { readonly kind: "gap"; readonly through: number }
   /**
    * The last event: the handle closed. `reason` is "close" for its own
-   * `close()`, and "destroyed" when its IndexedDB database was asked to
-   * close: by `destroyDb`, or by the browser or DevTools deleting it. An
-   * `openDb` after a destroy opens an empty database.
+   * `close()`, and "destroyed" when `destroyDb`, the browser or DevTools
+   * deleted its IndexedDB database, or the browser closed its connection
+   * by force. An `openDb` after a destroy opens an empty database.
    */
   | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
 

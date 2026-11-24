@@ -50,7 +50,10 @@ export interface DocstoreCollectionUtils<T extends JsonDoc = JsonDoc> extends Ut
    * last saw, so it must be pure and accept any stored state. Resolves once
    * this collection shows the write, when it will show it: always for an eager
    * collection, and for an on-demand one when a loaded query keeps the
-   * document. Rejects with DocStoreError "document", writing nothing, when
+   * document. While another transaction on the collection is persisting, it
+   * resolves before the collection shows the write: TanStack applies the
+   * synced row once that transaction settles. Rejects
+   * with DocStoreError "document", writing nothing, when
    * `merge` returns the wrong number of entries or a document under another id.
    */
   transact(

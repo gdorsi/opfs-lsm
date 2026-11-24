@@ -22,9 +22,9 @@ const held = (bytes: number): Reserve => ({ kind: "held", bytes });
 const offered = (head: number): Reserve => ({ kind: "released", ask: { kind: "offered", head: seq(head) } });
 const after = (s: number): Reserve => ({ kind: "released", ask: { kind: "after", seq: seq(s) } });
 
-const settle = (through: number, target = T, head = through): ReserveEvent => ({
+const settle = (ingested: number, target = T, head = ingested): ReserveEvent => ({
   kind: "settle",
-  through: seq(through),
+  ingestedThrough: seq(ingested),
   head: seq(head),
   target,
 });
@@ -32,7 +32,7 @@ const found = (bytes: number, target = T): ReserveEvent => ({ kind: "found", byt
 const refused: ReserveEvent = { kind: "refused", head: seq(9) };
 const fillRefused: ReserveEvent = { kind: "fill-refused", head: seq(9) };
 const filled: ReserveEvent = { kind: "filled", bytes: T };
-const done = (head: number): ReserveEvent => ({ kind: "done", head: seq(head) });
+const done = (head: number, ingested = head): ReserveEvent => ({ kind: "done", head: seq(head), ingestedThrough: seq(ingested) });
 
 const NONE: ReserveEffect = { kind: "none" };
 const fill = (head: number, target = T): ReserveEffect => ({ kind: "fill", head: seq(head), target });
@@ -61,13 +61,15 @@ const rows: readonly Row[] = [
 
   ["offered, a settle: no fill and no second offer", offered(4), settle(100), offered(4), NONE],
   ["offered, a pull: post the offer again", offered(4), { kind: "pull" }, offered(4), { kind: "offer" }],
-  ["offered, answered with writes: flush now", offered(4), done(6), after(6), { kind: "flush" }],
-  ["offered, answered with no write: wait for the next flush", offered(4), done(4), after(4), NONE],
+  ["offered, answered with writes: flush now", offered(4), done(6, 2), after(6), { kind: "flush" }],
+  ["offered, answered with writes a flush already took: flush now, to settle", offered(4), done(6), after(6), { kind: "flush" }],
+  ["offered, answered with no write over an unflushed tail: flush now", offered(4), done(4, 2), after(4), { kind: "flush" }],
+  ["offered, answered with no write and nothing to flush: wait for the next settle", offered(4), done(4), after(4), NONE],
   ["offered, a refused write", offered(4), refused, offered(4), NONE],
   ["offered, a tab opens", offered(4), { kind: "watch" }, offered(4), NONE],
 
-  ["answered, a settle before a flush holds the answer", after(6), settle(5), after(6), NONE],
-  ["answered, a settle that holds the answer: fill", after(6), settle(6, T, 8), after(6), fill(8)],
+  ["answered, a settle before the log is ingested through the answer", after(6), settle(5), after(6), NONE],
+  ["answered, a settle with the log ingested through the answer: fill", after(6), settle(6, T, 8), after(6), fill(8)],
   ["answered, the fill landed", after(6), filled, held(T), NONE],
   ["answered, the fill does not fit: offer again", after(6), fillRefused, offered(9), { kind: "offer" }],
   ["answered, a refused write", after(6), refused, after(6), NONE],

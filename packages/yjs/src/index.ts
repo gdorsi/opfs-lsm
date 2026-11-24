@@ -72,6 +72,9 @@ export class KvPersistence {
     clearTimeout(this.trimTimer);
     this.doc.off("update", this.storeUpdate);
     this.doc.off("destroy", this.docDestroyed);
+    // An update that went pending while attached fired no update event.
+    const { pendingStructs, pendingDs } = this.doc.store;
+    if (pendingStructs || pendingDs) this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
     await this.flush();
   }
 
@@ -104,12 +107,15 @@ export class KvPersistence {
     if (this.prefix.byteLength + 8 > MAX_KEY_BYTES) throw new ConstraintError("document name too long for a kv key");
     const { updates, through } = await this.readStored();
     this.loadedUpdates = updates.length;
-    this.stored = updates.length;
+    const storedDuringLoad = this.stored;
+    this.stored += updates.length;
     if (!this.destroying) {
       this.apply(updates);
-      // The doc already holds every loaded update, so this merge needs no second read.
+      clearTimeout(this.trimTimer);
+      // With no update during the load, the doc holds every stored update, so this merge needs no second read.
       const count = updates.length;
-      if (count >= this.trimSize) this.trimTimer = setTimeout(() => this.track(this.replace(count, through)), this.trimDelayMs);
+      const merge = () => (storedDuringLoad > 0 ? this.trim() : this.replace(count, through));
+      if (this.stored >= this.trimSize) this.trimTimer = setTimeout(() => this.track(merge()), this.trimDelayMs);
       this.synced = true;
     }
     return this;

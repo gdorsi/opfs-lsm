@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore, type Cursor } from "../src/index.js";
 import { concat, encodeCursor, rowPrefix, type CollectionId } from "../src/keys.js";
 import type { Json, QueryInput, Scalar } from "../src/schema.js";
-import { asQuery, checkQuery, datasetArb, queryArb, schema, type Doc, type DocQuery, type Docs } from "./docs.js";
+import { asQuery, checkQuery, datasetArb, queryArb, schema, withUniqueTags, type Doc, type DocQuery, type Docs } from "./docs.js";
 import { codeOf, freshName, openKv, storedPrefix } from "./harness.js";
 import { stored } from "./oracle.js";
 
@@ -733,6 +733,28 @@ describe("cursors", () => {
       for (const reverse of [false, true]) {
         expect(await codeOf(c.queryIds({ index, lt, reverse, after: next } as DocQuery))).toBe("cursor");
       }
+    }
+  });
+});
+
+describe("a unique value whose key is exactly kv's 8 KiB limit", () => {
+  it("is found and counted by eq, lte and gt, as any other stored value", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, defineSchema({ version: 1, collections: { docs: withUniqueTags } }))).collection("docs");
+    // A unique key is 4 prefix bytes, the string's tag, the string and its 00 terminator: no id follows.
+    const atLimit = "x".repeat(8 * 1024 - 6);
+    await c.putMany([
+      { id: "1", u: atLimit, ut: [atLimit] },
+      { id: "2", u: "y", ut: ["y"] },
+    ]);
+    for (const index of ["uniq", "utags"] as const) {
+      const eq = { index, eq: [atLimit] } as never;
+      expect((await c.queryIds(eq)).ids).toEqual(["1"]);
+      expect((await c.queryIds({ index, lte: atLimit })).ids).toEqual(["1"]);
+      expect((await c.queryIds({ index, gt: atLimit })).ids).toEqual(["2"]);
+      expect(await c.count(eq)).toBe(1);
+      expect(await c.count({ index, gt: atLimit })).toBe(1);
     }
   });
 });

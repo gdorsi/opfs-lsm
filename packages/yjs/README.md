@@ -17,7 +17,7 @@ const persistence = new KvPersistence(db, "note-1", doc);
 await persistence.whenSynced;
 ```
 
-Content the doc already holds when you construct the persistence is stored too, as one entry.
+Content the doc already holds when you construct the persistence is stored too, as one entry. That includes a pending update, one that arrived before the update it builds on. Yjs fires no update event for an update that goes pending later, so `destroy()` stores it, and a crash before `destroy()` loses it.
 
 ## Merging
 
@@ -28,7 +28,7 @@ const p = new KvPersistence(db, "draft", new Y.Doc(), 100);
 p.trimDelayMs = 5000;
 ```
 
-A merge reads every entry of the doc first, other tabs' included, and applies them to the doc, as y-indexeddb does. A doc whose state is over 8 MiB, kv's batch limit, is not merged, so each of its loads replays every entry.
+A merge reads every entry of the doc first, other tabs' included, and applies them to the doc, as y-indexeddb does. A doc whose merged state does not fit in one kv batch (8 MiB, counting keys and 256 bytes per op) is not merged, so each of its loads replays every entry.
 
 ## Other tabs
 
@@ -46,7 +46,7 @@ await new KvPersistence(db, n, new Y.Doc()).whenSynced;
 // throws ConstraintError, a key is at most 8 KiB in kv
 doc.getText("t").insert(0, "x".repeat(9 << 20));
 await persistence.flush();
-// throws ConstraintError, an update is at most 8 MiB
+// throws ConstraintError, an update with its key and 256 bytes is at most 8 MiB
 ```
 
 ## Deleting a document

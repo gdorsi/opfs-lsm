@@ -174,7 +174,7 @@ seqs wrote, and the marks of the newly ingested records.
 
 One flush is in flight per tab. If the flush fails, or returns without moving the generation,
 the write goes on, and the tab asks again after the memtable grows by another 1/8 of the limit.
-A host that cannot help does not stop writes. The thresholds are checked only on a write.
+A host that never answers holds writes at the limit. The thresholds are checked only on a write.
 
 ## SST file format
 
@@ -548,8 +548,8 @@ ops, whichever path brought it: its own commit, a broadcast or a catch-up read.
 * An append can carry no ops: the row of an `update` that took another seq than its header names.
 * `gap` replaces the records that a handle skipped because a flush folded them before it read
   them, or because a repair recorded another generation. A listener reads again.
-* `closed` is the last event. Its `reason` is `"destroyed"` when the handle's WAL database was
-  asked to close: by `destroyDb`, or by the browser or DevTools deleting it.
+* `closed` is the last event. Its `reason` is `"destroyed"` when `destroyDb`, the browser or
+  DevTools deleted the handle's WAL database, or the browser closed its connection by force.
 
 ## Recovery
 

@@ -98,6 +98,8 @@ export type Variant = {
   readonly noFallback?: boolean;
   /** Never adopt a newer manifest that holds seqs past the head. */
   readonly noNewerAdopt?: boolean;
+  /** Rule 1 adopts the newest manifest past the head, intact or not. */
+  readonly adoptBroken?: boolean;
   /** Number new manifests past `m/` only, forgetting what recovery saw. */
   readonly reuseNumbers?: boolean;
   /**
@@ -322,7 +324,7 @@ export class Sys implements Disk {
       for (const n of numbers) {
         if (generation !== undefined && n <= generation) break;
         const m = this.manifest(n);
-        if (m && m.through > head && this.intact(m)) {
+        if (m && m.through > head && (this.v.adoptBroken || this.intact(m))) {
           pick = m;
           break;
         }

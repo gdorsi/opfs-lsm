@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Db } from "../src/index.js";
-import { ingest, openHarnessDb } from "../src/testing.js";
+import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
 
 const enc = new TextEncoder();
+const dec = new TextDecoder();
 const key = (i: number) => enc.encode(`k${String(i).padStart(4, "0")}`);
 /** Lengths on both sides of the pooled span, 65 bytes to 1 KiB, and enough of them to fill several pools. */
 const LENGTHS = [0, 1, 64, 65, 100, 500, 1024, 1025, 3000];
@@ -76,5 +77,40 @@ describe("values a read hands out", () => {
     for (const entries of scans) expect(entries.every((e) => e.key.every((b) => b === 0xdd))).toBe(true);
     expect((await Array.fromAsync(db.range({ reverse: true }))).map((e) => [...e.key]).reverse()).toEqual(keys.map((k) => [...k]));
     expect(await db.getMany(keys)).toEqual(keys.map((_, i) => key(i)));
+  });
+});
+
+describe("a scan whose earlier values the app transferred", () => {
+  /** 100 bytes, so each copy of it comes from the shared pool. */
+  const pooled = (s: string) => enc.encode(s.padEnd(100, "."));
+  const names = Array.from({ length: 8 }, (_, i) => `m${i}`);
+
+  it.each([
+    { way: "forward", lone: "z", reverse: false },
+    { way: "backward", lone: "a", reverse: true },
+  ])("yields every key in order, $way", async ({ lone, reverse }) => {
+    const fs = new MemoryFs();
+    const host = new EngineHost(() => fs, { l0StopRuns: Number.POSITIVE_INFINITY });
+    db = await openHarnessDb({ name: `copy-out-transfer-${process.pid}-${lone}`, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30 });
+    // Two runs: `lone`, in the older, waits in the merge while every key of the newer passes it.
+    await db.put(pooled(lone), pooled(lone));
+    await ingest(db);
+    await db.batch((tx) => {
+      for (const name of names) tx.put(pooled(name), pooled(name));
+    });
+    await ingest(db);
+    const want = [...names, lone].sort();
+    if (reverse) want.reverse();
+
+    // Several rounds, so the waiting key and a transferred value land in one pool buffer in at least one.
+    for (let round = 0; round < 3; round++) {
+      const seen: string[] = [];
+      for await (const e of db.range({ reverse })) {
+        seen.push(dec.decode(e.key).replace(/\.+$/, ""));
+        const buffer = e.value.buffer as ArrayBuffer;
+        if (buffer.byteLength > 0) structuredClone(buffer, { transfer: [buffer] });
+      }
+      expect(seen, `round ${round}`).toEqual(want);
+    }
   });
 });

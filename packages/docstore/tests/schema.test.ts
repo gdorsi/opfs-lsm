@@ -285,6 +285,42 @@ describe("opening a schema", () => {
     expect(await codeOf(old.store.collection("notes").put({ id: "n1", body: "x" }))).toBe("schema");
   });
 
+  it("starts a dropped collection declared again empty before any sweep has removed its old keys: no row, no unique value", async () => {
+    type User = { id: string; email?: string | undefined; plan?: string | undefined };
+    const users = collection<User>().unique("byEmail", "email");
+    const withUsers = (version: number) => defineSchema({ version, collections: { todos: byCreated, users } });
+    const name = freshName();
+    const first = await at(name, withUsers(1));
+    await first.store.collection("users").putMany([
+      { id: "u1", email: "ada@example.com", plan: "pro" },
+      { id: "u2", email: "bob@example.com", plan: "pro" },
+    ]);
+    const oldUsers = await storedPrefix(first.kv, "users");
+
+    // Each handle's first catalog update is its open; the second, its sweep, waits.
+    const dropKv = gate(await kvOn(name), "catalog-or-batch", 1);
+    await openOn(dropKv.db, defineSchema({ version: 2, collections: { todos: byCreated }, drop: ["users"] }));
+    const kv = await kvOn(name);
+    const againKv = gate(kv, "catalog-or-batch", 1);
+    const again = await openOn(againKv.db, withUsers(3));
+    await againKv.arrived(2);
+    expect(await keysUnder(kv, oldUsers)).toBeGreaterThan(0);
+
+    const c = again.collection("users");
+    expect(await c.getMany(["u1", "u2"])).toEqual([undefined, undefined]);
+    expect((await c.queryIds({})).ids).toEqual([]);
+    expect((await c.queryIds({ index: "byEmail" })).ids).toEqual([]);
+    expect(await c.count({ index: "byEmail" })).toBe(0);
+    await c.put({ id: "u3", email: "ada@example.com", plan: "pro" });
+    expect(await c.count({ index: "byEmail" })).toBe(1);
+
+    dropKv.release();
+    againKv.release();
+    await Promise.all(stores.map((s) => s.whenIdle()));
+    expect(await keysUnder(kv, oldUsers)).toBe(0);
+    expect((await c.query({ index: "byEmail" })).docs).toEqual([{ id: "u3", email: "ada@example.com", plan: "pro" }]);
+  });
+
   it("opens an older schema after a newer one is stored, writing and reading its unchanged indexes", async () => {
     const name = freshName();
     await at(name, defineSchema({ version: 2, collections: { todos: byCreated } }));

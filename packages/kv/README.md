@@ -477,11 +477,11 @@ try {
 
 | Class | `code` | When | What to do |
 | --- | --- | --- | --- |
-| `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
+| `StorageUnavailableError` | `unavailable` | No SharedWorker or OPFS, or one that failed to start or open, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
 | `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write or a flush fails. `cause` holds the browser's error for a write. | Free space. See [Storage quota](#storage-quota). |
 | `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
-| `ClosedError` | `closed` | The handle is closed, by `close()` or by `destroyDb`. | Open a new one. |
+| `ClosedError` | `closed` | The handle is closed: by `close()`, by `destroyDb`, or because the browser closed its IndexedDB connection. | Open a new one. |
 
 **Note.** Chrome can damage its IndexedDB store when it crashes, then delete it or keep failing the open. If it deletes it, writes not flushed to OPFS yet are lost, and flushed data stays.

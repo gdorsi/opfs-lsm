@@ -1,6 +1,6 @@
 import { compareBytes } from "../bytes.js";
 import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
-import { ClosedError, codeOfError, CommitError, StorageFullError, StorageUnavailableError } from "../errors.js";
+import { ClosedError, codeOfError, CommitError, StorageFullError, unavailable } from "../errors.js";
 import {
   asGeneration,
   asSeq,
@@ -239,7 +239,7 @@ type OpenHow = {
   readonly create?: (db: IDBDatabase) => void;
   /** Asks for an upgrade to this version (`destroyDb`'s fence). Every other open is version-less. */
   readonly version?: number;
-  /** Runs once another context's upgrade or delete closed the connection. */
+  /** Runs once another context's upgrade or delete, or the browser, closed the connection. */
   readonly onAskedToClose?: () => void;
 };
 
@@ -262,18 +262,14 @@ export function openDatabase(name: string, how: OpenHow): Promise<IDBDatabase | 
     };
     req.onsuccess = () => {
       const db = req.result;
-      db.onversionchange = () => {
+      // `close` fires only when the browser closed the connection by force, as clearing site data does.
+      db.onversionchange = db.onclose = () => {
         db.close();
         how.onAskedToClose?.();
       };
       resolve(db);
     };
-    req.onerror = () => {
-      if (refused) return resolve(undefined);
-      const cause = req.error;
-      const detail = cause ? ` (${cause.name}: ${cause.message})` : "";
-      reject(new StorageUnavailableError(`the browser's IndexedDB store failed to open${detail}`, { cause }));
-    };
+    req.onerror = () => (refused ? resolve(undefined) : reject(unavailable("IndexedDB", req.error)));
   });
 }
 
@@ -289,12 +285,19 @@ export function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
+/**
+ * Settles when `tx` ends. Callers take it before they await the
+ * transaction's reads, and a failed read rejects first: the transaction's
+ * failure is then the same one, so its rejection counts as handled.
+ */
 export function txDone(tx: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
+  const done = new Promise<void>((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new CommitError("idb tx failed"));
     tx.onabort = () => reject(tx.error ?? new CommitError("idb tx aborted"));
   });
+  done.catch(() => undefined);
+  return done;
 }
 
 /**
@@ -427,6 +430,8 @@ async function readTail(tx: IDBTransaction, since: Seq, held?: Generation, start
     metaSeq(meta, META_INGESTED),
   ]);
   const copy = held === undefined || held === generation ? undefined : reqToPromise<Uint8Array | undefined>(meta.get(META_MANIFEST));
+  // As with `txDone`: a failed record read rejects first, with the same failure.
+  copy?.catch(() => undefined);
   started?.(generation, ingestedThrough, copy);
   const after = asSeq(Math.max(since, ingestedThrough));
   const head = await headOf(tx, after);
@@ -608,10 +613,22 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
     if (!open && !recovering) connection.close();
   }
 
+  /**
+   * A transaction on the connection. Only a closed connection refuses one:
+   * another context's upgrade or delete, the browser, or a `close` that
+   * waited out a recovery closed it.
+   */
+  function transaction(stores: string | string[], mode: IDBTransactionMode): IDBTransaction {
+    try {
+      return connection.transaction(stores, mode);
+    } catch {
+      throw new ClosedError("database is closed");
+    }
+  }
+
   async function tail(since: Seq, held?: Generation, started?: TailStart): Promise<WalTail> {
     // The reads are the result. Waiting for `complete` as well is one more trip.
-    const tx = connection.transaction([WAL_STORE, META_STORE], "readonly");
-    return readTail(tx, since, held, started);
+    return readTail(transaction([WAL_STORE, META_STORE], "readonly"), since, held, started);
   }
 
   async function appendAfter<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
@@ -635,13 +652,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   }
 
   async function appendOnce<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
-    let tx: IDBTransaction;
-    try {
-      tx = connection.transaction([WAL_STORE, META_STORE], "readwrite");
-    } catch {
-      // As in `commitGroup`: the connection closed, here by a `close` that waited out a recovery.
-      throw new ClosedError("database is closed");
-    }
+    const tx = transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const tail = await readTail(tx, since);
     let decision: ReturnType<typeof decide>;
@@ -684,12 +695,8 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   function commitGroup(entries: GroupEntry[], retried = false): void {
     let tx: IDBTransaction;
     try {
-      tx = connection.transaction(WAL_STORE, "readwrite");
-    } catch {
-      // Only a connection that closed refuses a transaction here: another
-      // context's upgrade or delete, or the browser, closed it while these
-      // appends queued.
-      const err = new ClosedError("database is closed");
+      tx = transaction(WAL_STORE, "readwrite");
+    } catch (err) {
       open = undefined;
       for (const entry of entries) entry.reject(err);
       next();
