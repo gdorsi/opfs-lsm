@@ -323,3 +323,10 @@ test("a case-sensitive like finds a Σ the text lowercases to σ", async () => {
   const doc: Doc = { id: "d00", g: 0, k: false, n: null, s: null, t: "ΟΔΟΣ ΑΣΑ" };
   await check([doc], [{ conds: [{ op: "like", pattern: "%ΑΣ_%" }], moves: [] }], [], false);
 });
+
+test("a like finds a letter whose lowercase composes with the mark after it", async () => {
+  const t = "xJ̌y";
+  assert.equal(t.normalize("NFC"), t);
+  const doc: Doc = { id: "d00", g: 0, k: false, n: null, s: null, t };
+  await check([doc], [{ conds: [{ op: "like", pattern: "%J̌%" }], moves: [] }, { conds: [{ op: "ilike", pattern: "%ǰ%" }], moves: [] }], [], false);
+});

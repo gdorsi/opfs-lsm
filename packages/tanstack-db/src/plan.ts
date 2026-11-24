@@ -329,11 +329,14 @@ const isBound = (v: unknown): v is Scalar => isScalar(v) && (typeof v !== "strin
 /** docstore's word breaks, and σ and ς: a Σ lowercases to either by the letters around it, which a pattern does not hold. */
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+|[σς]/u;
 
-/** docstore's text words, cut at σ and ς. Each word of a like pattern occurs inside one word of every text the pattern matches. */
+/**
+ * docstore's text words, cut at σ and ς. Each word of a like pattern occurs inside one word of every text the pattern matches.
+ * A lowercase that composes with the mark after it (J̌ to ǰ) is left out: docstore would compose the word, which the text never holds.
+ */
 function wordsOf(text: string): string[] {
   return text
     .normalize("NFC")
     .toLowerCase()
     .split(NON_WORD)
-    .filter((w) => w !== "");
+    .filter((w) => w !== "" && w === w.normalize("NFC"));
 }
