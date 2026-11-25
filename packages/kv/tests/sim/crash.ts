@@ -201,7 +201,7 @@ export type Destroyed = { readonly seq: number; readonly from: number; readonly 
  * "Destroy"), so a power loss that keeps a remove keeps the destroy, and no
  * state before it is read.
  */
-function destroyedThrough(ops: readonly DurableOp[], destroys: readonly Destroyed[], cut: Cut): number {
+export function destroyedThrough(ops: readonly DurableOp[], destroys: readonly Destroyed[], cut: Cut): number {
   const kept = ops.filter((op) => op.store === "opfs").slice(0, cut.opfs);
   let seq = 0;
   for (const op of kept) {
@@ -212,6 +212,18 @@ function destroyedThrough(ops: readonly DurableOp[], destroys: readonly Destroye
 }
 
 export type CrashModel = "process" | "power";
+
+/** A seeded generator of numbers in [0, 1), for sampling crash states. */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 /** The cut after the first `k` ops in global order. */
 export function processCut(ops: readonly DurableOp[], k: number): Cut {
@@ -318,7 +330,7 @@ function metaAt(ops: readonly DurableOp[], count: number): Map<string, number> {
  * appended, `ingestedThrough`, or the `head` of a destroyed row, which the
  * next open starts at (recovery rule 0), whichever is highest.
  */
-function headAt(ops: readonly DurableOp[], count: number): number {
+export function headAt(ops: readonly DurableOp[], count: number): number {
   let head = metaAt(ops, count).get("ingestedThrough") ?? 0;
   for (const op of idbCommits(ops, count)) {
     for (const m of op.muts) {
@@ -413,7 +425,7 @@ async function recover(name: string, ops: readonly DurableOp[], oracle: Oracle, 
 }
 
 /** The prefixes `p` in `[lo, hi]` that every read of the whole key space agrees with. */
-async function readPrefixes(db: Db, oracle: Oracle, lo: number, hi: number): Promise<number[]> {
+export async function readPrefixes(db: Db, oracle: Oracle, lo: number, hi: number): Promise<number[]> {
   const all: OracleEntry[] = [];
   for await (const e of db.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
   let set = oracle.rangeCandidates({}, all, lo).filter((p) => p <= hi);

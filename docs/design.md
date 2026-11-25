@@ -288,7 +288,7 @@ asks a tab to free space. kv never removes a row itself. The steps are in [reser
 
 After an append commits, a tab posts `{ kind: "rows", writerId, rows, bytes }` on the
 BroadcastChannel `opfs-lsm-layers/<name>`: the WAL rows it appended, each `{ seq, record }`, and
-the key and value bytes of their ops. A row is posted when it commits, unless the tab posted in
+what their ops count toward a flush (see [Trigger](#trigger)). A row is posted when it commits, unless the tab posted in
 the last 4 ms. Then it waits for the first commit past that time, a timer, or `close`, and one
 message carries every row that waited: a post costs per message, not per row. A hidden page
 posts every row when it commits, and what waits when it becomes hidden, because browsers slow
@@ -342,7 +342,7 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 ### Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
-folded. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
+folded, at least 32 bytes per op. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any tab asked for until the last one closes, and each tab
 asks for at most 7/8 of its `memtableBytes`. Once an eighth of the limit waits, the host also flushes
 2 s after the last `rows` message, or 5 s after the first since a flush began or the last 5 s wait ended, so an open replays a short tail.
@@ -366,7 +366,7 @@ For each run, under the exclusive section for the database, the host:
 1. Reconciles (see [Recovery](#recovery)). The recorded generation is `G`, and the highest
    manifest number in use is `top`.
 2. Reads the WAL records above `ingestedThrough`, oldest first, up to `flushRunBytes`. A run
-   takes at least one record, and an op counts as at least 32 bytes.
+   takes at least one record, and counts its records as the trigger does.
 3. Folds them to the last op per key, in key order, keeping the seq of each op, and drops each
    op that a range delete of the same records covers.
 4. Writes `l0/<first>-<last>.sst`, unless no op is left.
@@ -564,7 +564,7 @@ A manifest is **intact** when every run it lists is on disk. The write order kee
 true at every prefix of each store:
 
 1. **Every intact manifest is a log prefix.** Its runs hold the fold of exactly the seqs
-   `1..through`. A run is written before any manifest lists it, and run paths are never reused.
+   `1..through`. A run is written before any manifest lists it, and a path that a manifest lists never gets other rows.
 2. **WAL records are log entries.** `head` never moves down, and recovery and destroy move it
    past every seq that any manifest on disk names. New manifests number past `topGeneration`.
 
@@ -645,7 +645,8 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Compaction outputs written, before install | The outputs are garbage. |
 | A destroy's transaction, before its removes finish | The database is empty. A sweep, or the next `destroyDb`, removes what is left. |
 
-A sweep lists the run files and removes those the recorded manifest lacks and no tab holds open.
+A sweep removes the run files that no tab holds open and that neither the recorded manifest nor a newer one lists.
+A newer manifest is one whose IndexedDB commit failed or never ran, and it keeps its runs until a later flush removes it.
 
 A **power loss** keeps a prefix of the commits of IndexedDB and a prefix of the file operations
 of OPFS, independently.

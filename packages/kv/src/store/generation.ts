@@ -296,15 +296,22 @@ export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<Ge
 }
 
 /**
- * The runs of the recorded generation. A manifest past it is left by a
- * crash between publishing it and recording it: the next ingest or
- * compaction builds on the recorded one, and recovery adopts a manifest
- * only when all its runs are on disk, so its runs may go. A read that fails
- * throws, and a manifest that is gone throws too: nothing may be swept
- * against it.
+ * The runs of the recorded generation, and of every manifest numbered past
+ * it. Such a manifest is left by a publish whose IndexedDB commit failed or
+ * never ran. Its runs stay while it does: once they are gone, a power loss
+ * that takes the appends back lets a flush write the same path with other
+ * rows, and recovery would adopt the manifest over them. A read that fails
+ * throws, and a recorded manifest that is gone throws too: nothing may be
+ * swept against it.
  */
 export async function liveRuns(fs: ReadFs, recorded: Generation): Promise<string[]> {
-  return (await loadRecorded(fs, recorded)).runs.map((run) => run.path);
+  const runs = (await loadRecorded(fs, recorded)).runs;
+  const newer: RunMeta[] = [];
+  for (const n of await manifestNumbers(fs)) {
+    if (n <= recorded) break;
+    newer.push(...((await readManifest(fs, n))?.runs ?? []));
+  }
+  return [...runs, ...newer].map((run) => run.path);
 }
 
 /** Every run file on disk, from the `l<n>/` directories. */
