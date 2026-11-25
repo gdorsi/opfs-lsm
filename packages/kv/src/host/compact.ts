@@ -3,7 +3,7 @@ import { raiseGeneration } from "../idb/wal.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import { nextGeneration, type Generation } from "../seq.js";
-import { openMerge, type MergeCore } from "../store/engine.js";
+import { openMerge, type Demand, type MergeCore } from "../store/engine.js";
 import {
   loadRecorded,
   manifestNumbers,
@@ -39,19 +39,23 @@ type CompactionOutput = {
  * past every manifest number in use (`knownTop`, IndexedDB's
  * `topGeneration`, and `m/`), so they never overwrite a run one may list.
  * The merge waits for its turn in the context's one merge slot, so another
- * database's step already running finishes first.
+ * database's step already running finishes first. `awaited` says whether a
+ * flush waits for this step now (see `pumpMerge`).
  */
 export async function mergeNextStep(
   fs: AsyncFs,
   budget: HostBudget,
   base: GenerationMeta,
   knownTop: Generation,
+  awaited: () => boolean,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
   const plan = planCompaction(base, { maxSources: budget.maxSources });
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
-  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, base));
+  // Only an L0 step has more than two sources. One that starts with half the runs of the stop ends after L0 is full.
+  const ahead = () => (plan.sources.length > budget.maxSources / 2 || awaited() ? budget.chunkBytes : 0);
+  const merged = await inMergeSlot(() => writeStep(fs, plan, name, budget, base, ahead));
   return {
     inputs: plan.inputs.map((r) => r.path),
     // The merge applied every mark of `base`. One the manifest gains before
@@ -66,6 +70,7 @@ async function writeStep(
   name: (i: number) => string,
   budget: HostBudget,
   base: GenerationMeta,
+  ahead: () => number,
 ): Promise<MergedRun[]> {
   const inputs: OpenFile[][] = [];
   let merge: MergeCore | undefined;
@@ -88,7 +93,7 @@ async function writeStep(
       tailBytes: budget.tailBytes,
       yieldBytes: budget.yieldBytes,
     });
-    return await pumpMerge(fs, merge, inputs, name);
+    return await pumpMerge(fs, merge, inputs, name, ahead);
   } finally {
     merge?.close();
     for (const file of inputs.flat()) file.close();
@@ -101,22 +106,48 @@ async function writeStep(
  * its bytes come, and gives the event loop a turn at each `yield`. Returns
  * only after `done`, so only outputs whose inputs all checked out reach a
  * manifest. On any failure, removes every output it created and throws.
+ *
+ * A step waits on files longer than it computes. While `ahead()` is above 0,
+ * two of those waits overlap the session's work: one output write stays in
+ * flight while the session fills the next, and that many bytes are read
+ * ahead after each read of the last source, the level the step merges into,
+ * which holds most of a step's bytes and is read front to back. The overlap
+ * takes file time from the tabs, so the host asks for it only when a flush
+ * waits for the step or soon will.
  */
 export async function pumpMerge(
   fs: AsyncFs,
   merge: MergeCore,
   inputs: readonly (readonly OpenFile[])[],
   name: (i: number) => string,
+  ahead: () => number,
 ): Promise<MergedRun[]> {
   const outputs: MergedRun[] = [];
   const created: string[] = [];
   let open: { readonly path: string; readonly writer: FileWriter } | undefined;
+  let writing: Promise<void> | undefined;
+  // The bytes read ahead: `size` of them at `at` in `from`.
+  let from: OpenFile | undefined;
+  let at = 0;
+  let size = 0;
+  let bytes: Promise<Uint8Array>;
+  const read = (d: Demand): Promise<Uint8Array> => {
+    const file = inputs[d.source]![d.run]!;
+    if (d.source < inputs.length - 1) return file.read(d.offset, d.length);
+    const got = from === file && at === d.offset && size >= d.length ? bytes.then((b) => b.subarray(0, d.length)) : file.read(d.offset, d.length);
+    from = file;
+    at = d.offset + d.length;
+    size = Math.min(ahead(), file.size - at);
+    // A read ahead that fails throws only if the session asks for it.
+    if (size > 0) (bytes = file.read(at, size)).catch(() => undefined);
+    return got;
+  };
   try {
     for (;;) {
       const stop = merge.pump();
       switch (stop.kind) {
         case "need": {
-          const got = await Promise.all(stop.demands.map((d) => inputs[d.source]![d.run]!.read(d.offset, d.length)));
+          const got = await Promise.all(stop.demands.map(read));
           stop.demands.forEach((d, i) => merge.feed(d.source, got[i]!));
           break;
         }
@@ -126,10 +157,14 @@ export async function pumpMerge(
             created.push(path);
             open = { path, writer: await fs.create(path) };
           }
-          await open.writer.write(stop.bytes);
+          await writing;
+          // It throws at the next write or at the end of the run.
+          (writing = open.writer.write(stop.bytes)).catch(() => undefined);
+          if (!ahead()) await writing;
           break;
         case "run-end":
           if (!open) throw new Error("merge ended an output run it never wrote");
+          await writing;
           await open.writer.finish();
           outputs.push({ path: open.path, ...stop.end });
           open = undefined;

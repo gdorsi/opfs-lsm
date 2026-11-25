@@ -441,9 +441,9 @@ For a key, the newest source wins, and is dropped when a mark covers it. The ses
 the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
 `c<top + 1>.<i>`.
 
-The memory a step holds does not depend on the size of its inputs: about one read window of
-blocks per source, plus the open output block and its bloom and index rows. If any input is corrupt, or any
-read or write fails, the host deletes every output and installs nothing.
+The memory a step holds does not depend on the size of its inputs: about one read window of blocks per source, plus the open output
+block and its bloom and index rows. A step that a flush waits for, and an L0 step of over half `maxSources`, keeps one output write
+in flight and reads its output level a window ahead. If an input is corrupt, or a read or write fails, it installs nothing and deletes every output.
 
 ### Memory budget
 
