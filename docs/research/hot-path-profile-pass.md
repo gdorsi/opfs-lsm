@@ -1,8 +1,8 @@
 # A profile pass over the kv and docstore hot paths
 
 Status: rejected. No code changed. Three memtable variants were measured and rejected, and the
-memtable stays as design.md, "Memtable" describes it. The `sync` write tail at 200,000 issues is
-still open.
+memtable stays as design.md, "Memtable" describes it. The `sync` write tail at 200,000 issues was
+taken up in [compaction-file-waits.md](compaction-file-waits.md).
 
 Date: 2026-11-24. Chrome 157 headless, macOS arm64, Apple M2 Pro, commit `f8854bdd`. Other
 sessions ran headless Chromium on the machine during every measurement, with a load average of
@@ -95,7 +95,8 @@ at size `large` with a `sync` batch at p50 2.02 ms, p99 5.76 ms, p99.9 868 ms an
 108 ms. About 9 of 8,729 batches wait near a second.
 
 The likely cause is the memtable's hard cap: a write waits for a flush, and the flush waits for
-a compaction step once L0 holds its limit of runs. This was not confirmed. At size `small` the
+a compaction step once L0 holds its limit of runs.
+[compaction-file-waits.md](compaction-file-waits.md) confirmed it. At size `small` the
 slowest `sync` batch takes 29 ms, and the slow `import` batches are the ones that hold issues,
 which write 14 entries a row where a comment writes 2.
 

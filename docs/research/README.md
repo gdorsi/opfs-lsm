@@ -19,7 +19,7 @@ A note's `Status:` line starts with one of four words:
 | [conditional-write-round-trips.md](conditional-write-round-trips.md) | shipped, 2026-11-13 | Calling `commit()` early saves about 40 µs a write. Posting rows in 4 ms windows lifted kv `fillsync` from 0.69 to 0.78 of tuned IndexedDB to 0.82 to 0.94. |
 | [open-path-round-trips.md](open-path-round-trips.md) | shipped, 2026-11-22 | A cold open is a chain of 0.3 to 0.9 ms browser calls. Overlapping its steps took a fresh-tab open from 4.99 to 3.78 ms. Not done: run layouts read at open, fewer folder levels, stored file handles. |
 | [batch-size-caps-prior-art.md](batch-size-caps-prior-art.md) | shipped, 2026-11-11 | Embedded engines cap one write by bytes or memory, never by op count. kv dropped its 10,000-op cap and counts 256 bytes per op in a fixed 8 MiB batch limit. |
-| [hot-path-profile-pass.md](hot-path-profile-pass.md) | rejected, 2026-11-24 | The memtable insert is the only hot spot left on kv writes. A keys array saved about 2% of a write for 135 gzip bytes, so it was rejected. The `sync` write tail at 200,000 issues is open. |
+| [hot-path-profile-pass.md](hot-path-profile-pass.md) | rejected, 2026-11-24 | The memtable insert is the only hot spot left on kv writes. A keys array saved about 2% of a write for 135 gzip bytes, so it was rejected. The `sync` write tail at 200,000 issues went to compaction-file-waits.md. |
 
 ## kv reads
 
@@ -35,6 +35,7 @@ A note's `Status:` line starts with one of four words:
 | Note | Status | Learning |
 |---|---|---|
 | [bounded-compaction-memory.md](bounded-compaction-memory.md) | shipped, 2026-11-20 | A streaming merge under one budget, `compactionMemoryBytes`. At 32 MiB the SharedWorker's live set held at 0.81 times the budget and writes stayed as fast. Holds the prior art from other LSM engines (R1 to R10) and what is not built. Its wasm figures predate the AssemblyScript engine. |
+| [compaction-file-waits.md](compaction-file-waits.md) | shipped, 2026-11-25 | A compaction step waited on its files for 41 s of 60 s, one call at a time. One write in flight and one window read ahead took the replay at 200,000 issues from 15.1k to 18.3k ops/s. Always on, it slowed writes at 20,000 issues, so only a step a flush waits for overlaps. |
 
 ## kv correctness
 

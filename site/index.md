@@ -66,6 +66,15 @@ bench:
           - { measure: "The same board, read again", ours: 1.06 ms, theirs: 11.9 ms, ratio: 11× }
           - { measure: "An issue with its comments, in a fresh tab", ours: 6.68 ms, theirs: 2.18 ms, ratio: 0.33× }
           - { measure: "The same issue, read again", ours: 0.0917 ms, theirs: 0.391 ms, ratio: 4.3× }
+      - title: Writing a large workspace
+        versus: docstore against Dexie
+        stores: [docstore, Dexie]
+        setup: The same tracker at 200,000 issues, its history written with no pause. Medians of 5 runs on an Apple M2 Pro
+        note: The history is written faster than kv compacts, so a few batches wait for it. The slowest 0.1% of docstore's sync batches take 467 ms or more, against 71.7 ms on Dexie.
+        rows:
+          - { measure: "Import, mean of 442 batches of up to 1,000 rows", ours: 20.6 ms, theirs: 79.6 ms, ratio: 3.9× }
+          - { measure: "Sync, mean of 8,729 batches of about 50 changes", ours: 4.21 ms, theirs: 14.3 ms, ratio: 3.4× }
+          - { measure: "One edit", ours: 0.414 ms, theirs: 0.900 ms, ratio: 2.2× }
       - title: Your library on opfs-lsm
         versus: against each library's IndexedDB storage
         stores: [opfs-lsm, the IndexedDB option]
@@ -279,7 +288,7 @@ These benchmarks show our work in this direction.
 
 <div class="bench-foot">
 
-Runs in headless Chrome 157 on an Apple M2 Pro, and on an Apple M5 Max for the task tracker.
+Runs in headless Chrome 157 and 158 on an Apple M2 Pro, and on an Apple M5 Max for the task tracker, except its writes at 200,000 issues.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 
