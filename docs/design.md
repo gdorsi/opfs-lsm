@@ -442,8 +442,8 @@ the last entries of that run. It cuts the output into runs of about 4 MiB of rec
 `c<top + 1>.<i>`.
 
 The memory a step holds does not depend on the size of its inputs: about one read window of blocks per source, plus the open output
-block and its bloom and index rows. A step that a flush waits for, and an L0 step of over half `maxSources`, keeps one output write
-in flight and reads its output level a window ahead. If an input is corrupt, or a read or write fails, it installs nothing and deletes every output.
+block and its bloom and index rows. A step that a flush waits for, and an L0 step of over half `maxSources`, keeps one write in flight
+and reads its last source, the output level, a window ahead. A corrupt input or a failed read or write installs nothing and deletes every output.
 
 ### Memory budget
 

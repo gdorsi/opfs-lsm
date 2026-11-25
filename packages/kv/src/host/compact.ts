@@ -110,10 +110,11 @@ async function writeStep(
  * A step waits on files longer than it computes. While `ahead()` is above 0,
  * two of those waits overlap the session's work: one output write stays in
  * flight while the session fills the next, and that many bytes are read
- * ahead after each read of the last source, the level the step merges into,
- * which holds most of a step's bytes and is read front to back. The overlap
- * takes file time from the tabs, so the host asks for it only when a flush
- * waits for the step or soon will.
+ * ahead after each read of the last source. That is the level the step
+ * merges into when any of its runs overlap, which then holds most of the
+ * step's bytes and is read front to back. So up to two windows more are in
+ * flight. The overlap takes file time from the tabs, so the host asks for it
+ * only when a flush waits for the step or soon will.
  */
 export async function pumpMerge(
   fs: AsyncFs,

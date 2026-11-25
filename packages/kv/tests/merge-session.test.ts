@@ -499,7 +499,7 @@ describe("the compaction driver", () => {
 
 describe("the compaction driver's file waits", () => {
   /** The reads that started while an output write was in flight, and the reads that asked for bytes past what the session had asked for. */
-  async function overlap(ahead: number): Promise<{ duringWrite: number; ahead: number; bodies: Uint8Array[] }> {
+  async function overlap(ahead: number): Promise<{ duringWrite: number; ahead: number; asked: number; bodies: Uint8Array[] }> {
     // Three sources of 2,000 puts each, newest first, on interleaved keys.
     const runs = [2, 1, 0].map((n) =>
       encodeRunRef(
@@ -559,7 +559,7 @@ describe("the compaction driver's file waits", () => {
     const countFile = (file: OpenFile): OpenFile => ({ size: file.size, read: (o, l) => (plainReads.n++, file.read(o, l)), close: () => file.close() });
     await merge(fs, openWasm, spec, paths, "plain", undefined, countFile, 0);
     const merged = await merge(fs, openWasm, spec, paths, `ahead${ahead}`, wrapFs, wrapFile, ahead);
-    return { duringWrite: seen.duringWrite, ahead: seen.reads - plainReads.n, bodies: merged.runs.map((run) => run.body) };
+    return { duringWrite: seen.duringWrite, ahead: seen.reads - plainReads.n, asked: plainReads.n, bodies: merged.runs.map((run) => run.body) };
   }
 
   it("come one at a time for a step that no flush waits for", async () => {
@@ -573,6 +573,8 @@ describe("the compaction driver's file waits", () => {
     const awaited = await overlap(4096);
     expect(awaited.duringWrite).toBeGreaterThan(0);
     expect(awaited.ahead).toBeGreaterThan(0);
+    // A read ahead that the session never took would add a read to each of its own.
+    expect(awaited.ahead).toBeLessThan(awaited.asked / 4);
     expect(awaited.bodies).toEqual(alone.bodies);
   });
 });
@@ -647,6 +649,39 @@ describe("a compaction step at full size", () => {
       const expected = fold(sources.map((entries) => ({ runs: [], entries })), true, NO_MARKS);
       const bodies = await Promise.all(step.outputs.map(async (o) => (await base.read(o.path, 0, Infinity))!));
       expect(plain(bodies.flatMap((b) => decodeSst(b)))).toEqual(plain(expected));
+    },
+    60_000,
+  );
+
+  it(
+    "reads ahead only when a flush waits for it or it starts with over half the sources a step takes",
+    async () => {
+      const budget = hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES);
+      /** The bytes one step of the database above reads. */
+      async function bytesRead(maxSources: number, awaited: boolean): Promise<number> {
+        let read = 0;
+        const base = new MemoryFs();
+        const watched: AsyncFs = {
+          read: (...a) => base.read(...a),
+          list: (d) => base.list(d),
+          remove: (p) => base.remove(p),
+          removeUnlessOpen: (p) => base.removeUnlessOpen(p),
+          create: (p) => base.create(p),
+          open: async (path) => {
+            const file = await base.open(path);
+            return file && { size: file.size, read: (o, l) => ((read += l), file.read(o, l)), close: () => file.close() };
+          },
+        };
+        await database(watched);
+        const step = (await mergeNextStep(watched, { ...budget, maxSources }, (await loadLatestGeneration(watched))!, 0, () => awaited))!;
+        expect(step.inputs).toHaveLength(6);
+        return read;
+      }
+      // The step has six sources.
+      const alone = await bytesRead(12, false);
+      expect(await bytesRead(12, true)).toBeGreaterThan(alone);
+      expect(await bytesRead(11, false)).toBeGreaterThan(alone);
+      expect(await bytesRead(budget.maxSources, false)).toBe(alone);
     },
     60_000,
   );

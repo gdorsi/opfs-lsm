@@ -103,6 +103,10 @@ import. The kv and docstore budgets after open went up by 100 B each.
 
 ## Not done
 
+- A window read ahead is a full window, and the session then asks for what its own window has
+  free, so some bytes of the output level are read twice. Not measured in Chrome.
+- The gate is per database. A step of another database in the same SharedWorker, which holds
+  the one merge slot, does not overlap for a flush that waits behind it.
 - The merge still waits on its files for longer than it computes. The other sources' reads are
   not read ahead: 48 more windows would not fit `compactionMemoryBytes`.
 - An L0 step still rewrites about 290 MB of L1 for half an L0 stop of new runs at this size.
