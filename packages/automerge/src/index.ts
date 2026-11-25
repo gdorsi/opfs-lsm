@@ -6,8 +6,13 @@ import { ConstraintError, prefixBound, type Db } from "@opfs-lsm/kv";
  * (its open-time sync guarantees writes acked before open are visible). The
  * adapter owns db afterwards; `close` closes it. No caches, no queues, no key
  * shape assumptions, no sync on the read path.
+ *
+ * `db` undefined: the browser cannot store (`openDb(...).catch(noStorage)`).
+ * The chunks then live in this object's memory, so a document the Repo
+ * evicts and finds again keeps its content until the page goes away.
  */
-export function kvStorage(db: Db): StorageAdapterInterface {
+export function kvStorage(db: Db | undefined): StorageAdapterInterface {
+  if (!db) return pageStorage();
   return {
     async load(key) {
       return db.get(encodeKey(key));
@@ -31,6 +36,30 @@ export function kvStorage(db: Db): StorageAdapterInterface {
     close() {
       return db.close();
     } };
+}
+
+function pageStorage(): StorageAdapterInterface {
+  const chunks = new Map<string, Chunk>();
+  const id = (key: StorageKey) => encodeKey(key).join();
+  const under = (prefix: StorageKey) =>
+    [...chunks.values()].filter((chunk) => prefix.every((segment, i) => chunk.key[i] === segment));
+  return {
+    async load(key) {
+      return chunks.get(id(key))?.data;
+    },
+    async save(key, data) {
+      chunks.set(id(key), { key: [...key], data: data.slice() });
+    },
+    async remove(key) {
+      chunks.delete(id(key));
+    },
+    async loadRange(prefix) {
+      return under(prefix);
+    },
+    async removeRange(prefix) {
+      for (const chunk of under(prefix)) chunks.delete(id(chunk.key));
+    },
+  };
 }
 
 const MAX_SEGMENT_BYTES = 65_535;

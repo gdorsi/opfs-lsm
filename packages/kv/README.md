@@ -52,6 +52,19 @@ const again = await openDb({ name: "notes" });
 
 **Note.** Bundlers that need an explicit worker URL can import `@opfs-lsm/kv/shared-worker`.
 
+## Browsers without storage
+
+`noStorage` turns an open that rejects with `StorageUnavailableError` into `undefined`. Every other error still rejects.
+
+```ts
+import { noStorage, openDb } from "@opfs-lsm/kv";
+
+const db = await openDb({ name: "notes" }).catch(noStorage);
+if (!db) showBanner("Changes are not saved in this browser");
+```
+
+Pass the result to an adapter as it is. [`@opfs-lsm/yjs`](../yjs/README.md#without-storage), [`@opfs-lsm/automerge`](../automerge/README.md#without-storage) and [`@opfs-lsm/tanstack-query`](../tanstack-query/README.md#without-storage) take `undefined` and keep the app working, with nothing stored past the page. [`@opfs-lsm/tanstack-db`](../tanstack-db/README.md#without-storage) shows a collection that does the same. [Browser support](../../docs/browser-support.md) lists the browsers where `openDb` rejects.
+
 ## Reads and writes
 
 ```ts

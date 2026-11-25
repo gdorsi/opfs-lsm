@@ -52,6 +52,15 @@ export class StorageUnavailableError extends OpfsLsmError {
   }
 }
 
+/**
+ * For `openDb(options).catch(noStorage)`: undefined where this browser cannot
+ * store, an error of code "unavailable". Rethrows every other error.
+ */
+export function noStorage(error: unknown): undefined {
+  if (error instanceof Error && "code" in error && error.code === "unavailable") return undefined;
+  throw error;
+}
+
 /** `StorageUnavailableError` for `what`, which the browser has and which failed with `cause`. */
 export function unavailable(what: string, cause: unknown): StorageUnavailableError {
   const detail = cause instanceof Error ? ` (${cause.name}: ${cause.message})` : "";

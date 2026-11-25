@@ -66,6 +66,17 @@ await persistence.destroy(); // detaches from doc, then flushes
 
 If a write failed, the next `flush()` writes the whole doc state again. It rejects if that write fails too, and the next call retries.
 
+## Without storage
+
+```ts
+import { noStorage, openDb } from "@opfs-lsm/kv";
+
+const db = await openDb({ name: "notes" }).catch(noStorage);
+const persistence = new KvPersistence(db, "note-1", new Y.Doc());
+```
+
+Where the browser cannot store, the db is `undefined` ([Browsers without storage](../kv/README.md#browsers-without-storage)). The persistence then keeps every update of the doc in the page's memory under its name, merged at the threshold. A doc you destroy and attach again keeps its content, and a reload starts empty. `clearData()` drops the updates.
+
 ## Sharing a database
 
 Many documents can share one db, and every key starts with the byte `y`. No persistence closes the db. Close it after you destroy every persistence on it.

@@ -24,6 +24,17 @@ The persister also has `restoreQueries` to load the persisted queries into a cli
 
 The whole-client persister, `createAsyncStoragePersister`, is not supported. It saves the whole cache as one value, and kv rejects a value over 8 MiB. `createAsyncStoragePersister` drops that error unless the app passes `retry`, so a cache that grows past the limit stops being saved and nothing reports it.
 
+## Without storage
+
+```ts
+import { noStorage, openDb } from "@opfs-lsm/kv";
+
+const db = await openDb({ name: "app" }).catch(noStorage);
+const persister = createQueryPersister(db);
+```
+
+Where the browser cannot store, the db is `undefined` ([Browsers without storage](../kv/README.md#browsers-without-storage)). The persister then stores nothing. Every query calls `queryFn` as with no persister, and the QueryClient cache is the only copy. `restoreQueries`, `removeQueries` and `persisterGc` resolve and find nothing.
+
 ## Limits
 
 - A query whose storage key, `prefix` plus query hash, is over about 8 KiB, or whose serialized entry is over about 8 MiB, rejects with `ConstraintError`. `persistQuery` and `persistQueryByKey` reject to the caller. `persisterFn` writes in the background, so there the error is an unhandled rejection and the query still resolves with its data. A key over 8 KiB is never found, so `persisterFn` calls `queryFn` every time.

@@ -1,5 +1,6 @@
 import {
   experimental_createQueryPersister,
+  type AsyncStorage,
   type StoragePersisterOptions,
 } from "@tanstack/query-persist-client-core";
 import { prefixBound, type Db } from "@opfs-lsm/kv";
@@ -13,14 +14,18 @@ const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 /**
  * TanStack Query's per-query persister on a kv `Db`. The caller owns `db` and closes it.
  * One persisted query is one kv entry: key `q` + UTF-8 storage key, value the UTF-8 serialized query.
+ *
+ * `db` undefined: the browser cannot store (`openDb(...).catch(noStorage)`).
+ * The persister then stores nothing, and every query runs its `queryFn` as
+ * with no persister.
  */
 export function createQueryPersister(
-  db: Db,
+  db: Db | undefined,
   options: Omit<StoragePersisterOptions<string>, "storage"> = {},
 ): ReturnType<typeof experimental_createQueryPersister<string>> {
   return experimental_createQueryPersister({
     ...options,
-    storage: {
+    storage: db ? {
       async getItem(key) {
         const encoded = encodeKey(key);
         // kv rejects a longer key, so no entry has one, and the query falls back to queryFn.
@@ -44,9 +49,17 @@ export function createQueryPersister(
         }
         return out;
       },
-    },
+    } : NO_STORAGE,
   });
 }
+
+/** Stores nothing. Not `undefined`: TanStack's `restoreQueries`, `persisterGc` and `removeQueries` throw on that in development. */
+const NO_STORAGE: AsyncStorage<string> = {
+  getItem: () => null,
+  setItem() {},
+  removeItem() {},
+  entries: () => [],
+};
 
 function encodeKey(key: string): Uint8Array {
   const bytes = encodeText(key);

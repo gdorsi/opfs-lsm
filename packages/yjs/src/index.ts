@@ -14,6 +14,11 @@ import * as Y from "yjs";
  * are replaced with one merged state in one batch, the way y-indexeddb trims
  * at 500. A load replays every stored update, so a long session left unmerged
  * makes the next load slow.
+ *
+ * `db` undefined: the browser cannot store (`openDb(...).catch(noStorage)`).
+ * The doc's updates then live in this page's memory under `name`, shared by
+ * every persistence of the page on that name, until the page goes away or
+ * `clearData` drops them.
  */
 export class KvPersistence {
   readonly whenSynced: Promise<this>;
@@ -34,7 +39,7 @@ export class KvPersistence {
   private destroying: Promise<void> | undefined;
 
   constructor(
-    private readonly db: Db,
+    private readonly db: Db | undefined,
     readonly name: string,
     readonly doc: Y.Doc,
     private readonly trimSize = DEFAULT_TRIM_SIZE,
@@ -45,7 +50,7 @@ export class KvPersistence {
     // Content the doc held before this persistence was attached fires no update event.
     // That includes an update still waiting for the one it builds on.
     const { clients, pendingStructs, pendingDs } = doc.store;
-    if (clients.size > 0 || pendingStructs || pendingDs) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
+    if (clients.size > 0 || pendingStructs || pendingDs) this.write(Y.encodeStateAsUpdate(doc));
     this.whenSynced = this.load();
   }
 
@@ -58,7 +63,7 @@ export class KvPersistence {
     await this.settle();
     if (this.failure) {
       this.failure = undefined;
-      this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+      this.write(Y.encodeStateAsUpdate(this.doc));
     }
     // Settle again even with no failure: a concurrent flush may have just started the repair.
     await this.settle();
@@ -74,7 +79,7 @@ export class KvPersistence {
     this.doc.off("destroy", this.docDestroyed);
     // An update that went pending while attached fired no update event.
     const { pendingStructs, pendingDs } = this.doc.store;
-    if (pendingStructs || pendingDs) this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+    if (pendingStructs || pendingDs) this.write(Y.encodeStateAsUpdate(this.doc));
     await this.flush();
   }
 
@@ -91,21 +96,24 @@ export class KvPersistence {
   async clearData(): Promise<void> {
     // The final flush only stores updates this delete removes, so its failure does not stop the delete.
     await this.destroy().catch(() => {});
-    await this.db.batch((tx) => tx.deleteRange(prefixBound(this.prefix)));
+    if (this.db) await this.db.batch((tx) => tx.deleteRange(prefixBound(this.prefix)));
+    else pageUpdates.delete(this.name);
   }
 
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this || this.destroying) return;
-    this.track(this.db.put(this.nextKey(), update));
-    if (++this.stored >= this.trimSize) {
+    this.write(update);
+    const { db } = this;
+    if (db && ++this.stored >= this.trimSize) {
       clearTimeout(this.trimTimer);
-      this.trimTimer = setTimeout(() => this.track(this.trim()), this.trimDelayMs);
+      this.trimTimer = setTimeout(() => this.track(this.trim(db)), this.trimDelayMs);
     }
   };
 
   private async load(): Promise<this> {
     if (this.prefix.byteLength + 8 > MAX_KEY_BYTES) throw new ConstraintError("document name too long for a kv key");
-    const { updates, through } = await this.readStored();
+    const { db } = this;
+    const { updates, through } = db ? await this.readStored(db) : { updates: pageUpdates.get(this.name) ?? [], through: 0 };
     this.loadedUpdates = updates.length;
     const storedDuringLoad = this.stored;
     this.stored += updates.length;
@@ -114,8 +122,10 @@ export class KvPersistence {
       clearTimeout(this.trimTimer);
       // With no update during the load, the doc holds every stored update, so this merge needs no second read.
       const count = updates.length;
-      const merge = () => (storedDuringLoad > 0 ? this.trim() : this.replace(count, through));
-      if (this.stored >= this.trimSize) this.trimTimer = setTimeout(() => this.track(merge()), this.trimDelayMs);
+      if (db && this.stored >= this.trimSize) {
+        const merge = storedDuringLoad > 0 ? () => this.trim(db) : () => this.replace(db, count, through);
+        this.trimTimer = setTimeout(() => this.track(merge()), this.trimDelayMs);
+      }
       this.synced = true;
     }
     return this;
@@ -126,7 +136,7 @@ export class KvPersistence {
    * update is applied first, other tabs' included, so the one state holds
    * everything in the keys it replaces.
    */
-  private async trim(): Promise<void> {
+  private async trim(db: Db): Promise<void> {
     this.trimTimer = undefined;
     // The range delete stops at the read's seq. An own update still in flight
     // would stay stored, keyed before the merged state, and a later load would
@@ -134,15 +144,23 @@ export class KvPersistence {
     // which costs quadratic time in the number of such updates.
     await Promise.all(this.pending);
     if (this.destroying) return;
-    const { updates, through } = await this.readStored();
+    const { updates, through } = await this.readStored(db);
     if (this.destroying) return;
     this.apply(updates);
-    await this.replace(updates.length, through);
+    await this.replace(db, updates.length, through);
+  }
+
+  private write(update: Uint8Array): void {
+    if (this.db) return this.track(this.db.put(this.nextKey(), update));
+    let updates = pageUpdates.get(this.name);
+    if (!updates) pageUpdates.set(this.name, (updates = []));
+    updates.push(update);
+    if (updates.length >= this.trimSize) updates.splice(0, updates.length, Y.mergeUpdates(updates));
   }
 
   /** The doc's stored updates, and the seq of the log they were read at. */
-  private readStored(): Promise<{ updates: Uint8Array[]; through: number }> {
-    return this.db.view(async (snap) => {
+  private readStored(db: Db): Promise<{ updates: Uint8Array[]; through: number }> {
+    return db.view(async (snap) => {
       const updates: Uint8Array[] = [];
       for await (const entry of snap.range(prefixBound(this.prefix))) updates.push(entry.value);
       return { updates, through: snap.seq };
@@ -165,13 +183,13 @@ export class KvPersistence {
    * the whole doc, in one batch. The range delete stops at `through`, so an
    * update stored after the read, by this tab or another, stays.
    */
-  private async replace(count: number, through: number): Promise<void> {
+  private async replace(db: Db, count: number, through: number): Promise<void> {
     const state = Y.encodeStateAsUpdate(this.doc);
     const key = this.nextKey();
     this.stored = Math.max(1, this.stored - count + 1);
     // The batch lands whole or not at all, so a failed merge, such as a state
     // over the 8 MiB batch limit, loses no update and is no failure to repair.
-    await this.db
+    await db
       .batch((tx) => {
         tx.deleteRange(prefixBound(this.prefix), { through });
         tx.put(key, state);
@@ -206,6 +224,8 @@ export class KvPersistence {
     return key;
   }
 }
+
+const pageUpdates = new Map<string, Uint8Array[]>();
 
 const DEFAULT_TRIM_SIZE = 500;
 const MAX_KEY_BYTES = 8 * 1024;

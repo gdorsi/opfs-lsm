@@ -25,4 +25,5 @@ export {
   CorruptDatabaseError,
   StorageUnavailableError,
   StorageFullError,
+  noStorage,
 } from "./errors.js";

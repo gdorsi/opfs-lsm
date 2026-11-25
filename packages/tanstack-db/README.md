@@ -80,6 +80,26 @@ todos.get("1"); // => { id: "1", title: "Buy milk", done: true }
 
 `transact` resolves once the collection shows the write, which an on-demand collection does when a loaded query keeps the document. While another transaction on the collection is persisting, `transact` resolves before the collection shows the write: TanStack applies the synced row once that transaction settles.
 
+## Without storage
+
+docstore needs a db. Where the browser cannot store ([Browsers without storage](../kv/README.md#browsers-without-storage)), TanStack DB's `localOnlyCollectionOptions` keeps the collection in memory instead, until the page goes away.
+
+```ts
+import { noStorage } from "@opfs-lsm/kv";
+import { localOnlyCollectionOptions } from "@tanstack/db";
+
+const kv = await openDb({ name: "app" }).catch(noStorage);
+const todoList = kv
+	? createCollection(
+			docstoreCollectionOptions({
+				collection: (await openDocStore(kv, schema)).collection("todos"),
+			}),
+		)
+	: createCollection(
+			localOnlyCollectionOptions<Todo, string>({ id: "todos", getKey: (t) => t.id }),
+		);
+```
+
 ## Closing
 
 You own `kv` and the store. Closing `kv` stops every collection on it, and later writes throw `ClosedError`.

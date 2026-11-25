@@ -1,13 +1,9 @@
-/**
- * automerge-repo's storage adapter acceptance cases
- * (@automerge/automerge-repo/helpers/tests/storage-adapter-tests), run once on
- * the WAL and once after the rows moved to SST files.
- */
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import type { Db } from "@opfs-lsm/kv";
+import type { StorageAdapterInterface } from "@automerge/automerge-repo";
+import { noStorage, openDb } from "@opfs-lsm/kv";
 import { ingest, openHarnessDb } from "@opfs-lsm/kv/testing";
 import { kvStorage } from "../src/index.ts";
 
@@ -23,12 +19,24 @@ const LARGE_PAYLOAD = Uint8Array.from({ length: 100_000 }, (_, i) => (i * 31 + 7
 const sorted = <T extends { key: string[] }>(chunks: T[]): T[] =>
   chunks.toSorted((a, b) => a.key.join("/").localeCompare(b.key.join("/")));
 
-for (const moved of [false, true]) {
-  test(`the automerge-repo storage adapter acceptance cases hold${moved ? " once the rows are in SST files" : ""}`, async (t) => {
-    const db = await openHarnessDb({ name: dbName(), forceMemory: true });
-    const storage = kvStorage(db);
+const memoryDb = () => openHarnessDb({ name: dbName(), forceMemory: true });
+
+const storages: Record<string, () => Promise<{ storage: StorageAdapterInterface; settle(): Promise<void> }>> = {
+  "": async () => ({ storage: kvStorage(await memoryDb()), settle: async () => {} }),
+  " once the rows are in SST files": async () => {
+    const db = await memoryDb();
+    return { storage: kvStorage(db), settle: () => ingest(db) };
+  },
+  " without a db": async () => ({
+    storage: kvStorage(await openDb({ name: dbName() }).catch(noStorage)),
+    settle: async () => {},
+  }),
+};
+
+for (const [label, open] of Object.entries(storages)) {
+  test(`the automerge-repo storage adapter acceptance cases hold${label}`, async (t) => {
+    const { storage, settle } = await open();
     t.after(() => storage.close?.());
-    const settle = (d: Db) => (moved ? ingest(d) : Promise.resolve());
 
     assert.equal(await storage.load(["AAAAA", "sync-state", "xxxxx"]), undefined);
     assert.deepEqual(await storage.loadRange(["AAAAA"]), []);
@@ -39,7 +47,7 @@ for (const moved of [false, true]) {
     await storage.save(["AAAAA", "snapshot", "yyyyy"], PAYLOAD_B());
     await storage.save(["AAAAA", "sync-state", "zzzzz"], PAYLOAD_C());
     await storage.save(["BBBBB", "sync-state", "zzzzz"], PAYLOAD_B());
-    await settle(db);
+    await settle();
 
     assert.deepEqual(await storage.load(["storage-adapter-id"]), PAYLOAD_A());
     assert.deepEqual(await storage.load(["L", "sync-state", "xxxxx"]), LARGE_PAYLOAD);
@@ -61,7 +69,7 @@ for (const moved of [false, true]) {
 
     await storage.save(["AAAAA", "sync-state", "xxxxx"], PAYLOAD_B());
     await storage.remove(["AAAAA", "snapshot", "yyyyy"]);
-    await settle(db);
+    await settle();
     assert.equal(await storage.load(["AAAAA", "snapshot", "yyyyy"]), undefined);
     assert.deepEqual(sorted(await storage.loadRange(["AAAAA"])), [
       { key: ["AAAAA", "sync-state", "xxxxx"], data: PAYLOAD_B() },
@@ -69,7 +77,7 @@ for (const moved of [false, true]) {
     ]);
 
     await storage.removeRange(["AAAAA", "sync-state"]);
-    await settle(db);
+    await settle();
     assert.deepEqual(await storage.loadRange(["AAAAA"]), []);
     assert.deepEqual(await storage.loadRange(["BBBBB"]), [{ key: ["BBBBB", "sync-state", "zzzzz"], data: PAYLOAD_B() }]);
   });

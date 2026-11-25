@@ -1,6 +1,6 @@
 # Browser support
 
-`@opfs-lsm/kv` needs SharedWorker, OPFS with `createWritable()`, IndexedDB and WebAssembly in the page. Where SharedWorker or `createWritable()` is missing, SharedWorker or OPFS fails to start, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
+`@opfs-lsm/kv` needs SharedWorker, OPFS with `createWritable()`, IndexedDB and WebAssembly in the page. Where SharedWorker or `createWritable()` is missing, SharedWorker or OPFS fails to start, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory. [Browsers without storage](../packages/kv/README.md#browsers-without-storage) shows how an app built on the adapters keeps working there.
 
 Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
