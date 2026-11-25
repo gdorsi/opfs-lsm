@@ -1,7 +1,8 @@
 # LinearLite on kv: design
 
 A Linear clone with LinearLite's feature set (list, board, issue detail, comments, filters, sort, title search,
-create, a per-issue "not synced yet" mark) on TanStack Start, TanStack DB, `@opfs-lsm/tanstack-db` and SQLite.
+create, a per-issue "not synced yet" mark) on TanStack Start, TanStack DB and its React hooks, `@opfs-lsm/tanstack-db`
+and SQLite.
 It shows how a local-first data layer shapes the UX at LinearLite's scale of 100,000 issues with 0–1 comment
 each.
 
@@ -16,9 +17,11 @@ path and one merge rule. Each row carries its own unsent edits (`dirty`), which 
 conflict guard, and a `pending: true` that a sparse index lists, so the outbox is a range read. One tab per
 browser, elected with Web Locks, talks to the server. The server is SQLite where every row carries the global
 version that last changed it, so "what changed since V" is an index scan, not a log. The model (`src/model/`) is
-headless: `openLinearlite({ backend, transport })` returns live views, commands and sync, and runs in Node over the
-in-memory server; the app (`src/app/`) brings the browser, the HTTP transport, the sync lock and the docstore
-backend (`src/backends/kv.ts`). The model reaches storage only through its `Backend` (`src/model/backend.ts`), and
+headless: `openLinearlite({ backend, transport })` returns the collections, the index counts, commands and sync,
+and runs in Node over the in-memory server. It builds no view: `src/model/query.ts` holds the query builders,
+and pure functions (`place`, `threadOf`, `syncStatus`) say what a read means. The app (`src/app/`) brings the
+browser, the HTTP transport, the sync lock and the docstore backend (`src/backends/kv.ts`), and its hooks read
+every row with `@tanstack/react-db`'s `useLiveQuery` and `useLiveInfiniteQuery` over those builders. The model reaches storage only through its `Backend` (`src/model/backend.ts`), and
 `src/backends/contract.ts` is the suite the backend passes.
 
 ## Why nothing is eager
@@ -94,7 +97,9 @@ order: streams apply in table order, so a child follows its parent. The docstore
 `backend.transact(store, items, merge)` (`src/backends/kv.ts`, over the adapter's `utils.transact`) writes
 `merge(localRow, item)` for each item in one kv transaction per slice of up to 10,000 kv ops, so nothing can land between
 the read and the write of a row, in this tab or another. For issues it stamps the sort keys from the fields `merge`
-returns, so no write leaves them stale. Callers never use `collection.insert/update`.
+returns, so no write leaves them stale. Callers never use `collection.insert/update` or TanStack's optimistic
+mutations (`usePacedMutations`): their optimistic row has no `dirty` clocks, and the adapter stores the whole row as
+this tab saw it (see the note under Indexes).
 
 | write | merge function (pure, `src/domain/merge.ts`) |
 |---|---|
@@ -257,10 +262,11 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
 
 - **The URL holds the view.** `?status=1,2&priority=0&q=sync&sort=modified&dir=desc` via `validateSearch`.
   List and board share it. Back and forward restore a view; a link reproduces it.
-- **List.** `@tanstack/react-virtual` over a windowed live query (`orderBy` + `limit`, moved with
-  `utils.setWindow`, TanStack DB's live-query API, not the adapter's). No TanStack index: the collection holds a
-  few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function instead, since
-  `ilike` has no escape.
+- **List.** `@tanstack/react-virtual` over `useLiveQuery` of a windowed query (`orderBy`, `offset`, `limit`). A
+  render that changes only `offset` and `limit` moves the live query's window in place. No TanStack index: the
+  collection holds a few hundred rows. Title search is `ilike`; a query holding `%` or `_` uses a filter function
+  instead, since `ilike` has no escape. TanStack can neither hash nor move such a query, so the list builds it once
+  per filter and moves it with `utils.setWindow`.
 - **Counts.** The scroll height and the toolbar total come from `countTotal` and the board's column counts from
   `countByStatus` (`src/backends/kv.ts`), which count docstore index entries and read no document. The total is
   the sum of the column counts. A query of one plain word, the words a user types one key at a time, is counted
@@ -294,8 +300,8 @@ stale copy can erase a newer field another tab wrote. This app never calls `coll
   come in opposite orders, so a row's place in the index is not always its place in the list.
 - **Scroll.** The list keeps its scroll position per filter for the session, in memory, not in the URL, so Back
   from an issue lands where the user left.
-- **Board.** Five column queries ordered by `statusOrder`, which is `kanbanorder` within a column, windows growing
-  as a column scrolls, counts from `countByStatus`. A drop writes `status` and a fractional key between its
+- **Board.** Five `useLiveInfiniteQuery` columns ordered by `statusOrder`, which is `kanbanorder` within a column,
+  a page of 50 more as a column scrolls, counts from `countByStatus`. A sort change keeps them. A drop writes `status` and a fractional key between its
   neighbours in one `transact`.
 - **Detail.** The summary is a live query by id: from the list's rows when they hold it, else one document
   read. Description and comments load from kv on demand (a few ms), preloaded when the issue was on screen, else from

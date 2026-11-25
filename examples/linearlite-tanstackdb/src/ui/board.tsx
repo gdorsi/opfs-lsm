@@ -10,7 +10,6 @@ import { keepSearch, useIssueFilter } from "./nav.ts";
 import { Toolbar } from "./toolbar.tsx";
 
 const COLUMNS = [0, 1, 2, 3, 4] as const;
-const GROW = 50;
 const NEAR_BOTTOM = 400;
 
 export function BoardScreen() {
@@ -39,7 +38,7 @@ interface ColumnProps {
 
 function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
   const navigate = useNavigate();
-  const { rows, setRange } = useBoardColumn(status, filter);
+  const { rows, hasMore, showMore } = useBoardColumn(status, filter);
   usePreloadDetails(rows.map((r) => r.id));
   const body = useRef<HTMLDivElement>(null);
   const [at, setAt] = useState<number | null>(null);
@@ -92,7 +91,7 @@ function Column({ status, count, filter, dragging, setDragging }: ColumnProps) {
         className="cards"
         onScroll={(e) => {
           const el = e.currentTarget;
-          if (rows.length < (count ?? Infinity) && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) setRange(0, rows.length + GROW);
+          if (hasMore && el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) void showMore();
         }}
       >
         {count === 0 && <div className="col-empty">No issues</div>}

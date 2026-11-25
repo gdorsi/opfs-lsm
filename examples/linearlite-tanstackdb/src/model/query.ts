@@ -1,5 +1,5 @@
 import { and, createLiveQueryCollection, eq, gte, ilike, inArray, lte, type Collection, type InitialQueryBuilder, type Ref } from "@tanstack/db";
-import type { Body, Comment, StatusCode, StoredIssue, Synced } from "../domain/model.ts";
+import type { Body, Comment, StatusCode, StoredIssue, Synced, SyncState } from "../domain/model.ts";
 import type { SortValue } from "./backend.ts";
 import type { IssueFilter, SortField } from "./filter.ts";
 
@@ -50,25 +50,38 @@ export function filtered(q: InitialQueryBuilder, issues: Issues, filter: IssueFi
   return base.fn.where(({ i }) => i.title.toLowerCase().includes(needle));
 }
 
-/** Where the list's window starts: `offset` rows past the first issue whose sort value is `from` or sorts after it. */
-export type ListStart = { readonly from?: SortValue; readonly offset: number };
+/**
+ * A window of the list: `limit` rows, `offset` rows past the first issue whose sort value is `from` or sorts after it.
+ * Two windows that differ only in `offset` and `limit` are one live query, which `useLiveQuery` moves in place.
+ */
+export type ListWindow = { readonly from?: SortValue; readonly offset: number; readonly limit: number };
 
 /**
- * An ordered window of `size` issues under the filter: a board column with `status`, else the list from `start`.
- * Every view builds its own and none is shared, so one with no subscriber is dropped at once: TanStack's default
- * keeps it 5 s, loading rows and filtering every change for no one.
+ * Whether the filter's title search matches with a function, which TanStack can neither hash nor move in place: a
+ * screen builds that query once (`windowQuery`) and moves its window with `setWindow`.
  */
-export const windowQuery = (issues: Issues, filter: IssueFilter, size: number, status?: StatusCode, start?: ListStart) =>
-  createLiveQueryCollection({
-    gcTime: 1,
-    query: (q) => {
-      const rows = filtered(q, issues, filter, status);
-      const from = start?.from;
-      const bounded = from === undefined ? rows : rows.where(({ i }) => (filter.dir === "desc" ? lte : gte)(i[ORDER[filter.sort]], from));
-      const ordered = bounded.orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc");
-      return (start ? ordered.offset(start.offset) : ordered).limit(size);
-    },
-  });
+export const needsFilterFunction = (filter: IssueFilter) => !isLiteralOnly(filter.q);
+
+/** Issues under the filter in its order, from `from` on: a board column's order with `status`. */
+function ordered(q: InitialQueryBuilder, issues: Issues, filter: IssueFilter, status?: StatusCode, from?: SortValue) {
+  const rows = filtered(q, issues, filter, status);
+  const bounded = from === undefined ? rows : rows.where(({ i }) => (filter.dir === "desc" ? lte : gte)(i[ORDER[filter.sort]], from));
+  return bounded.orderBy(({ i }) => (status === undefined ? i[ORDER[filter.sort]] : i.statusOrder), status === undefined ? filter.dir : "asc");
+}
+
+/** A window of the issues under the filter: a board column with `status`, else the list. */
+export const listQuery = (issues: Issues, filter: IssueFilter, window: ListWindow, status?: StatusCode) => (q: InitialQueryBuilder) =>
+  ordered(q, issues, filter, status, window.from).offset(window.offset).limit(window.limit);
+
+/** A board column: the issues with `status` under the filter, in board order, for `useLiveInfiniteQuery` to page. */
+export const columnQuery = (issues: Issues, filter: IssueFilter, status: StatusCode) => (q: InitialQueryBuilder) => ordered(q, issues, filter, status);
+
+/**
+ * `listQuery` as a live query of its own, for a query `useLiveQuery` cannot hash. It is dropped as soon as no one
+ * subscribes: TanStack's default keeps it 5 s, loading rows and filtering every change for no one.
+ */
+export const windowQuery = (issues: Issues, filter: IssueFilter, window: ListWindow, status?: StatusCode) =>
+  createLiveQueryCollection({ gcTime: 1, query: listQuery(issues, filter, window, status) });
 
 /** The issue `id`, unless it is a tombstone. */
 export const issueById = (issues: Issues, id: string) => (q: InitialQueryBuilder) =>
@@ -90,6 +103,9 @@ export const commentsOf = (comments: Collection<Comment, string>, id: string) =>
     .from({ c: comments })
     .where(({ c }) => and(eq(c.issue_id, id), eq(c.deleted, false)))
     .orderBy(({ c }) => c.created, "asc");
+
+/** The sync row, which the leader writes and every tab's status bar reads. */
+export const syncRow = (sync: Collection<SyncState, string>) => (q: InitialQueryBuilder) => q.from({ s: sync }).findOne();
 
 /** The rows with unsent edits: the outbox. */
 export const unsent = <T extends Synced & { readonly id: string }>(rows: Collection<T, string>) =>

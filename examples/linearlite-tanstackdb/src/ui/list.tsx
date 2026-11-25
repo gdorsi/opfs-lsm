@@ -2,7 +2,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { IssueFilter } from "../model/filter.ts";
-import { LIST_WINDOW, usePreloadDetails, useIssueWindow } from "../app/hooks.ts";
+import { usePreloadDetails, useIssueList } from "../app/hooks.ts";
+import { LIST_WINDOW } from "../model/list.ts";
 import { model } from "../app/open.ts";
 import type { Issue } from "../domain/model.ts";
 import { formatDate, initial, shortId } from "./format.ts";
@@ -22,7 +23,7 @@ const scrolled = new Map<string, number>();
 
 export function ListScreen() {
   const filter = useIssueFilter();
-  const view = useIssueWindow(filter);
+  const view = useIssueList(filter);
   const filterKey = JSON.stringify(filter);
   const total = view.total ?? (view.rows.length > 0 ? view.offset + view.rows.length : undefined);
   return (

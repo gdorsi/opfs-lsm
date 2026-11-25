@@ -20,7 +20,7 @@ async function seeded() {
 
 async function search(q: string, status?: 0): Promise<string[]> {
   const issues = await seeded();
-  const query = windowQuery(issues as unknown as Issues, parseIssueFilter({ q, sort: "created", dir: "asc" }), 50, status);
+  const query = windowQuery(issues as unknown as Issues, parseIssueFilter({ q, sort: "created", dir: "asc" }), { offset: 0, limit: 50 }, status);
   await query.preload();
   const titles = query.toArray.map((i) => i.title);
   await query.cleanup();
