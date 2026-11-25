@@ -19,6 +19,7 @@ import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
+  announceGeneration,
   unlessHeld,
   type BusMessage,
   type ClientToHost,
@@ -800,15 +801,6 @@ async function sweep(fs: AsyncFs, generation: Generation, destroyedTop: Generati
   const live = await liveRuns(fs, generation, destroyedTop);
   await reclaimManifests(fs, generation);
   await reclaimRuns(fs, await listRuns(fs), live);
-}
-
-/** Tell the tabs to install the new generation and drop the merged runs. */
-function announceGeneration(dbName: DbName): void {
-  if (typeof BroadcastChannel === "undefined") return;
-  const bus = new BroadcastChannel(layersChannel(dbName));
-  const message: BusMessage = { kind: "ingest" };
-  bus.postMessage(message);
-  bus.close();
 }
 
 function isClosedDatabase(err: unknown): boolean {

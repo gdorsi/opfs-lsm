@@ -23,6 +23,7 @@ import {
   unavailable,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
+import { noHost } from "./host/no-host.js";
 import { createPortIngestClient } from "./host/port-client.js";
 import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
@@ -100,9 +101,8 @@ const MIN_MEMORY_BUDGET = 1024 * 1024;
  */
 export type OpenParts = {
   readonly fs: ReadFs;
+  /** Closed with the handle. */
   readonly ingest: IngestClient;
-  /** Close `ingest` with the handle. */
-  readonly ownsIngestClient: boolean;
   readonly writerId: WriterId;
   /** See `ROW_POST_MS`. */
   readonly rowPostMs: number;
@@ -264,7 +264,12 @@ export interface Db {
   dangerousDestroy(): Promise<void>;
 }
 
-/** Safari 16 to 25 has SharedWorker and OPFS but not `createWritable()`. */
+/** IndexedDB holds the WAL and OPFS the run files, which a tab only reads. */
+export function canKeepData(): boolean {
+  return typeof indexedDB !== "undefined" && typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";
+}
+
+/** The SharedWorker host can run: Safari 16 to 25 has SharedWorker and OPFS but not `createWritable()`. */
 export function canUseBrowserOpfs(): boolean {
   return (
     typeof SharedWorker !== "undefined" &&
@@ -298,14 +303,15 @@ export function dbInternals(db: Db): DbInternals | undefined {
 export async function openDb(options: OpenOptions): Promise<Db> {
   return openOn(options, () => {
     // `opfs-lsm/` names no database, so its lookup runs while the lock is requested.
-    const parent = canUseBrowserOpfs() ? openParent() : undefined;
+    const parent = canKeepData() ? openParent() : undefined;
     parent?.catch(() => undefined);
+    const hosted = canUseBrowserOpfs();
     return (name) => {
       if (!parent) throw new StorageUnavailableError(NEEDS_BROWSER);
+      const fs = openBrowserReadFs(name, parent);
       return {
-        fs: openBrowserReadFs(name, parent),
-        ingest: workerIngest(name),
-        ownsIngestClient: true,
+        fs,
+        ingest: hosted ? workerIngest(name) : noHost(fs),
         writerId: newWriterId(),
         rowPostMs: ROW_POST_MS,
         maxWalBytes: DEFAULT_MAX_WAL_BYTES,
@@ -314,7 +320,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   });
 }
 
-export const NEEDS_BROWSER = "SharedWorker or createWritable missing";
+export const NEEDS_BROWSER = "IndexedDB or OPFS missing";
 
 /** A client of the package SharedWorker for `name`. The handle that takes it closes it. */
 export function workerIngest(name: DbName): IngestClient {
@@ -347,10 +353,7 @@ export async function destroyDb(name: string): Promise<void> {
 export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFs | undefined }): Promise<void> {
   const name = checkDbName(options.name);
   const fs = options.fs;
-  const opfs = typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";
-  if (typeof indexedDB === "undefined" || (!fs && !opfs)) {
-    throw new StorageUnavailableError("destroyDb needs IndexedDB and navigator.storage.getDirectory");
-  }
+  if (fs ? typeof indexedDB === "undefined" : !canKeepData()) throw new StorageUnavailableError(NEEDS_BROWSER);
   await removeDatabase(name, fs ? async () => fs : () => findRemovableBrowserFs(name));
 }
 
@@ -389,8 +392,8 @@ async function openStores(
   engine: Promise<unknown>,
   parts: OpenParts,
 ): Promise<Db> {
-  const { fs: tabFs, ingest, ownsIngestClient } = parts;
-  // What the catch below closes: the Db once it exists, else the WAL and an owned port.
+  const { fs: tabFs, ingest } = parts;
+  // What the catch below closes: the Db once it exists, else the WAL and the ingest client.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
   try {
@@ -414,7 +417,6 @@ async function openStores(
       tabFs,
       cache,
       ingest,
-      ownsIngestClient,
       caps,
       parts.rowPostMs,
     );
@@ -432,7 +434,7 @@ async function openStores(
   } catch (err) {
     if (heldDb) await heldDb.close();
     else {
-      if (ownsIngestClient) ingest.close();
+      ingest.close();
       heldWal?.close();
     }
     throw err;
@@ -585,7 +587,6 @@ class DbImpl implements Db {
     readonly fs: ReadFs,
     private readonly cache: PageCache,
     readonly ingestClient: IngestClient,
-    private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
     private readonly rowPostMs: number,
   ) {
@@ -1350,7 +1351,7 @@ class DbImpl implements Db {
       this.bus.close();
     }
     if (this.watched) this.ingestClient.unwatch(this.name);
-    if (this.ownsIngestClient) this.ingestClient.close();
+    this.ingestClient.close();
     this.wal.close();
     this.release(this.installed);
     if (this.loaded) this.release(this.loaded);

@@ -1,6 +1,6 @@
 import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
-import { reclaimLock, webLocks, withLock } from "../locks.js";
+import { layersChannel, reclaimLock, webLocks, withLock } from "../locks.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 import type { Generation, Seq } from "../seq.js";
 
@@ -74,6 +74,15 @@ export type BusMessage =
   | { readonly kind: "full-pull" | "full-done" };
 
 export type BusRow = { readonly seq: Seq; readonly record: ArrayBuffer };
+
+/** Tell the tabs to install the new generation and drop the merged runs. */
+export function announceGeneration(dbName: string): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const bus = new BroadcastChannel(layersChannel(dbName));
+  const message: BusMessage = { kind: "ingest" };
+  bus.postMessage(message);
+  bus.close();
+}
 
 /**
  * Run `fn` holding the reclaim lock shared. While any tab holds it, the

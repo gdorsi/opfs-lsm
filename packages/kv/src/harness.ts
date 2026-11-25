@@ -4,6 +4,7 @@
  * stay out of their bundle.
  */
 import {
+  canKeepData,
   canUseBrowserOpfs,
   destroyDbWith,
   NEEDS_BROWSER,
@@ -17,6 +18,7 @@ import { checkDbName, newWriterId, type WriterId } from "./check.js";
 import { StorageUnavailableError } from "./errors.js";
 import { DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { EngineHost, createLocalIngestClient } from "./host/engine-host.js";
+import { noHost } from "./host/no-host.js";
 import type { IngestClient } from "./host/protocol.js";
 import type { AsyncFs, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -26,7 +28,8 @@ import { MemoryFs } from "./opfs/memory-fs.js";
 /**
  * Where the run files live and who flushes them. An fs comes with the client
  * of the host that publishes to it. Without one the fs is OPFS, and the client
- * is the package SharedWorker's unless one is given.
+ * is the package SharedWorker's, or `noHost` where it cannot run, unless one
+ * is given.
  */
 export type Backing =
   | { readonly fs: AsyncFs; readonly ingest: IngestClient }
@@ -57,15 +60,17 @@ export type OpenWithOptions = OpenOptions & OpenKnobs & Backing;
 /** `openDb` on a backing and with knobs the caller picks. */
 export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   return openOn(options, () => {
-    const parent = options.fs || !canUseBrowserOpfs() ? undefined : openParent();
+    const parent = options.fs || !canKeepData() ? undefined : openParent();
     parent?.catch(() => undefined);
+    const hosted = canUseBrowserOpfs();
     return (name) => {
       if (!options.fs && !parent) throw new StorageUnavailableError(NEEDS_BROWSER);
       const fs = options.fs ?? openBrowserReadFs(name, parent!);
       return {
         fs: options.wrapFs?.(fs) ?? fs,
-        ingest: options.ingest ?? workerIngest(name),
-        ownsIngestClient: !options.ingest,
+        // A given client may serve other handles, so this one does not close it.
+        // Object.create keeps every method, prototype ones included.
+        ingest: options.ingest ? Object.create(options.ingest, { close: { value() {} } }) : hosted ? workerIngest(name) : noHost(fs),
         writerId: (options.writerId ?? newWriterId()) as WriterId,
         rowPostMs: options.rowPostMs ?? ROW_POST_MS,
         maxWalBytes: options.maxWalBytes ?? DEFAULT_MAX_WAL_BYTES,
@@ -82,8 +87,9 @@ export type HarnessOpenOptions = OpenOptions &
      */
     readonly fs?: AsyncFs;
     /**
-     * Ingest client. Omit for the package SharedWorker when the fs is OPFS,
-     * and for an in-process EngineHost on a given or memory fs.
+     * Ingest client. Omit for the package SharedWorker when the fs is OPFS
+     * (`noHost` where it cannot run), and for an in-process EngineHost on a
+     * given or memory fs.
      */
     readonly ingest?: IngestClient;
     /**
@@ -118,7 +124,7 @@ function localIngest(fs: AsyncFs): IngestClient {
 
 function backingOf(options: HarnessOpenOptions): Backing {
   const name = checkDbName(options.name);
-  // Memory is never a fallback: only a harness that asks for it gets it.
+  // Memory is never a fallback, not even where no SharedWorker can run: only a harness that asks for it gets it.
   const fs = options.fs ?? (options.forceMemory === true ? memoryFs(name) : undefined);
   if (fs) return { fs, ingest: options.ingest ?? localIngest(fs) };
   return options.ingest ? { ingest: options.ingest } : {};

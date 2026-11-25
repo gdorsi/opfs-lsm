@@ -64,6 +64,51 @@ function installCaps(getDirectory: () => Promise<never>): void {
   });
 }
 
+/** An OPFS folder held in memory: what a tab's open needs of one. */
+class FakeDir {
+  readonly children = new Map<string, FakeDir>();
+  async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
+    let child = this.children.get(name);
+    if (!child && opts?.create) this.children.set(name, (child = new FakeDir()));
+    if (!child) throw new DOMException(name, "NotFoundError");
+    return child;
+  }
+  async *entries(): AsyncIterableIterator<[string, unknown]> {
+    yield* this.children.entries();
+  }
+}
+
+function installFolder(): void {
+  const root = new FakeDir();
+  putGlobal("navigator", { locks: (saved.navigator as Navigator).locks, storage: { getDirectory: async () => root } });
+}
+
+/** A SharedWorker stand-in that counts its constructions. */
+function countWorkers(): { started: number } {
+  const count = { started: 0 };
+  putGlobal(
+    "SharedWorker",
+    class {
+      port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
+      constructor() {
+        count.started++;
+      }
+    },
+  );
+  return count;
+}
+
+/** Writes, closes, opens again, and returns what the second handle reads. */
+async function roundTrip(): Promise<string | undefined> {
+  const db = await openDb({ name: NAME });
+  await db.put(enc.encode("k"), enc.encode("v"));
+  await db.close();
+  const again = await openDb({ name: NAME });
+  const got = await again.get(enc.encode("k"));
+  await again.close();
+  return got && dec.decode(got);
+}
+
 async function deleteIdb(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const req = indexedDB.deleteDatabase(`opfs-lsm-wal/${NAME}`);
@@ -87,10 +132,10 @@ describe("openDb storage policy", () => {
     await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 
-  it("rejects in a context with OPFS and no SharedWorker, as in a dedicated WebWorker", async () => {
-    installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
-    Reflect.deleteProperty(globalThis, "SharedWorker");
-    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
+  it("opens without a host in a context with OPFS and no SharedWorker, as in a dedicated WebWorker", async () => {
+    installFolder();
+    installFileHandle();
+    expect(await roundTrip()).toBe("v");
   });
 
   it("throws StorageUnavailableError on a page that cannot open OPFS", async () => {
@@ -103,25 +148,13 @@ describe("openDb storage policy", () => {
     });
   });
 
-  it("rejects and starts no SharedWorker where OPFS files have no createWritable, as in Safari 16 to 25", async () => {
+  it("opens without a host and starts no SharedWorker where OPFS files have no createWritable, as in Safari 16 to 25", async () => {
     installDocument();
-    installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
-    let started = 0;
-    putGlobal(
-      "SharedWorker",
-      class {
-        port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
-        constructor() {
-          started++;
-        }
-      },
-    );
-    await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
-    expect(started).toBe(1);
-
+    installFolder();
+    const workers = countWorkers();
     putGlobal("FileSystemFileHandle", class FileSystemFileHandle {});
-    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
-    expect(started).toBe(1);
+    expect(await roundTrip()).toBe("v");
+    expect(workers.started).toBe(0);
   });
 
   it("a harness open that names no fs does not get memory either", async () => {

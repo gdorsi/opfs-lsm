@@ -37,8 +37,11 @@ const db = await openDb({ name: "notes" });
 await openDb({ name: "my notes" });
 // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
 
-// In Node, or a dedicated WebWorker, which has OPFS but no
-// SharedWorker:
+// Where no SharedWorker can flush, as in a dedicated WebWorker or
+// Safari 16 to 25, it opens without one: rows stay in the WAL and
+// in each tab's memory (see Browser support).
+
+// In Node, which has neither IndexedDB nor OPFS:
 await openDb({ name: "notes" });
 // throws StorageUnavailableError, never falls back to memory
 ```
@@ -358,7 +361,7 @@ await db.view(async (snap) => {
 
 ## Storage quota
 
-The WAL and the SST files count against the origin's storage quota. kv keeps a reserve file of `reserveBytes`. When the browser refuses a write, the SharedWorker deletes the file, the write runs again, and an `onStorageFull` handler is asked to free space. kv never removes a row itself.
+The WAL and the SST files count against the origin's storage quota. kv keeps a reserve file of `reserveBytes`. When the browser refuses a write, the SharedWorker deletes the file, the write runs again, and an `onStorageFull` handler is asked to free space. kv never removes a row itself. Where no SharedWorker can run, there is no reserve: a refused write rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
 
 ```ts
 // a 24 MiB reserve
@@ -477,7 +480,7 @@ try {
 
 | Class | `code` | When | What to do |
 | --- | --- | --- | --- |
-| `StorageUnavailableError` | `unavailable` | No SharedWorker, no OPFS with `createWritable()`, or one that failed to start or open, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
+| `StorageUnavailableError` | `unavailable` | No IndexedDB or OPFS, or one that failed to start or open, the SharedWorker failed to start, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. Where no SharedWorker can run, also a recovery that needs SST files a host wrote. | Retry `openDb`, or reload the page. |
 | `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write or a flush fails. `cause` holds the browser's error for a write. | Free space. See [Storage quota](#storage-quota). |
 | `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
 | `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |

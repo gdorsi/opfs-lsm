@@ -32,7 +32,7 @@ The split makes reads and batched writes fast. It also costs something:
 - **Opening has more to load.** The first `openDb` loads the SharedWorker and a wasm engine. A cold open of 100,000 entries takes 9.1 ms. IndexedDB, with nothing to load, takes 24.5 ms for the same data.
 - **A single write costs what it costs in IndexedDB.** Every ack waits for an IndexedDB commit, so one awaited write at a time runs at the speed of IndexedDB. kv gains when writes come in groups.
 - **Other tabs see a write a moment later.** The BroadcastChannel message arrives after the ack. `db.sync()` reads the WAL to catch up.
-- **It needs SharedWorker.** Samsung Internet and Android WebView have none, so kv does not run there.
+- **It needs SharedWorker to compact.** Safari 16 to 25, Samsung Internet and Android WebView run kv without it: every row stays in the WAL and in each tab's memory ([Browser support](browser-support.md#without-a-host)).
 
 For an app that reads its data on every screen, the faster reads outweigh these costs. For an app that stores little and opens often, IndexedDB is the better trade.
 

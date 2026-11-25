@@ -353,8 +353,6 @@ database left over the limit catches up on open. The count only decides when to 
 flush reads the WAL, so a missed broadcast delays a flush and loses nothing. After a failed
 flush, the host waits for another `maxWalBytes` of writes or the next open.
 
-`ingest(db)` from `@opfs-lsm/kv/testing` flushes through the end of the log and waits for the compaction it starts.
-
 ### Flush
 
 A flush notes the head when it starts, then folds the WAL from `ingestedThrough` into one L0
@@ -493,15 +491,14 @@ that `openDb` refuses as corrupt.
 
 ### Emptying
 
-For `dangerousDestroy`, the host:
+For `dangerousDestroy`, the host, or a tab [without one](#where-code-runs), which skips step 3:
 
 1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
    No flush or merge publishes while it holds them, and a merge already running stops after its
    current step.
-2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
-   is on disk. It drops every WAL record and records generation 0, with `ingestedThrough` one
-   past every seq a manifest on disk names and past the head the transaction reads, so a tab that
-   keeps writing never delays it, and `topGeneration` and `destroyedTop` at the top manifest number.
+2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it is on disk. It drops every
+   WAL record and records generation 0, with `ingestedThrough` one past every seq a manifest on disk names and past the head
+   the transaction reads, so a tab that keeps writing never delays it, and `topGeneration` and `destroyedTop` at the top manifest number.
 3. Removes every manifest, then sweeps: against generation 0, every run goes. Both skip while a
    tab holds the reclaim lock, and the sweep skips each run a tab still holds open. A tab holds
    its runs until it installs generation 0, or until a `view` that started before the destroy ends.
@@ -625,8 +622,9 @@ it opened, so `destroyDb` can run next.
 * The host, under the exclusive section: at each flush and compaction install, when a tab asks,
   and before a sweep, except one in a pass that installed nothing: that sweep only runs for the
   generation the host last checked.
-* `openDb` checks while it reads the tail and loads its generation. It records generation 0 for a
-  database with nothing stored, and asks the host for every other write. It applies that tail
+* `openDb` checks while it reads the tail and loads its generation. It records generation 0 for a database with nothing
+  stored, and asks the host for every other write. A tab [without a host](#where-code-runs) records rule 0 itself under the ingest
+  lock when no manifest is on disk, and refuses every other write with `StorageUnavailableError`. It applies that tail
   only when nothing was written, and reads again otherwise. A tab writes only after this check.
 
 ## Crash behavior
@@ -678,8 +676,10 @@ of OPFS, independently.
 | Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript applies range deletes, wasm sorts and encodes |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
-A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
-`openDb` rejects with `StorageUnavailableError` when it does not load.
+A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required: `openDb` rejects with
+`StorageUnavailableError` when it does not load. Where the SharedWorker cannot run, or OPFS files have no `createWritable()`,
+a tab opens without a host: nothing flushes or compacts, so every record stays in the WAL and in each tab's memtable
+([costs](browser-support.md)). The tab still reads OPFS, so it loads what a host in another context writes, and that host flushes its records.
 
 ## Assumptions about the platform
 

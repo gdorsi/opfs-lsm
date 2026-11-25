@@ -12,6 +12,7 @@ export {
 } from "./harness.js";
 export { EngineHost, attachEngineHostPort, createLocalIngestClient } from "./host/engine-host.js";
 export { createPortIngestClient } from "./host/port-client.js";
+export { noHost } from "./host/no-host.js";
 export type { IngestClient } from "./host/protocol.js";
 export {
   ingest,
