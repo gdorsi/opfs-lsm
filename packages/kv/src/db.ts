@@ -1326,7 +1326,7 @@ class DbImpl implements Db {
     this.ensureOpen();
     await this.ingestClient.destroy(this.name);
     // Moving to the empty generation lets go of this tab's runs, and the
-    // compaction pass the ingest starts reclaims them.
+    // ingest reclaims them.
     await this.sync();
     await this.ingestClient.ingest(this.name, true);
   }

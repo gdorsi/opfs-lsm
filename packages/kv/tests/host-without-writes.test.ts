@@ -236,4 +236,43 @@ describe("a host that writes no run file", () => {
       restore();
     }
   });
+
+  it("removes the run files a writing host left when it empties the database", async () => {
+    const hosted = await withWrites();
+    for (let i = 0; i < 50; i++) await hosted.put(key(i), enc.encode("v"));
+    await ingest(hosted);
+    await close(hosted);
+    expect(fs.publishedPaths().some((path) => path.endsWith(".sst"))).toBe(true);
+
+    const db = await withoutWrites();
+    expect(await db.get(key(7))).toBeDefined();
+    await db.dangerousDestroy();
+    expect(await db.count()).toBe(0);
+    expect(fs.publishedPaths().filter((path) => path.endsWith(".sst"))).toEqual([]);
+  });
+
+  it("serves a database beside a writing host, through writes, a flush and a destroy", async () => {
+    const hosted = await withWrites();
+    const other = await withoutWrites();
+    await other.put(key(1), enc.encode("other"));
+    await hosted.put(key(2), enc.encode("hosted"));
+    await ingest(hosted);
+    await other.sync();
+    expect(dec.decode(await other.get(key(1)))).toBe("other");
+    expect(dec.decode(await other.get(key(2)))).toBe("hosted");
+
+    await other.dangerousDestroy();
+    await hosted.sync();
+    expect(await hosted.count()).toBe(0);
+    await other.put(key(3), enc.encode("after"));
+    await hosted.put(key(4), enc.encode("after"));
+    await ingest(hosted);
+    await other.sync();
+    await hosted.sync();
+    for (const db of [hosted, other]) {
+      const keys: string[] = [];
+      for await (const entry of db.range()) keys.push(dec.decode(entry.key));
+      expect(keys).toEqual([dec.decode(key(3)), dec.decode(key(4))]);
+    }
+  });
 });

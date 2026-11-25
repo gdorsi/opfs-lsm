@@ -134,14 +134,16 @@ export class EngineHost {
 
   /**
    * Flush the WAL into L0 runs, then start compaction in the background.
-   * With `waitForCompaction`, also wait until the levels are in shape.
+   * With `waitForCompaction`, also wait until the levels are in shape. A
+   * host that writes no run file flushes and compacts nothing.
    */
   async ingest(name: string, waitForCompaction = false): Promise<{ generation: Generation }> {
     return this.db(name).ingest(waitForCompaction);
   }
 
   /**
-   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
+   * Ignored by a host that writes no run file. Otherwise:
+   * ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
    * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
    * background and ingests when a reopened database is already over the limit.
    * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed,
@@ -247,7 +249,12 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     }
   }
 
-  /** A host that writes no run file answers with the recorded generation. */
+  /**
+   * A host that writes no run file answers with the recorded generation.
+   * With `waitForCompaction` it first removes the files no generation
+   * needs, as a compaction pass does at its end: `dangerousDestroy` asks so
+   * once its tab let go of its runs, and no pass of this host follows.
+   */
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
     if (writes) {
       const { generation } = await fold();
@@ -257,6 +264,11 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
         return { generation };
       }
       await compaction;
+    } else if (waitForCompaction) {
+      await withLock(compactLock(name), async () => {
+        const fs = await folder();
+        if (fs) await exclusive(() => withWal((wal) => reclaim(fs, wal), () => undefined));
+      });
     }
     return {
       generation: await withWal(
@@ -809,7 +821,7 @@ function isClosedDatabase(err: unknown): boolean {
  * Serve the host `build` makes to every tab that connects to this
  * SharedWorker, or, in a dedicated Worker, to the page that started it. It
  * writes run files only in a SharedWorker whose OPFS files have
- * `createWritable()`: each page runs its own dedicated Worker, and several
+ * `createWritable()`: each handle starts its own dedicated Worker, and several
  * hosts flushing one database is not verified.
  */
 export function serveWorker(build: (writes: boolean) => EngineHost): void {
