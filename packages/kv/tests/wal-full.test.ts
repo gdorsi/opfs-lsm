@@ -175,6 +175,34 @@ describe("a WAL append the browser refuses", () => {
     expect(await read(db, "next")).toBe("v");
   });
 
+  it("offers the handler while another subscription of the same function stays", async () => {
+    const db = await openFlushed();
+    const offers: unknown[] = [];
+    const handler = async (full: unknown) => void offers.push(full);
+    const stopFirst = db.onStorageFull(handler);
+    db.onStorageFull(handler);
+    stopFirst();
+    fillOrigin();
+
+    expect(await db.put(utf("k"), utf("v"))).toBe(2);
+    await vi.waitFor(() => expect(offers).toHaveLength(1));
+  });
+
+  it("rejects with StorageFullError when the host fails to make room, and the handle writes once the origin has room", async () => {
+    const db = await openFlushed();
+    vi.spyOn(host, "makeRoom").mockRejectedValueOnce(new Error("the host could not release the reserve"));
+    fillOrigin();
+
+    await expect(db.put(utf("lost"), utf("v"))).rejects.toBeInstanceOf(StorageFullError);
+    expect(await read(db, "lost")).toBeUndefined();
+
+    budget.limit += 512 * KiB;
+    expect(await read(db, "first")).toBe("row");
+    expect(await db.put(utf("next"), utf("v"))).toBe(2);
+    expect(await db.update([utf("first")], ([row], tx) => (tx.put(utf("copy"), row!), "done"))).toBe("done");
+    expect(await read(db, "copy")).toBe("row");
+  });
+
   it("shares one release among the appends refused together, and keeps the order they were issued in", async () => {
     const db = await openFlushed();
     const makeRoom = vi.spyOn(host, "makeRoom");

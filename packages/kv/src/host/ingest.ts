@@ -1,4 +1,4 @@
-import { opsBytes } from "../check.js";
+import { flushBytes } from "../check.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -85,7 +85,7 @@ export async function ingestChunk(
     marks: retireMarks([...prev.marks, ...folded.marks], runs),
   });
   let foldedBytes = 0;
-  for (const r of records) foldedBytes += opsBytes(r.ops);
+  for (const r of records) foldedBytes += flushBytes(r.ops);
   await advanceIngested(wal, { through: last, generation, manifest });
   return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
 }
