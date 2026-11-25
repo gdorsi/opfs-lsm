@@ -354,14 +354,23 @@ let engine: FlatEngine | undefined;
 /** Kept so a new instance can be made without fetching or compiling again. */
 let wasmModule: WebAssembly.Module | undefined;
 let initOnce: Promise<void> | undefined;
-/** The most memory any instance this context dropped had reached. */
-let droppedPeakBytes = 0;
-let mergeReservedBytes = 0;
-let recycleCount = 0;
+/** What a meter hears from this context's engine. Only `@opfs-lsm/kv/testing` sets one. */
+type EngineWatcher = {
+  /** An instance was replaced, after it had reached `bytes` of memory. */
+  dropped(bytes: number): void;
+  recycled(): void;
+  /** A merge session was asked to reserve `bytes`: a window per source and one for the output run. */
+  reserved(bytes: number): void;
+};
+let watcher: EngineWatcher | undefined;
 
-/** Every swap goes through here, so the memory a dropped instance reached is not lost. */
+export function watchEngine(next: EngineWatcher): void {
+  watcher = next;
+}
+
+/** Every swap goes through here, so a watcher hears the memory a dropped instance reached. */
 function setEngine(next: FlatEngine | undefined): void {
-  droppedPeakBytes = Math.max(droppedPeakBytes, engine?.memoryBytes() ?? 0);
+  if (engine) watcher?.dropped(engine.memoryBytes());
   engine = next;
 }
 
@@ -474,26 +483,9 @@ function restartEngine(): void {
   }
 }
 
-/** What this context's wasm engine holds, for `HostStats.memory`. Zero before it loads. */
-type EngineMemory = {
-  /** The current instance's memory. Wasm memory never shrinks, so it only grows until a recycle. */
-  wasmBytes: number;
-  /** The most memory any instance reached. */
-  wasmPeakBytes: number;
-  /** The most a merge session was asked to reserve: a window per source and one for the output run. */
-  mergeReservedBytes: number;
-  /** Instances replaced by `recycleEngine`. */
-  recycles: number;
-};
-
-export function engineMemory(): EngineMemory {
-  const wasmBytes = engine?.memoryBytes() ?? 0;
-  return {
-    wasmBytes,
-    wasmPeakBytes: Math.max(droppedPeakBytes, wasmBytes),
-    mergeReservedBytes,
-    recycles: recycleCount,
-  };
+/** The current instance's memory, zero before it loads. */
+export function engineMemoryBytes(): number {
+  return engine?.memoryBytes() ?? 0;
 }
 
 /**
@@ -512,7 +504,7 @@ export function recycleEngine(maxBytes: number): boolean {
     // No memory for a second instance: the old one still works.
     return false;
   }
-  recycleCount += 1;
+  watcher?.recycled();
   return true;
 }
 
@@ -546,7 +538,7 @@ export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRu
  */
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   const wasm = await loaded();
-  mergeReservedBytes = Math.max(mergeReservedBytes, (spec.sources.length + 1) * spec.chunkBytes);
+  watcher?.reserved((spec.sources.length + 1) * spec.chunkBytes);
   const guard = <T>(call: () => T): T => {
     try {
       return call();

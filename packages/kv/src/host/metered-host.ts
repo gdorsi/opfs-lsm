@@ -2,12 +2,33 @@ import { checkDbName, type DbName } from "../check.js";
 import { openExistingWal } from "../idb/wal.js";
 import { CountingFs, emptyIoCounters, type IoCounters } from "../opfs/counting-fs.js";
 import { GENERATION_NONE, type Generation } from "../seq.js";
-import { engineMemory } from "../store/engine.js";
+import { engineMemoryBytes, watchEngine } from "../store/engine.js";
 import { loadGeneration } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
 import type { HostOverrides } from "./budget.js";
 import { destroyed, EngineHost, type FsFactory, type Meter } from "./engine-host.js";
 import type { HostStats } from "./protocol.js";
+
+/** What this context's engine dropped, recycled and reserved since this module loaded. */
+const engineFigures = { droppedPeakBytes: 0, mergeReservedBytes: 0, recycles: 0 };
+watchEngine({
+  dropped(bytes) {
+    engineFigures.droppedPeakBytes = Math.max(engineFigures.droppedPeakBytes, bytes);
+  },
+  recycled() {
+    engineFigures.recycles += 1;
+  },
+  reserved(bytes) {
+    engineFigures.mergeReservedBytes = Math.max(engineFigures.mergeReservedBytes, bytes);
+  },
+});
+
+/** This context's wasm engine, shared by every database it serves, for `HostStats.memory`. */
+export function engineMemory(): HostStats["memory"] {
+  const wasmBytes = engineMemoryBytes();
+  const { droppedPeakBytes, mergeReservedBytes, recycles } = engineFigures;
+  return { wasmBytes, wasmPeakBytes: Math.max(droppedPeakBytes, wasmBytes), mergeReservedBytes, recycles };
+}
 
 /** What a meter counted for one database. */
 type Counts = Pick<HostStats, "flushes" | "l0Stops" | "compactionSteps" | "foldedBytes"> & { readonly io: IoCounters };

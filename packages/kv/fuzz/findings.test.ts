@@ -171,6 +171,7 @@ describe("wasm traps", () => {
     const engine = await import("../src/store/engine.js");
     const scan = await import("../src/store/block-scan.js");
     await import("../src/testing.js");
+    const { engineMemory } = await import("../src/host/metered-host.js");
     const instantiate = WebAssembly.instantiate.bind(WebAssembly);
     let memory: WebAssembly.Memory | undefined;
     const spy = vi.spyOn(WebAssembly, "instantiate").mockImplementation((async (module: WebAssembly.Module, imports?: WebAssembly.Imports) => {
@@ -191,8 +192,8 @@ describe("wasm traps", () => {
 
     const hits = scan.unpackHits(scanBlock(block, packPatterns([])));
     expect([...hits].map((h) => h.key)).toEqual([utf("big")]);
-    expect(engine.engineMemory()).toMatchObject({ wasmPeakBytes: 2 ** 32 });
-    expect(engine.engineMemory().wasmBytes).toBeLessThan(2 ** 28);
+    expect(engineMemory()).toMatchObject({ wasmPeakBytes: 2 ** 32 });
+    expect(engineMemory().wasmBytes).toBeLessThan(2 ** 28);
     expect(decodeSst((await engine.encodeRun(entries)).body)).toHaveLength(entries.length);
     vi.resetModules();
   });
