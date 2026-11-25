@@ -3,8 +3,9 @@
 Status: shipped. An open overlaps its IndexedDB and OPFS steps, opens runs from the manifest copy
 in `meta` while it reads the manifest file, and the host flushes a waiting tail after 2 s with no
 write or 5 s of writes, so a fresh tab replays a short tail ([Installing a generation](../design.md#installing-a-generation),
-[Trigger](../design.md#trigger)). Not done: reading every run's layout at open, fewer folder
-levels, and file handles kept in IndexedDB.
+[Trigger](../design.md#trigger)). Not done: fewer folder levels, and file handles kept in
+IndexedDB. A read of every run's tail at open was rejected, and the block indexes later moved
+into the manifest file ([cold-read-run-metadata.md](cold-read-run-metadata.md)).
 
 Date: 2026-11-11 to 2026-11-22. Chrome 157 headless, macOS arm64, Apple M5 Max, and Apple M2 Pro
 for the last section. Other work ran on the machine during every measurement, so each comparison
@@ -77,9 +78,10 @@ taken: it moved a load into recovery, and when recovery then recorded a differen
 tab held a generation it had to drop. Change 2 of 2026-11-18 runs the recovery check while the
 tail is read and the runs open, so the load now overlaps recovery.
 
-**Reading every run's layout at open** was rejected and still is. It takes 0.4 ms off the first
-`get`, but it reads up to 128 KiB per run at open, and a large database has many runs that a given
-tab never reads.
+**Reading every run's tail at open** was rejected. It took 0.4 ms off the first `get`, but it
+read up to 128 KiB per run at open, and a large database has many runs that a given tab never
+reads. On 2026-11-25 the block indexes moved into the manifest file, which an open already read,
+and the first `get` no longer waits for a tail ([cold-read-run-metadata.md](cold-read-run-metadata.md)).
 
 ## Fresh tabs, 2026-11-18
 
