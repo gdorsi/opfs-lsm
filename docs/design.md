@@ -14,8 +14,7 @@ SharedWorker, the host, turns the log into SST files and compacts them.
 The design ranks its goals in this order:
 1. Read and write latency.
 2. Consistency. Every read sees the state after one prefix of the log.
-3. Persistence. An acked write should survive, but the engine trades this away before the first
-   two.
+3. Persistence. An acked write should survive, but the engine gives it up before the first two.
 
 This document covers the kv engine only. The packages built on it are not described here.
 
@@ -353,8 +352,6 @@ database left over the limit catches up on open. The count only decides when to 
 flush reads the WAL, so a missed broadcast delays a flush and loses nothing. After a failed
 flush, the host waits for another `maxWalBytes` of writes or the next open.
 
-`ingest(db)` from `@opfs-lsm/kv/testing` flushes through the end of the log and waits for the compaction it starts.
-
 ### Flush
 
 A flush notes the head when it starts, then folds the WAL from `ingestedThrough` into one L0
@@ -376,8 +373,7 @@ For each run, under the exclusive section for the database, the host:
    [Range deletes](#range-deletes)).
 6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to
    `top + 1` and truncates the WAL.
-7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim
-   lock.
+7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim lock.
 
 The exclusive section is a promise chain in the host plus the Web Lock `opfs-lsm-ingest/<name>`,
 which covers two SharedWorkers that serve the same database. A compaction install can take the
@@ -679,7 +675,11 @@ of OPFS, independently.
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
-`openDb` rejects with `StorageUnavailableError` when it does not load.
+`openDb` rejects with `StorageUnavailableError` when it does not load. Without a SharedWorker,
+each handle runs the host in a dedicated Worker. Only a SharedWorker whose OPFS files have
+`createWritable()` writes run files, since several hosts flushing one database is not verified.
+Any other host answers a flush with the recorded generation and never compacts or keeps a reserve,
+so every record stays in the WAL ([costs](browser-support.md#where-the-host-cannot-write)).
 
 ## Assumptions about the platform
 
