@@ -1,16 +1,37 @@
-import type { DbName } from "../check.js";
+import { checkDbName, type DbName } from "../check.js";
+import { openExistingWal } from "../idb/wal.js";
 import { CountingFs, emptyIoCounters, type IoCounters } from "../opfs/counting-fs.js";
+import { GENERATION_NONE, type Generation } from "../seq.js";
+import { engineMemory } from "../store/engine.js";
+import { loadGeneration } from "../store/generation.js";
+import { levelOf } from "../store/levels.js";
 import type { HostOverrides } from "./budget.js";
-import { EngineHost, type FsFactory, type Meter } from "./engine-host.js";
+import { destroyed, EngineHost, type FsFactory, type Meter } from "./engine-host.js";
+import type { HostStats } from "./protocol.js";
 
-function countingMeter(): Meter {
-  const ios = new Map<DbName, IoCounters>();
-  const io = (name: DbName) => {
-    let counters = ios.get(name);
-    if (!counters) ios.set(name, (counters = emptyIoCounters()));
-    return counters;
+/** What a meter counted for one database. */
+type Counts = Pick<HostStats, "flushes" | "l0Stops" | "compactionSteps" | "foldedBytes"> & { readonly io: IoCounters };
+
+const zero = (): Counts => ({ io: emptyIoCounters(), flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 });
+
+function countingMeter(counted: Map<DbName, Counts>): Meter {
+  const of = (name: DbName) => {
+    let counts = counted.get(name);
+    if (!counts) counted.set(name, (counts = zero()));
+    return counts;
   };
-  return { fs: (name, inner) => new CountingFs(inner, io(name)), io };
+  return {
+    fs: (name, inner) => new CountingFs(inner, of(name).io),
+    flushed(name, chunk) {
+      const counts = of(name);
+      if (chunk.kind === "stopped") counts.l0Stops += 1;
+      if (chunk.kind === "folded") counts.flushes += 1;
+      counts.foldedBytes += chunk.foldedBytes;
+    },
+    compacted(name) {
+      of(name).compactionSteps += 1;
+    },
+  };
 }
 
 /**
@@ -18,7 +39,49 @@ function countingMeter(): Meter {
  * with a meter, so `stats` answers. `@opfs-lsm/kv/testing` exports it as `EngineHost`.
  */
 export class MeteredHost extends EngineHost {
+  private readonly counted: Map<DbName, Counts>;
+  private readonly folder: FsFactory;
+
   constructor(fsFactory: FsFactory, overrides?: HostOverrides) {
-    super(fsFactory, overrides, countingMeter());
+    const counted = new Map<DbName, Counts>();
+    super(fsFactory, overrides, countingMeter(counted));
+    this.counted = counted;
+    this.folder = fsFactory;
+  }
+
+  /**
+   * What this host counted for `name` since it started. `generation` and
+   * `layout` describe the recorded generation; their manifest read bypasses
+   * the counters.
+   */
+  override async stats(name: string): Promise<HostStats> {
+    const dbName = checkDbName(name);
+    const wal = await openExistingWal(dbName);
+    if (!wal) throw destroyed();
+    let recorded: Generation;
+    try {
+      recorded = (await wal.meta()).generation ?? GENERATION_NONE;
+    } finally {
+      wal.close();
+    }
+    const fs = await this.folder(dbName);
+    if (!fs) throw destroyed();
+    const latest = await loadGeneration(fs, recorded);
+    const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
+    for (const run of latest?.runs ?? []) {
+      const level = levelOf(run.path) ?? 0;
+      const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
+      entry.runs += 1;
+      entry.bytes += run.bytes;
+      byLevel.set(level, entry);
+    }
+    const { io, ...counts } = this.counted.get(dbName) ?? zero();
+    return structuredClone({
+      fs: io,
+      ...counts,
+      generation: latest?.generation ?? GENERATION_NONE,
+      layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
+      memory: engineMemory(),
+    });
   }
 }
