@@ -5,7 +5,7 @@ import {
   checkDbName,
   checkKey,
   newWriterId,
-  opsBytes,
+  flushBytes,
   type BatchOp,
   type CheckedKey,
   type CheckedOp,
@@ -951,7 +951,7 @@ class DbImpl implements Db {
     if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && ops.length && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
-    this.broadcast({ seq, record }, opsBytes(ops));
+    this.broadcast({ seq, record }, flushBytes(ops));
   }
 
   /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
@@ -1231,18 +1231,21 @@ class DbImpl implements Db {
 
   changes(listener: ChangeListener): () => void {
     this.ensureOpen();
-    this.listeners.add(listener);
+    // A function of its own per call, so two subscriptions of one function end apart.
+    const own: ChangeListener = (event) => listener(event);
+    this.listeners.add(own);
     return () => {
-      this.listeners.delete(listener);
+      this.listeners.delete(own);
     };
   }
 
   onStorageFull(handler: StorageFullHandler): () => void {
     this.ensureOpen();
-    this.handlers.add(handler);
+    const own: StorageFullHandler = (full) => handler(full);
+    this.handlers.add(own);
     if (!this.unlock) this.askLock();
     return () => {
-      if (this.handlers.delete(handler) && this.handlers.size === 0) this.unlock?.();
+      if (this.handlers.delete(own) && this.handlers.size === 0) this.unlock?.();
     };
   }
 

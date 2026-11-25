@@ -10,7 +10,7 @@ import {
   type AsyncFs,
   readStats,
 } from "../src/testing.js";
-import { checkDbName, checkKey, checkValue, opsBytes } from "../src/check.js";
+import { checkDbName, checkKey, checkValue, flushBytes } from "../src/check.js";
 import { TabWal, encodeOps, getIngestedThrough, listUningested, uningestedBytes } from "../src/idb/wal.js";
 import { compactLock, ingestLock } from "../src/locks.js";
 import { advance } from "./advance.js";
@@ -179,31 +179,31 @@ describe("ingest policy", () => {
     const first = {
       type: "put" as const,
       key: checkKey(utf("a")),
-      value: checkValue(new Uint8Array(10)),
+      value: checkValue(new Uint8Array(40)),
     };
     const second = {
       type: "put" as const,
       key: checkKey(utf("b")),
-      value: checkValue(new Uint8Array(4)),
+      value: checkValue(new Uint8Array(34)),
     };
     const seq = await wal.append(encodeOps([first]));
     expect(seq).toBe(1);
-    expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([first]));
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(flushBytes([first]));
     const next = await wal.append(encodeOps([second]));
     expect(next).toBe(2);
     await advance(wal, { through: seq ?? 0, generation: 1 });
-    expect(await uningestedBytes(wal, 1 << 30)).toBe(opsBytes([second]));
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(flushBytes([second]));
     expect((await listUningested(wal, { maxBytes: 1 << 30 })).map((record) => record.seq)).toEqual([2]);
     await wal.append(encodeOps([first]));
-    const secondBytes = opsBytes([second]);
-    const bothBytes = secondBytes + opsBytes([first]);
+    const secondBytes = flushBytes([second]);
+    const bothBytes = secondBytes + flushBytes([first]);
     expect(await uningestedBytes(wal, 1 << 20), "under the cap: exact").toBe(bothBytes);
-    // Seq 2 is 5 bytes and seq 3 is 11. A cap of 5 stops after seq 2 with
+    // Seq 2 is 35 bytes and seq 3 is 41. A cap of 35 stops after seq 2 with
     // bytes == cap, so it cannot tell a partial sum from the cap itself.
-    expect(secondBytes).toBe(5);
-    expect(await uningestedBytes(wal, 8), "early stop, bytes under the cap").toBe(8);
-    expect(await uningestedBytes(wal, 4), "early stop, the first record past the cap").toBe(secondBytes);
-    expect(bothBytes).toBeGreaterThan(8);
+    expect(secondBytes).toBe(35);
+    expect(await uningestedBytes(wal, 38), "early stop, bytes under the cap").toBe(38);
+    expect(await uningestedBytes(wal, 34), "early stop, the first record past the cap").toBe(secondBytes);
+    expect(bothBytes).toBeGreaterThan(38);
     wal.close();
   });
 
@@ -218,22 +218,22 @@ describe("ingest policy", () => {
         value: checkValue(new Uint8Array(n)),
       },
     ];
-    const size = (n: number) => opsBytes(op(n));
-    await wal.append(encodeOps(op(20)));
-    await wal.append(encodeOps(op(18)));
-    await wal.append(encodeOps(op(10)));
-    const full = size(20) + size(18) + size(10);
-    expect(full).toBe(51);
+    const size = (n: number) => flushBytes(op(n));
+    await wal.append(encodeOps(op(50)));
+    await wal.append(encodeOps(op(48)));
+    await wal.append(encodeOps(op(40)));
+    const full = size(50) + size(48) + size(40);
+    expect(full).toBe(141);
     expect(await uningestedBytes(wal, 1 << 30)).toBe(full);
     expect(await uningestedBytes(wal, full + 1), "one over the total: exact").toBe(full);
     expect(await uningestedBytes(wal, full), "exactly the total").toBe(full);
     expect(await uningestedBytes(wal, full - 1), "one under the total: the cap").toBe(full - 1);
-    expect(await uningestedBytes(wal, size(20)), "cap on a record boundary, with more left").toBe(size(20));
-    const pastFirst = await uningestedBytes(wal, size(20) - 1);
-    expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(20) - 1);
+    expect(await uningestedBytes(wal, size(50)), "cap on a record boundary, with more left").toBe(size(50));
+    const pastFirst = await uningestedBytes(wal, size(50) - 1);
+    expect(pastFirst, "a record larger than the cap still says the WAL is over it").toBeGreaterThanOrEqual(size(50) - 1);
     expect(pastFirst).toBeLessThan(full);
     await advance(wal, { through: 1, generation: 1 });
-    const rest = size(18) + size(10);
+    const rest = size(48) + size(40);
     expect(await uningestedBytes(wal, 1 << 30), "ingested rows are not counted").toBe(rest);
     expect(await uningestedBytes(wal, rest)).toBe(rest);
     expect(await uningestedBytes(wal, rest - 1)).toBe(rest - 1);
@@ -241,24 +241,24 @@ describe("ingest policy", () => {
   });
 
   it("ingests on open exactly when the waiting WAL reaches maxWalBytes", async () => {
-    const limit = 40;
+    const limit = 80;
     const key = utf("k");
-    // Key "k" is one byte, so a value of n bytes counts as n + 1.
+    // Key "k" is one byte, so a value of n bytes counts as n + 1. Each op is past the 32 bytes an op counts at least.
     const cases = [
-      { id: "under", values: [30], total: 31, ingests: false },
-      { id: "exact", values: [39], total: 40, ingests: true },
-      { id: "over", values: [40], total: 41, ingests: true },
-      { id: "two-under", values: [20, 17], total: 39, ingests: false },
-      { id: "two-exact", values: [20, 18], total: 40, ingests: true },
+      { id: "under", values: [70], total: 71, ingests: false },
+      { id: "exact", values: [79], total: 80, ingests: true },
+      { id: "over", values: [80], total: 81, ingests: true },
+      { id: "two-under", values: [40, 37], total: 79, ingests: false },
+      { id: "two-exact", values: [40, 38], total: 80, ingests: true },
       // The first record is under the limit. The capped read has to notice the second.
-      { id: "two-over", values: [20, 30], total: 52, ingests: true },
+      { id: "two-over", values: [40, 50], total: 92, ingests: true },
     ];
     for (const c of cases) onTestFinished(() => deleteWal(`${NAME}-cap-${c.id}`));
     for (const { id, values, total, ingests } of cases) {
       const name = `${NAME}-cap-${id}`;
       let got = 0;
       for (const n of values) {
-        got += opsBytes([{ type: "put", key: checkKey(key), value: checkValue(new Uint8Array(n)) }]);
+        got += flushBytes([{ type: "put", key: checkKey(key), value: checkValue(new Uint8Array(n)) }]);
       }
       expect(got).toBe(total);
       const fs = new MemoryFs();
@@ -321,7 +321,7 @@ describe("ingest policy", () => {
     const again = await TabWal.open(checkDbName(name));
     expect((await again.meta()).head).toBe(2);
     expect((await again.tail(0)).records.map((r) => r.seq)).toEqual([1, 2]);
-    expect(await uningestedBytes(again, 1 << 30)).toBe(opsBytes([first]) + opsBytes([second]));
+    expect(await uningestedBytes(again, 1 << 30)).toBe(flushBytes([first]) + flushBytes([second]));
     again.close();
 
     const fs = new MemoryFs();
@@ -366,7 +366,8 @@ describe("ingest policy", () => {
   });
 
   it("counts overwrites of one key, which leave the memtable the same size", async () => {
-    const { fs, a, b } = await twoTabs(20);
+    // An op counts as at least 32 bytes: two stay under the limit, the third passes it.
+    const { fs, a, b } = await twoTabs(80);
     await a.put(utf("k"), utf("1".repeat(8)));
     await b.put(utf("k"), utf("2".repeat(8)));
     await settle();
@@ -379,12 +380,25 @@ describe("ingest policy", () => {
     await b.close();
   });
 
+  for (const [what, write] of [
+    ["range deletes of everything", (db: Db) => db.batch((tx) => tx.deleteRange({}))],
+    ["puts of an empty key and value", (db: Db) => db.put(new Uint8Array(0), new Uint8Array(0))],
+  ] as const) {
+    it(`counts ${what} toward maxWalBytes, though their ops hold no byte`, async () => {
+      const fs = new MemoryFs();
+      const db = await open(new EngineHost(() => fs), fs, "a", 256);
+      for (let i = 0; i < 20; i++) await write(db);
+      await flushed(fs);
+      expect((await loadLatestGeneration(fs))?.through, "seqs the flush folded").toBeGreaterThan(0);
+    });
+  }
+
   it("keeps the waiting WAL under the limit plus one batch, for overwrites and deletes", async () => {
     const limit = 4_000;
     const { a, b } = await twoTabs(limit);
     const keys = Array.from({ length: 50 }, (_, i) => utf(`key/${String(i).padStart(4, "0")}`));
     const wal = await TabWal.open(checkDbName(NAME));
-    const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + opsBytes(r.ops), 0);
+    const waiting = async () => (await wal.tail(0)).records.reduce((n, r) => n + flushBytes(r.ops), 0);
     for (let round = 0; round < 40; round++) {
       await a.batch((tx) => {
         for (const k of keys) {

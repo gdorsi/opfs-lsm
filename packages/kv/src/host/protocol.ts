@@ -66,7 +66,7 @@ export type BusMessage =
       readonly writerId: WriterId;
       /** WAL rows this tab appended, in the order their acks resolved. One buffer clones in one copy; the ops it holds would clone one by one. */
       readonly rows: readonly BusRow[];
-      /** The key and value bytes of their ops (`opsBytes`), for the host's ingest trigger. */
+      /** What their ops count toward a flush (`flushBytes`), for the host's ingest trigger. */
       readonly bytes: number;
     }
   | { readonly kind: "ingest" }

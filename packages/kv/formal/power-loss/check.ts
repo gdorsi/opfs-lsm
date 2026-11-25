@@ -4,18 +4,27 @@
  *
  * Run: pnpm --filter @opfs-lsm/kv formal:power-loss
  *
- * Every workload of up to MAX_CMDS appends, ingests (of every waiting
- * record, or of the oldest one: a chunk of a flush), compactions, destroys
- * and removals (`destroyDb`, then an open) runs on the model in model.ts.
+ * Every workload of up to MAX_CMDS commands runs on the model in model.ts:
+ * appends, ingests (of every waiting record, or of the oldest one: a chunk
+ * of a flush), compactions (alone, or with a flush between the merge and
+ * the install), an ingest or a compaction whose IndexedDB commit fails
+ * while the host goes on, sweeps with no install before them, destroys and
+ * removals (`destroyDb`, then an open). Workloads that write the same
+ * durable ops leave the same crash states, so each list of ops is checked
+ * once.
  * For every triple (WAL database prefix, destroyed-row prefix, OPFS prefix)
  * of its durable ops: open (`reconcile`), read, recover (sweep, ingest,
  * compact), keep writing, and crash again at every triple of the recovery's
  * ops. Properties:
  * - PowerPrefix: every read is the state after one log prefix (the writes
- *   since its last destroy), and the database always opens. At the crash
- *   during or after a recovery, the browser may also throw away both
- *   IndexedDB databases: each OPFS prefix alone is a crash state too, and
- *   there a manifest past the head can list a run a sweep removed;
+ *   since its last destroy), and the database always opens. A read through
+ *   a manifest whose runs hold other writes than it was written over is no
+ *   prefix. At the crash during or after a recovery, the browser may also
+ *   throw away both IndexedDB databases: each OPFS prefix alone is a crash
+ *   state too;
+ * - HeadPast: after an open and after each step of a recovery, the head is
+ *   at or past the `through` of every manifest on disk, so no append takes
+ *   a seq a manifest names (design.md, "The invariant", fact 2);
  * - ProcessAll: a cut that is a prefix of the global order (a process
  *   crash) reads every acked write;
  * - RecoveryStable: recovery's ingest and compaction change no read, leave
@@ -33,10 +42,10 @@
  *   it.
  * Broken variants (build on the newest manifest, no head raise, an adopt or
  * a destroy that moves the head and not the key generator, no fallback, no
- * newer-manifest adoption, a newer manifest adopted with its runs gone,
- * destroy files before its commit, a destroy
- * commit at the default durability, a fallback to a manifest whose runs are
- * gone, and six wrong removals or births) must
+ * newer-manifest adoption, destroy files before its commit, a destroy
+ * commit at the default durability, six wrong removals or births, and a
+ * sweep that removes the runs of a manifest numbered past the recorded
+ * one, with HeadPast and by its reads alone) must
  * each fail, so the model is strong enough to see the bugs the crash suite
  * found.
  *
@@ -50,13 +59,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cloneDisk, cloneOpfs, count, type Cut, DESTROYED, type Disk, eachKept, emptyDisk, possibleCut, Refused, replay, Stuck, Sys, type Op, type Variant } from "./model.js";
+import { cloneDisk, cloneOpfs, count, type Cut, DESTROYED, type Disk, eachKept, emptyDisk, Mixed, possibleCut, Refused, replay, Stuck, Sys, type Op, type Variant } from "./model.js";
 
 const MAX_CMDS = Number(process.env.FORMAL_POWER_CMDS ?? 6);
 /** Power losses in a row: the first, then one during or after each recovery. */
 const CRASHES = Number(process.env.FORMAL_POWER_CRASHES ?? 2);
-type Cmd = "append" | "update" | "ingest" | "ingestOne" | "compact" | "destroy" | "remove";
-const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "compact", "destroy", "remove"];
+type Cmd = "append" | "update" | "ingest" | "ingestOne" | "ingestFail" | "compact" | "compactFlush" | "compactFail" | "sweep" | "destroy" | "remove";
+const CMDS: Cmd[] = ["append", "ingest", "ingestOne", "ingestFail", "compact", "compactFlush", "compactFail", "sweep", "destroy", "remove"];
 /** Writes after the first recovery, before the second crash. */
 const AFTER: Cmd[] = ["append", "ingest", "update", "compact"];
 
@@ -78,6 +87,10 @@ function run(sys: Sys, cmd: Cmd): void {
   else if (cmd === "update") sys.appendAfter();
   else if (cmd === "ingest") sys.ingest();
   else if (cmd === "ingestOne") sys.ingest(true);
+  else if (cmd === "ingestFail") sys.ingest(false, true);
+  else if (cmd === "compactFlush") sys.compact(true);
+  else if (cmd === "compactFail") sys.compact(false, true);
+  else if (cmd === "sweep") sys.sweep();
   else if (cmd === "destroy") sys.destroy();
   else if (cmd === "remove") sys.remove();
   else sys.compact();
@@ -105,6 +118,7 @@ function read(sys: Sys, what: string): Set<number> {
   } catch (err) {
     if (err instanceof Stuck) throw new Violation(`${what}: does not open (${err.message})`);
     if (err instanceof Refused) throw new Violation(`${what}: refused a state a power loss leaves (${err.message})`);
+    if (err instanceof Mixed) throw new Violation(`${what}: read no log prefix: ${err.message}`);
     throw err;
   }
 }
@@ -198,6 +212,8 @@ function removeClean(st: Disk, v: Variant, where: string): void {
 }
 
 let states = 0;
+/** Workloads checked: those whose durable ops no earlier one wrote. */
+let traces = 0;
 
 /**
  * Recover the crash state `st` of a run whose log was `log`, check it, and
@@ -215,6 +231,8 @@ function recover(st: Disk, log: readonly number[], mustHold: number | undefined,
   if (mustHold !== undefined && !same(opened, stateAt(log, mustHold))) {
     throw new Violation(`${where}: a process crash lost acked writes: read the state after ${k} of ${mustHold}`);
   }
+  const behind = sys.pastHead();
+  if (behind) throw new Violation(`${where}: open: ${behind}`);
   const kept = log.slice(0, k);
   for (const name of ["sweep", "ingest", "compact"] as const) {
     step(sys, name, where);
@@ -243,10 +261,15 @@ function recover(st: Disk, log: readonly number[], mustHold: number | undefined,
   }
 }
 
-function checkWorkload(cmds: readonly Cmd[], v: Variant, depth: number): void {
+function checkWorkload(cmds: readonly Cmd[], v: Variant, depth: number, seen: Set<string>): void {
   const sys = new Sys(emptyDisk(), v, 1);
   sys.reconcile();
   for (const c of cmds) run(sys, c);
+  // The same durable ops leave the same crash states, whichever commands wrote them.
+  const trace = JSON.stringify(sys.ops);
+  if (seen.has(trace)) return;
+  seen.add(trace);
+  traces++;
   const empty = emptyDisk();
   for (const cut of cuts(sys.ops)) {
     const proc = isProcessCut(sys.ops, cut) ? committed(sys.ops, cut).length : undefined;
@@ -257,9 +280,10 @@ function checkWorkload(cmds: readonly Cmd[], v: Variant, depth: number): void {
 }
 
 function explore(v: Variant, maxCmds: number, depth: number): string | undefined {
+  const seen = new Set<string>();
   for (const cmds of workloads(maxCmds)) {
     try {
-      checkWorkload(cmds, v, depth);
+      checkWorkload(cmds, v, depth, seen);
     } catch (err) {
       if (err instanceof Violation) return err.message;
       // A refusal anywhere in a power-loss run: recovery called it corruption.
@@ -353,7 +377,7 @@ function sourceSync(): string[] {
   need("recover.ts", /Math\.max\(numbers\[0\] \?\? GENERATION_NONE, meta\.top, meta\.generation \?\? GENERATION_NONE\)/, "new manifests number past every number in use");
   need("recover.ts", /m\.through > meta\.head && \(await isIntact\(fs, m\)\)/, "reconcile adopts an intact manifest past the head first");
   need("recover.ts", /if \(m === "corrupt"\) throw new CorruptDatabaseError\(`manifest \$\{recorded\} does not decode`\);\s*if \(m !== "missing"\) \{\s*if \(await isIntact\(fs, m\)\) return undefined;[\s\S]*?other\.through >= meta\.ingestedThrough && \(await isIntact\(fs, other\)\)\) return other;\s*\}\s*throw new CorruptDatabaseError/, "a recorded manifest that is there but broken is replaced only by one that holds every ingested seq, else recovery throws");
-  need("host/engine-host.ts", /reconcile\(wal, fs, trusted\)[\s\S]*liveRuns\(fs, generation\)/, "reclaim sweeps against the reconciled generation's runs");
+  need("host/engine-host.ts", /reconcile\(wal, fs, trusted\)[\s\S]*liveRuns\(fs, generation, destroyedTop\)/, "reclaim sweeps against the reconciled generation's runs");
   need("db.ts", /const recovering = reconcileOpen\(wal, tabFs, \(\) => ingest\.repair\(name\)\);[\s\S]*await db\.boot\(recovering\);/, "openDb reconciles during its first catch-up, and the host writes what it finds to repair");
   need("recover.ts", /export async function reconcileOpen[\s\S]*?if \(meta\.generation !== undefined\) \{\s*if \(!\(await longerPrefix\(fs, meta, numbers\)\)\) return true;\s*\} else if \(numbers\.length === 0 && meta\.head === SEQ_ZERO && !\(await readDestroyed\(wal\.dbName\)\)\) \{\s*if \(await recordNew\(wal, meta\)\) return false;\s*\}\s*await repair\(\);\s*return false;/, "an open keeps the recorded manifest only when no intact manifest is past the head, records generation 0 itself only with no record, no manifest and no row, and has the host reconcile otherwise");
   need("recover.ts", /async function choose\([\s\S]*?const longer = await longerPrefix\(fs, meta, numbers\);\s*if \(longer\) return longer;/, "the open's check and reconcile share rule 1");
@@ -366,7 +390,12 @@ function sourceSync(): string[] {
   need("db.ts", /private async syncOnce\(\): Promise<void> \{\s*await this\.retrying\(\(\) => this\.catchUpOnce\(\)\);[\s\S]*private async retrying[\s\S]*?holdingFiles\(this\.name, async \(\) => \{\s*for \([^)]*\) \{\s*const step = await attempt\(\);/, "sync retries under the reclaim lock and repairs when the recorded generation does not load");
   need("db.ts", /if \(step === "gone"\) \{\s*if \(\+\+gone >= GENERATION_RETRIES\)[^\n]*\n\s*await this\.repair\(\);/, "a load that finds files gone under the lock repairs");
   need("host/engine-host.ts", /ingestChunk\([^;]*trusted[^;]*;\s*[^\n]*\n\s*await unlessHeld\(name, \(\) => reclaimManifests\(fs, folded\.generation\)\)/, "a flush removes old manifests after recording, unless a tab holds the reclaim lock");
-  need("host/engine-host.ts", /await unlessHeld\(name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, trusted\);[\s\S]*const live = await liveRuns\(fs, generation\);\s*await reclaimManifests\(fs, generation\);\s*await reclaimRuns\(fs, await listRuns\(fs\), live\)/, "reclaim reads the live runs, then removes manifests then runs, after reconciling, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /await unlessHeld\(name, async \(\) => \{\s*const \{ generation \} = await reconcile\(wal, fs, trusted\);\s*trusted = generation;\s*await sweep\(fs, generation, \(await wal\.meta\(\)\)\.destroyedTop\);/, "reclaim sweeps after reconciling, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /await unlessHeld\(name, async \(\) => \{\s*const meta = await wal\.meta\(\);\s*const generation = meta\.generation \?\? GENERATION_NONE;\s*if \(generation === trusted\) await sweep\(fs, generation, meta\.destroyedTop\);/, "the sweep of a pass that installed nothing runs only for the generation the host last checked, unless a tab holds the reclaim lock");
+  need("host/engine-host.ts", /trusted = await installStep\(fs, wal, merged, trusted\);\s*await reclaim\(fs, wal\);\s*return true;[\s\S]*?installed = true;[\s\S]*?if \(!installed && !destroying\) \{\s*await exclusive\(\(\) => withWal\(\(wal\) => sweepIdle\(fs, wal\)/, "an install whose commit fails removes no file, and a pass that installed nothing sweeps");
+  need("host/engine-host.ts", /async function sweep\(fs: AsyncFs, generation: Generation, destroyedTop: Generation\): Promise<void> \{\s*const live = await liveRuns\(fs, generation, destroyedTop\);\s*await reclaimManifests\(fs, generation\);\s*await reclaimRuns\(fs, await listRuns\(fs\), live\);\s*\}/, "a sweep reads the live runs, then removes the older manifests, then the runs that are not live");
+  need("store/generation.ts", /const runs = \(await loadRecorded\(fs, recorded\)\)\.runs;[\s\S]*?for \(const n of await manifestNumbers\(fs\)\) \{\s*if \(n <= recorded \|\| n <= destroyedTop\) break;\s*newer\.push\(\.\.\.\(\(await readManifest\(fs, n\)\)\?\.runs \?\? \[\]\)\);\s*\}\s*return \[\.\.\.runs, \.\.\.newer\]\.map\(/, "the live runs are those of the recorded manifest and of every manifest numbered past it and past destroyedTop");
+  need("host/engine-host.ts", /const folded = await ingestChunk\([^;]*;\s*(\/\/[^\n]*\n\s*)*await unlessHeld\(name, \(\) => reclaimManifests\(fs, folded\.generation\)\);[\s\S]*?recycleEngine\(budget\.wasmRecycleBytes\);\s*pastStop = false;\s*trusted = chunk\.generation;/, "a flush whose commit fails removes no manifest and leaves the generation the host trusts");
   need("host/compact.ts", /await raiseGeneration\(wal, generation, manifest\);\s*return generation;/, "install removes no file");
   need("recover.ts", /export async function recordEmpty[\s\S]*?const floor = atLeast\(known, \{ head: nextSeq\(await highestThrough\(fs, numbers, meta\.head\)\), top \}\);\s*const head = await emptyWal\(wal, \{ expect: meta, \.\.\.floor, pastAppends: true \}\);/, "destroy records generation 0 past every seq the WAL or a manifest names, and past a row already there");
   need("idb/wal.ts", /async function emptyWal\([\s\S]*?durability: "strict"[\s\S]*?const head = appended \? asSeq\(Math\.max\(emptied\.head, nextSeq\(now\.head\)\)\) : emptied\.head;[\s\S]*?meta\.put\(top, META_DESTROYED_TOP\)/, "the destroy commit is strict and records destroyedTop");
@@ -390,9 +419,9 @@ function sourceSync(): string[] {
 }
 
 function main(): void {
-  console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions/destroys/removals, every (WAL database, row, OPFS) prefix triple,`);
+  console.log(`bound: workloads of up to ${MAX_CMDS} appends/ingests/compactions/failed commits/sweeps/destroys/removals, every (WAL database, row, OPFS) prefix triple,`);
   console.log(`       then recovery + [${AFTER.join(", ")}] and every triple of the next crash, ${CRASHES} crashes deep`);
-  console.log("property: PowerPrefix, ProcessAll, RecoveryStable, DestroyHolds, RemoveClean, WalLost");
+  console.log("property: PowerPrefix, HeadPast, ProcessAll, RecoveryStable, DestroyHolds, RemoveClean, WalLost");
 
   const drift = sourceSync();
   if (drift.length > 0) {
@@ -408,12 +437,10 @@ function main(): void {
     ["destroy moves the head and leaves the key generator behind", { destroyKeepsGenerator: true }],
     ["no fallback when the recorded manifest is gone", { noFallback: true }],
     ["a newer manifest past the head is never adopted", { noNewerAdopt: true }],
-    ["a newer manifest past the head is adopted with its runs gone", { adoptBroken: true }],
     ["a manifest number is reused after recovery records an older one", { reuseNumbers: true }],
     ["destroy removes the files before its commit", { destroyFilesFirst: true }],
     ["destroy commits at the default durability", { destroyRelaxed: true }],
     ["recovery falls back to a manifest from before a destroy", { fallBehindDestroy: true }],
-    ["recovery falls back to a manifest whose runs are gone", { fallBackToBroken: true }],
     ["destroyDb writes no row", { removeNoRow: true }],
     ["destroyDb writes the row at the default durability", { rowRelaxed: true }],
     ["recovery ignores the row", { birthIgnoresRow: true }],
@@ -421,6 +448,8 @@ function main(): void {
     ["rule 0 commits at the default durability, then forgets the row", { birthRelaxed: true }],
     ["rule 0 births past a row that a later database outgrew", { birthOverOutgrown: true }],
     ["destroyDb deletes the WAL database before it writes the row", { dropFirst: true }],
+    ["a sweep removes the runs of a manifest numbered past the recorded one", { sweepDropsNewerRuns: true }],
+    ["a sweep removes the runs of a manifest numbered past the recorded one, by its reads alone", { sweepDropsNewerRuns: true, headUnchecked: true }],
   ];
   for (const [name, v] of broken) {
     const found = explore(v, MAX_CMDS, 1) ?? explore({ ...v, held: true }, MAX_CMDS, 1);
@@ -439,6 +468,7 @@ function main(): void {
   console.log("  broken variant caught: a missing run of the recorded manifest falls back like a missing manifest");
 
   states = 0;
+  traces = 0;
   const started = performance.now();
   const violation = explore({}, MAX_CMDS, 1) ?? explore({ held: true }, MAX_CMDS, 1);
   if (violation) {
@@ -446,7 +476,7 @@ function main(): void {
     console.error(violation);
     process.exit(1);
   }
-  console.log(`\nPASS PowerPrefix — ${states} crash states (${CRASHES} power losses deep) in ${Math.round(performance.now() - started)} ms`);
+  console.log(`\nPASS PowerPrefix — ${states} crash states of ${traces} distinct lists of durable ops (${CRASHES} power losses deep) in ${Math.round(performance.now() - started)} ms`);
   console.log(`PASS RemoveClean — destroyDb from each of the ${states} crash states left no WAL database and no file`);
   console.log(`PASS WalLost — losing only the WAL database after each of the ${states} recoveries changed no read`);
 

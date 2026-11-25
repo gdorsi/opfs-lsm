@@ -112,10 +112,23 @@ function opBytes(op: BatchOp): number {
 }
 
 /** Key and value bytes of a batch's ops. The batch limit adds `ROW_OVERHEAD` per op to this. */
-export function opsBytes(ops: readonly CheckedOp[]): number {
+function opsBytes(ops: readonly CheckedOp[]): number {
   let bytes = 0;
   for (const op of ops) bytes += opBytes(op);
   return bytes;
+}
+
+/**
+ * What an op counts at least toward a flush. The encoder keeps a few dozen
+ * bytes per entry whatever its size, so a chunk of tiny ops would otherwise
+ * cost far more memory than its op bytes say, and ops of no bytes, such as
+ * a range delete of everything, would never start a flush.
+ */
+const FLUSH_MIN_OP_BYTES = 32;
+
+/** What a record's ops count toward the ingest trigger and a flush chunk. */
+export function flushBytes(ops: readonly CheckedOp[]): number {
+  return Math.max(opsBytes(ops), ops.length * FLUSH_MIN_OP_BYTES);
 }
 
 function checkDeleteRange(op: Extract<BatchOp, { type: "deleteRange" }>): CheckedOp {

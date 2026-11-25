@@ -90,6 +90,13 @@ export class Oracle {
     return seq;
   }
 
+  /** A log of the first `p` rows of this one. */
+  prefix(p: number): Oracle {
+    const out = new Oracle();
+    for (const entry of this.entries.slice(0, p)) out.appendRow(entry.ops);
+    return out;
+  }
+
   /** Every key any batch wrote. */
   keys(): Uint8Array[] {
     return [...this.versions.values()].map((v) => v.key);

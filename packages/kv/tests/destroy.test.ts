@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName } from "../src/check.js";
 import { forgetDestroyed, readDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
+import { holdingFiles } from "../src/host/protocol.js";
 import { openExistingWal, type WalMeta } from "../src/idb/wal.js";
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type Db } from "../src/index.js";
 import {
@@ -246,6 +247,30 @@ describe("dangerousDestroy", () => {
     await ingest(b);
 
     expect(fs.publishedPaths()).toEqual([]);
+  });
+
+  it("removes the runs at the next pass when a tab held the reclaim lock during the destroy", async () => {
+    const { fs, open } = storage();
+    const a = await open();
+    await fill(a, "k", 20);
+    const runs = () => fs.publishedPaths().filter((path) => !path.startsWith("m/"));
+    expect(runs().length).toBeGreaterThan(0);
+    let release!: () => void;
+    let granted!: () => void;
+    const held = new Promise<void>((resolve) => (granted = resolve));
+    const holding = holdingFiles(NAME, () => {
+      granted();
+      return new Promise<void>((resolve) => (release = resolve));
+    });
+    await held;
+
+    await a.dangerousDestroy();
+    expect(await keys(a)).toEqual([]);
+    release();
+    await holding;
+    await ingest(a);
+
+    expect(runs()).toEqual([]);
   });
 
   it("empties the database when removing its files fails, and removes them at a later flush", async () => {

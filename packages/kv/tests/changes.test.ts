@@ -123,6 +123,18 @@ describe("changes()", () => {
     expect(events.filter((e) => e.kind === "closed")).toHaveLength(1);
   });
 
+  it("ends only its own subscription when one function subscribed twice", async () => {
+    const db = await track(open("w1"));
+    const heard: ChangeEvent[] = [];
+    const listener = (e: ChangeEvent) => void heard.push(e);
+    const stopFirst = db.changes(listener);
+    db.changes(listener);
+
+    stopFirst();
+    const seq = await db.put(b("k"), b("v"));
+    expect(seqs(heard), "the second subscription still hears the put").toEqual([seq]);
+  });
+
   it("announces another handle's write once, over BroadcastChannel or through sync()", async () => {
     const a = await track(open("wa"));
     const bus = await track(open("wb"));

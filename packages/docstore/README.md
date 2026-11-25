@@ -629,7 +629,7 @@ const stop = todos.changes((event) => {
 	// the last event
 	if (event.kind === "closed") console.log("kv closed:", event.reason); // "close" or "destroyed"
 });
-await todos.put(todo); // the listener sees it before put resolves
+await todos.put(todo); // once the feed has read the catalog, the listener sees a write before it resolves
 stop();
 ```
 

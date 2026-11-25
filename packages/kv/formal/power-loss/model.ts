@@ -1,7 +1,8 @@
 /**
  * Abstract model of the three stores and the write order of ingest,
  * compaction install, reclaim, destroy, removal and recovery (design.md,
- * "Recovery").
+ * "Recovery"), and of a flush or an install whose IndexedDB commit fails
+ * on a host that goes on.
  *
  * The WAL database (`idb`): the key generator of `wal`, `ingestedThrough`,
  * `generation`, and WAL rows seq -> write id, or undefined when it does not
@@ -12,7 +13,10 @@
  * (`reg`, in `opfs-lsm-destroyed`): its own store, since nothing orders two
  * IndexedDB databases. OPFS: run files (sets of writes) and manifests. A
  * write id stands for one acked batch's content, so a run's content is the
- * set of writes folded into it, and a merge is their union. Each engine
+ * set of writes folded into it, and a merge is their union. A manifest
+ * carries the marks of the range deletes folded so far and the size and key
+ * range of each run, so it reads right only over the writes its runs held
+ * when it was written (`holds`). Each engine
  * action runs against live stores and records its durable ops in order, one
  * IndexedDB commit, database deletion or OPFS file op each. A crash state
  * replays a prefix of each store's ops (`replay`), and keeps every strict op
@@ -27,6 +31,8 @@ export type Manifest = {
   readonly gen: number;
   readonly through: number;
   readonly runs: readonly string[];
+  /** The writes its runs held when it was written. */
+  readonly holds: readonly Write[];
 };
 
 export type Idb = {
@@ -98,8 +104,6 @@ export type Variant = {
   readonly noFallback?: boolean;
   /** Never adopt a newer manifest that holds seqs past the head. */
   readonly noNewerAdopt?: boolean;
-  /** Rule 1 adopts the newest manifest past the head, intact or not. */
-  readonly adoptBroken?: boolean;
   /** Number new manifests past `m/` only, forgetting what recovery saw. */
   readonly reuseNumbers?: boolean;
   /**
@@ -112,8 +116,6 @@ export type Variant = {
   readonly destroyFilesFirst?: boolean;
   /** Rule 3 may fall back to a manifest numbered at or below `destroyedTop`. */
   readonly fallBehindDestroy?: boolean;
-  /** Rule 3 takes the newest manifest numbered past `destroyedTop`, intact or not. */
-  readonly fallBackToBroken?: boolean;
   /** Destroy commits at the default durability, so its removes can reach the disk first. */
   readonly destroyRelaxed?: boolean;
   /** `destroyDb` deletes the WAL database and writes no row. */
@@ -130,6 +132,13 @@ export type Variant = {
   readonly birthOverOutgrown?: boolean;
   /** `destroyDb` deletes the WAL database before it writes the row. */
   readonly dropFirst?: boolean;
+  /** A sweep removes the runs of the manifests numbered past the recorded one, and keeps those manifests. */
+  readonly sweepDropsNewerRuns?: boolean;
+  /**
+   * `pastHead` finds nothing. Not a broken design: with it, a seq handed
+   * out twice must show in a read.
+   */
+  readonly headUnchecked?: boolean;
   /**
    * A tab holds the reclaim lock through the whole run, so the host's
    * manifest and run removals are all skipped (`unlessHeld`). Not a broken
@@ -146,6 +155,12 @@ export class Stuck extends Error {}
  * power loss; nothing is written.
  */
 export class Refused extends Error {}
+
+/**
+ * A read through a manifest whose runs hold other writes than it was
+ * written over: a run path it lists was written again. No log prefix.
+ */
+export class Mixed extends Error {}
 
 function emptyIdb(): Idb {
   return { next: 1, ingested: 0, generation: undefined, top: 0, destroyedTop: 0, rows: new Map() };
@@ -250,7 +265,7 @@ export function possibleCut(ops: readonly Op[], cut: Cut): boolean {
   return true;
 }
 
-const ZERO: Manifest = { gen: 0, through: 0, runs: [] };
+const ZERO: Manifest = { gen: 0, through: 0, runs: [], holds: [] };
 
 /** Live stores plus the trace of durable ops the engine wrote to them. */
 export class Sys implements Disk {
@@ -324,7 +339,7 @@ export class Sys implements Disk {
       for (const n of numbers) {
         if (generation !== undefined && n <= generation) break;
         const m = this.manifest(n);
-        if (m && m.through > head && (this.v.adoptBroken || this.intact(m))) {
+        if (m && m.through > head && this.intact(m)) {
           pick = m;
           break;
         }
@@ -341,7 +356,7 @@ export class Sys implements Disk {
       if (!pick && this.v.noFallback) throw new Stuck(`manifest ${generation} is gone`);
     }
     const fallback = this.v.fallBehindDestroy ? numbers : numbers.filter((n) => n > idb.destroyedTop);
-    pick ??= fallback.map((n) => this.manifest(n)).find((m) => (this.v.fallBackToBroken ? m !== undefined : this.intact(m))) ?? ZERO;
+    pick ??= fallback.map((n) => this.manifest(n)).find((m) => this.intact(m)) ?? ZERO;
     const floor = this.highestThrough(pick.through);
     const past = this.v.noHeadRaise ? head : Math.max(head, pick.through, floor);
     const nextTop = Math.max(idb.top, top, pick.gen);
@@ -386,8 +401,13 @@ export class Sys implements Disk {
     this.acked.push(id);
   }
 
-  /** `ingestChunk` in src/host/ingest.ts. A chunk is the oldest records that fit the cap: here all of them, or the oldest one. */
-  ingest(oldestOnly = false): void {
+  /**
+   * `ingestChunk` in src/host/ingest.ts. A chunk is the oldest records that
+   * fit the cap: here all of them, or the oldest one. With `commitFails`,
+   * the IndexedDB transaction of a chunk that folded records aborts, and
+   * the host goes on.
+   */
+  ingest(oldestOnly = false, commitFails = false): void {
     const { meta, top } = this.base();
     const idb = this.wal();
     const waiting = [...idb.rows].filter(([s]) => s > idb.ingested).sort((a, b) => a[0] - b[0]);
@@ -401,27 +421,38 @@ export class Sys implements Disk {
     const last = rows[rows.length - 1]![0];
     const path = `l0/${first}-${last}`;
     const gen = top + 1;
-    this.write({ store: "opfs", label: `publish ${path}`, run: [path, rows.map(([seq, id]) => ({ seq, id }))] });
-    this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: last, runs: [path, ...meta.runs] } });
+    const writes = rows.map(([seq, id]) => ({ seq, id }));
+    this.write({ store: "opfs", label: `publish ${path}`, run: [path, writes] });
+    this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: last, runs: [path, ...meta.runs], holds: [...meta.holds, ...writes] } });
+    // Both files stay on disk: `HostedDb.fold` throws before it removes a manifest.
+    if (commitFails) return;
     const before = idb.ingested;
     this.write({ store: "idb", label: `advanceIngested ${last} gen ${gen}`, deleteTo: before, ingested: last, generation: Math.max(idb.generation ?? 0, gen) });
     // `HostedDb.fold`, after `ingestChunk`.
     if (!this.v.held) this.reclaimManifests(this.wal().generation ?? 0);
   }
 
-  /** `mergeNextStep` and `installStep` in src/host/compact.ts: merge every run of the base into one. */
-  compact(): void {
+  /**
+   * `mergeNextStep` and `installStep` in src/host/compact.ts: merge every run
+   * of the base into one. The merge holds no exclusive section: with
+   * `flushDuring`, a flush lands between it and the install. With
+   * `commitFails`, the IndexedDB transaction of the install aborts.
+   */
+  compact(flushDuring = false, commitFails = false): void {
     const { meta, top } = this.base();
     if (meta.runs.length < 2) return;
     const merged: Write[] = [];
     for (const p of meta.runs) merged.push(...(this.opfs.runs.get(p) ?? []));
     const path = `l1/c${top + 1}`;
     this.write({ store: "opfs", label: `publish ${path}`, run: [path, merged] });
+    if (flushDuring) this.ingest();
     const { meta: now, top: top2 } = this.base();
     if (!meta.runs.every((p) => now.runs.includes(p))) return;
     const gen = top2 + 1;
     const runs = [...now.runs.filter((p) => !meta.runs.includes(p)), path];
-    this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: now.through, runs } });
+    this.write({ store: "opfs", label: `publish m/${gen}`, manifest: { gen, through: now.through, runs, holds: now.holds } });
+    // The pass ends with the output and the manifest on disk, and `reclaim` never runs.
+    if (commitFails) return;
     this.write({ store: "idb", label: `raiseGeneration ${gen}`, generation: Math.max(this.wal().generation ?? 0, gen) });
     this.sweep();
   }
@@ -491,19 +522,25 @@ export class Sys implements Disk {
   }
 
   /**
-   * `HostedDb.reclaim`: remove the manifests older than the recorded one
-   * and every run it does not list. Skipped while a tab holds the lock.
+   * `HostedDb.reclaim`: remove the manifests older than the recorded one,
+   * then every run that neither it nor a newer manifest numbered past
+   * `destroyedTop` lists. Skipped
+   * while a tab holds the lock. Also
+   * `sweepIdle`, the sweep of a pass that installed nothing: it reconciles
+   * nothing, and on a live database this reconcile writes nothing.
    */
   sweep(): void {
     if (this.v.held) return;
     const { gen } = this.reconcile();
-    this.reclaimManifests(gen);
     const keep = new Set(this.manifest(gen)?.runs ?? []);
+    if (!this.v.sweepDropsNewerRuns) for (const n of this.numbers()) if (n > gen && n > this.wal().destroyedTop) for (const p of this.manifest(n)!.runs) keep.add(p);
+    this.reclaimManifests(gen);
     for (const p of [...this.opfs.runs.keys()].sort()) {
       if (!keep.has(p)) this.write({ store: "opfs", label: `remove ${p}`, rmRun: p });
     }
   }
 
+  /** `reclaimManifests` in src/store/generation.ts: the manifests older than `keepFrom`. */
   private reclaimManifests(keepFrom: number): void {
     for (const n of this.numbers().reverse()) {
       if (n < keepFrom) this.write({ store: "opfs", label: `remove m/${n}`, rmManifest: n });
@@ -511,11 +548,22 @@ export class Sys implements Disk {
   }
 
   /**
+   * Fact 2 of design.md, "The invariant", after a recovery: the manifest on
+   * disk that names a seq past the head, which a later append takes again.
+   */
+  pastHead(): string | undefined {
+    if (this.v.headUnchecked) return undefined;
+    const head = headOf(this.wal());
+    const m = this.numbers().map((n) => this.manifest(n)!).find((m) => m.through > head);
+    return m && `manifest ${m.gen} on disk names seq ${m.through}, past the head ${head}`;
+  }
+
+  /**
    * `checkDatabase` on a quiet database: the recorded manifest loads with
    * no fallback, holds no seq past ingestedThrough, and the WAL holds
    * every seq in (ingestedThrough, head]. The key generator is one past the
-   * head, so `append` and `appendAfter` take the same seq. Undefined when
-   * healthy.
+   * head, so `append` and `appendAfter` take the same seq, and no manifest
+   * on disk names a seq past it. Undefined when healthy.
    */
   problem(): string | undefined {
     const idb = this.wal();
@@ -527,10 +575,14 @@ export class Sys implements Disk {
     if (meta.through > ingested) return `manifest through ${meta.through} past ingestedThrough ${ingested}`;
     for (let s = ingested + 1; s <= head; s++) if (!idb.rows.has(s)) return `wal gap at ${s}`;
     if (idb.next !== head + 1) return `key generator at ${idb.next} with the head at ${head}`;
-    return undefined;
+    return this.pastHead();
   }
 
-  /** What a tab reads after `reconcile`: the recorded manifest's runs, then the WAL in (ingestedThrough, head]. */
+  /**
+   * What a tab reads after `reconcile`: the recorded manifest's runs, then
+   * the WAL in (ingestedThrough, head]. `Mixed` when those runs hold other
+   * writes than the manifest was written over.
+   */
   read(): Set<number> {
     const { gen } = this.reconcile();
     const meta = this.manifest(gen);
@@ -538,6 +590,9 @@ export class Sys implements Disk {
     const idb = this.wal();
     const out = new Set<number>();
     for (const p of meta.runs) for (const w of this.opfs.runs.get(p)!) out.add(w.id);
+    if (out.size !== meta.holds.length || !meta.holds.every((w) => out.has(w.id))) {
+      throw new Mixed(`manifest ${gen} was written over the writes {${meta.holds.map((w) => w.id).join(",")}}, and its runs hold {${[...out].join(",")}}`);
+    }
     for (let seq = idb.ingested + 1; seq <= headOf(idb); seq++) {
       const id = idb.rows.get(seq);
       if (id === undefined) throw new Stuck(`wal gap at ${seq}`);
