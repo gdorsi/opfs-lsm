@@ -4,6 +4,7 @@ packages/*/dist
 bench/.out
 bench/.data
 bench/results
+docs/research/sab-sync-read/results/
 packages/kv/.arena-readpath
 .DS_Store
 .scratch
