@@ -342,7 +342,7 @@ Ingest moves WAL records into L0 runs. It runs in the host.
 ### Trigger
 
 Per database, the host keeps `pendingBytes`, the key and value bytes of the ops that are not yet
-folded, at least 32 bytes per op. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
+folded. A record counts as at least 32 bytes per op. Each `rows` message adds its `bytes`. When it reaches `maxWalBytes`, 1 MiB by default, the
 host flushes. The limit is the smallest any tab asked for until the last one closes, and each tab
 asks for at most 7/8 of its `memtableBytes`. Once an eighth of the limit waits, the host also flushes
 2 s after the last `rows` message, or 5 s after the first since a flush began or the last 5 s wait ended, so an open replays a short tail.
@@ -477,7 +477,7 @@ under the exclusive section, the host:
 2. Writes manifest `top + 1`, with the inputs replaced by the outputs, and the `through` and
    marks of `G`, retired against the new runs.
 3. Raises `meta.generation` to `top + 1`.
-4. Sweeps: deletes the older manifests, and every run outside `top + 1` that no tab holds open.
+4. Sweeps (see [Crash behavior](#crash-behavior)): deletes the older manifests, and every run outside `top + 1` that no tab holds open.
    While a tab holds the reclaim lock, it deletes nothing and tries again on the next pass.
 
 A pass runs up to 8 steps, and sweeps if it installs none. A request during a pass starts another,
@@ -609,7 +609,7 @@ The same transaction moves `head` past the highest `through` of any manifest on 
 ### Corruption is not a power loss
 
 OPFS publishes a file whole, and the host removes a run only after the recorded manifest stops
-listing it. A manifest numbered past the recorded one is a crash leftover, and its runs may go.
+listing it. A manifest numbered past the recorded one keeps its runs (see [Crash behavior](#crash-behavior)).
 A power loss therefore never leaves a manifest that fails to decode, or the recorded manifest on
 disk with a run missing. Those states are corruption. Recovery throws `CorruptDatabaseError` and
 writes nothing, so the database stays as it is on disk. An `openDb` that throws closes everything
@@ -645,8 +645,8 @@ A **process crash** keeps every completed write of both stores. Every acked writ
 | Compaction outputs written, before install | The outputs are garbage. |
 | A destroy's transaction, before its removes finish | The database is empty. A sweep, or the next `destroyDb`, removes what is left. |
 
-A sweep removes the run files that no tab holds open and that neither the recorded manifest nor a newer one lists.
-A newer manifest is one whose IndexedDB commit failed or never ran, and it keeps its runs until a later flush removes it.
+A sweep removes the run files that no tab holds open and that neither the recorded manifest nor a newer one past `destroyedTop` lists.
+Such a manifest is one whose IndexedDB commit failed or never ran, and it keeps its runs until a later flush removes it.
 
 A **power loss** keeps a prefix of the commits of IndexedDB and a prefix of the file operations
 of OPFS, independently.

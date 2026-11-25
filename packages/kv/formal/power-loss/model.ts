@@ -523,7 +523,8 @@ export class Sys implements Disk {
 
   /**
    * `HostedDb.reclaim`: remove the manifests older than the recorded one,
-   * then every run that neither it nor a newer manifest lists. Skipped
+   * then every run that neither it nor a newer manifest numbered past
+   * `destroyedTop` lists. Skipped
    * while a tab holds the lock. Also
    * `sweepIdle`, the sweep of a pass that installed nothing: it reconciles
    * nothing, and on a live database this reconcile writes nothing.
@@ -532,7 +533,7 @@ export class Sys implements Disk {
     if (this.v.held) return;
     const { gen } = this.reconcile();
     const keep = new Set(this.manifest(gen)?.runs ?? []);
-    if (!this.v.sweepDropsNewerRuns) for (const n of this.numbers()) if (n > gen) for (const p of this.manifest(n)!.runs) keep.add(p);
+    if (!this.v.sweepDropsNewerRuns) for (const n of this.numbers()) if (n > gen && n > this.wal().destroyedTop) for (const p of this.manifest(n)!.runs) keep.add(p);
     this.reclaimManifests(gen);
     for (const p of [...this.opfs.runs.keys()].sort()) {
       if (!keep.has(p)) this.write({ store: "opfs", label: `remove ${p}`, rmRun: p });

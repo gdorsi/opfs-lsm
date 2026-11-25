@@ -748,7 +748,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     await unlessHeld(name, async () => {
       const { generation } = await reconcile(wal, fs, trusted);
       trusted = generation;
-      await sweep(fs, generation);
+      await sweep(fs, generation, (await wal.meta()).destroyedTop);
     });
   }
 
@@ -761,8 +761,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
    */
   async function sweepIdle(fs: AsyncFs, wal: IdBWal): Promise<void> {
     await unlessHeld(name, async () => {
-      const generation = (await wal.meta()).generation ?? GENERATION_NONE;
-      if (generation === trusted) await sweep(fs, generation);
+      const meta = await wal.meta();
+      const generation = meta.generation ?? GENERATION_NONE;
+      if (generation === trusted) await sweep(fs, generation, meta.destroyedTop);
     });
   }
 
@@ -791,8 +792,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
 type HostedDb = ReturnType<typeof hostedDb>;
 
 /** Reads the manifest of `generation` first, so a missing one throws before any file goes. */
-async function sweep(fs: AsyncFs, generation: Generation): Promise<void> {
-  const live = await liveRuns(fs, generation);
+async function sweep(fs: AsyncFs, generation: Generation, destroyedTop: Generation): Promise<void> {
+  const live = await liveRuns(fs, generation, destroyedTop);
   await reclaimManifests(fs, generation);
   await reclaimRuns(fs, await listRuns(fs), live);
 }

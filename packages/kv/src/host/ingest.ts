@@ -16,13 +16,13 @@ import { retireMarks } from "../store/marks.js";
 export type IngestResult = {
   readonly generation: Generation;
   readonly ingestedThrough: Seq;
-  /** Op bytes of the WAL records this call folded into the new L0. */
+  /** `flushBytes` of the WAL records this call folded into the new L0. */
   readonly foldedBytes: number;
 };
 
 /** What bounds one `ingestChunk`. */
 type ChunkLimits = {
-  /** Op bytes of WAL records folded into the run. At least one record is taken. */
+  /** `flushBytes` of WAL records folded into the run. At least one record is taken. */
   readonly maxBytes: number;
   /** The L0 run count at which no more runs are published. */
   readonly l0Stop: number;

@@ -297,18 +297,20 @@ export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<Ge
 
 /**
  * The runs of the recorded generation, and of every manifest numbered past
- * it. Such a manifest is left by a publish whose IndexedDB commit failed or
- * never ran. Its runs stay while it does: once they are gone, a power loss
- * that takes the appends back lets a flush write the same path with other
- * rows, and recovery would adopt the manifest over them. A read that fails
- * throws, and a recorded manifest that is gone throws too: nothing may be
- * swept against it.
+ * it and past `destroyedTop`. Such a manifest is left by a publish whose
+ * IndexedDB commit failed or never ran. Its runs stay while it does: once
+ * they are gone, a power loss that takes the appends back lets a flush
+ * write the same path with other rows, and recovery would adopt the
+ * manifest over them. A manifest up to `destroyedTop` predates a destroy,
+ * which moved the head past its seqs for good. A read that fails throws,
+ * and a recorded manifest that is gone throws too: nothing may be swept
+ * against it.
  */
-export async function liveRuns(fs: ReadFs, recorded: Generation): Promise<string[]> {
+export async function liveRuns(fs: ReadFs, recorded: Generation, destroyedTop: Generation): Promise<string[]> {
   const runs = (await loadRecorded(fs, recorded)).runs;
   const newer: RunMeta[] = [];
   for (const n of await manifestNumbers(fs)) {
-    if (n <= recorded) break;
+    if (n <= recorded || n <= destroyedTop) break;
     newer.push(...((await readManifest(fs, n))?.runs ?? []));
   }
   return [...runs, ...newer].map((run) => run.path);
