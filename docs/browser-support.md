@@ -30,7 +30,7 @@ A host that writes no file still serves every tab. Each write lands in the Index
 - No reserve is kept. A write the browser refuses rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
 - In a dedicated Worker, each open handle starts its own host.
 
-Node tests on fake-indexeddb cover this path.
+Node tests on fake-indexeddb cover this path. It also ran in Safari 18.6 on macOS, and in desktop Chrome with SharedWorker removed. It has not run in iOS Safari, Samsung Internet or a WebView.
 
 ## Versions and tests
 
