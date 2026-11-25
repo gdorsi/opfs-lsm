@@ -29,6 +29,12 @@ adapters:
     example:
       name: LinearLite
       link: https://github.com/gdorsi/opfs-lsm/tree/main/examples/linearlite-tanstackdb
+  - name: TanStack Query
+    detail: Your query cache, saved one entry per query, so a reload shows data before the network answers.
+    replaces: idb-keyval
+    bench: "TanStack Query: restore of 644 queries"
+    slot: tanstack-query
+    guide: /tanstack-query/
   - name: Automerge
     detail: Documents that merge edits from every device, saved in the browser so they open offline.
     replaces: IndexedDBStorageAdapter
@@ -78,11 +84,13 @@ bench:
       - title: Your library on opfs-lsm
         versus: against each library's IndexedDB storage
         stores: [opfs-lsm, the IndexedDB option]
-        setup: TanStack DB, y-indexeddb and automerge-repo's IndexedDB storage
+        setup: TanStack DB, y-indexeddb, automerge-repo's IndexedDB storage and, for TanStack Query, idb-keyval
         note: No frames dropped while typing, on any of the four. A Yjs keystroke takes 0.153 ms of the main thread on kv against 0.125 ms on y-indexeddb, and the runs do not separate Automerge's two.
         rows:
           - { measure: "TanStack DB: cold load of 91,000 rows", ours: 110 ms, theirs: 594 ms, ratio: 5.4× }
           - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 196k rows/s, theirs: 20.1k rows/s, ratio: 9.7× }
+          - { measure: "TanStack Query: restore of 644 queries", ours: 5.09 ms, theirs: 6.22 ms, ratio: 1.2× }
+          - { measure: "TanStack Query: opening its store", ours: 12.8 ms, theirs: 7.22 ms, ratio: 0.57× }
           - { measure: "Yjs: cold load of 500 notes", ours: 73.0 ms, theirs: 146 ms, ratio: 2.0× }
           - { measure: "Yjs: reopening right after typing", ours: 19.2 ms, theirs: 10.4 ms, ratio: 0.54× }
           - { measure: "Automerge: cold load of 500 notes", ours: 180 ms, theirs: 249 ms, ratio: 1.4× }
@@ -154,6 +162,24 @@ const todos = createCollection(
   indexedDBCollectionOptions({ db, name: "todos", getKey }), // [!code --]
   docstoreCollectionOptions({ collection: store.collection("todos") }), // [!code ++]
 );
+```
+
+</template>
+<template v-slot:tanstack-query>
+
+```sh
+pnpm add @opfs-lsm/tanstack-query @opfs-lsm/kv
+```
+
+```ts
+import { createQueryPersister } from "@opfs-lsm/tanstack-query";
+
+const db = await openDb({ name: "app" }); // [!code ++]
+const storage = { getItem: get, setItem: set, removeItem: del }; // [!code --]
+const persister = experimental_createQueryPersister({ storage }); // [!code --]
+const persister = createQueryPersister(db); // [!code ++]
+const queries = { persister: persister.persisterFn };
+const queryClient = new QueryClient({ defaultOptions: { queries } });
 ```
 
 </template>
