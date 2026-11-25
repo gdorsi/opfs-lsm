@@ -29,7 +29,8 @@ A note's `Status:` line starts with one of four words:
 | [cold-read-run-metadata.md](cold-read-run-metadata.md) | shipped, 2026-11-25 | A fresh tab's first query waited for each run's 128 KiB tail before it could locate a page. Reading the tails at open only moved the wait. Blocks of 32 KiB and the block indexes in the manifest file made cold goals 11 to 33% faster at 200,000 issues with open unchanged. In the IndexedDB manifest copy the indexes cost 3 ms of open at 200,000 issues. Dexie stays ahead on a cold key lookup, 2.0 against 4.5 ms. |
 | [scan-read-ahead.md](scan-read-ahead.md) | shipped, 2026-11-16 | A cold scan reads ahead in a window that doubles up to 32 pages. The read before the board opened went from 32.6 to 15.6 ms at size `large`. |
 | [page-cache-size.md](page-cache-size.md) | rejected, 2026-11-23 | A 64 MiB cache made random reads at size `large` 2 to 83 times slower, for 15 to 26% less memory at peak. `cacheBytes` stays 256 MiB. |
-| [worker-read-only-handles.md](worker-read-only-handles.md) | rejected, 2026-11-15 | A dedicated WebWorker with read-only sync access handles cut a page read from 160 µs to 20 µs. Only Chromium has those handles, and an open of a database with data got 2.4 to 4.8 ms slower. |
+| [worker-read-only-handles.md](worker-read-only-handles.md) | rejected, 2026-11-15 | A dedicated WebWorker with read-only sync access handles, asked by `postMessage`, cut a page read from 160 µs to 20 µs. Only Chromium has those handles, and an open of a database with data got 2.4 to 4.8 ms slower. |
+| [sab-sync-read.md](sab-sync-read.md) | open, 2026-11-25 | The same handles read through a SharedArrayBuffer took a page read from 195 µs to 6.5 µs, with no wait. Cold tracker goals got up to 2× faster and warm reads did not move. Chromium only, on a cross-origin isolated page. An opt-in implementation is in PR 454, not merged. |
 
 ## kv compaction
 

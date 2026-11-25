@@ -14,6 +14,8 @@ async function bundled(entry: string): Promise<string[]> {
     bundle: true,
     write: false,
     metafile: true,
+    // An app bundles `dist`, where package.json marks the meter's modules as having side effects.
+    ignoreAnnotations: true,
     format: "esm",
     outdir: "out",
     logLevel: "silent",

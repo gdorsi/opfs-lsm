@@ -59,7 +59,7 @@ From the repo root, in this order:
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
-A healthy doctor prints `doctor: ok` and exits 0. It requires Node `>=22`, pnpm, Chrome (`CHROME_PATH` when set, otherwise `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, otherwise `google-chrome` on `PATH`), `packages/kv/wasm/engine.wasm`, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/docstore/dist/index.js`, and `node_modules`.
+A healthy doctor prints `doctor: ok` and exits 0. It requires Node `>=22`, pnpm, Chrome (`CHROME_PATH` when set, otherwise `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, otherwise `google-chrome` on `PATH`), `packages/kv/wasm/engine.wasm`, `packages/kv/dist/index.js`, `packages/kv/dist/host/shared-worker.js`, `packages/kv/dist/host/metered-worker.js`, `packages/docstore/dist/index.js`, and `node_modules`.
 
 The helper runs:
 
@@ -77,8 +77,8 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 
 | Feature | Proof strings |
 | --- | --- |
-| `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `two-tab ok` |
-| `two-tab-nobc` | `mode=SharedWorker nobc`, `two-databases ok`, `two-tab ok`, and `bc_posts=` with a positive count |
+| `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `shipped-worker ok`, `two-tab ok` |
+| `two-tab-nobc` | `mode=SharedWorker nobc`, `two-databases ok`, `shipped-worker ok`, `two-tab ok`, and `bc_posts=` with a positive count |
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok` |
 | `quota` | `tabs=2`, `mode=SharedWorker`, `OPFS write is refused`, `storage full answered once, by tab`, `run files`, `the reserve file is back`, `no handler: one warning in each tab, no row lost`, `limit lifted: the reserve file is back`, `quota ok`. The `fill of a 24 MiB reserve` line times the fill. |
 | `destroy` | `mode=SharedWorker`, `other tab closed reason=destroyed`, `other tab put and view read rejected with ClosedError`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`. The `frozen tab:` and `tab navigated away:` lines are facts about the Chrome it ran on: a frozen tab holds `destroyDb` until it resumes, and a page in the back/forward cache is evicted. |
