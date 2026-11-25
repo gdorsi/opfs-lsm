@@ -85,16 +85,14 @@ export type RunEnd = {
  */
 export function encodeIndex(rows: Uint8Array): Uint8Array {
   const view = new DataView(rows.buffer, rows.byteOffset, rows.byteLength);
-  // A row takes 16 bytes at least and adds at most 10 of varint.
-  const head = new Uint8Array(4 + rows.byteLength);
-  const seps = new Uint8Array(rows.byteLength);
-  let h = 4;
+  const lens: number[] = [];
+  const seps: number[] = [];
+  // A length is a u32, so the shift keeps every bit of it.
   const varint = (v: number): void => {
-    for (; v >= 0x80; v = Math.floor(v / 0x80)) head[h++] = (v & 0x7f) | 0x80;
-    head[h++] = v;
+    for (; v > 0x7f; v >>>= 7) lens.push((v & 0x7f) | 0x80);
+    lens.push(v);
   };
   let blocks = 0;
-  let sepLen = 0;
   let o = 0;
   let prevLast: Uint8Array | undefined;
   const key = () => {
@@ -105,19 +103,20 @@ export function encodeIndex(rows: Uint8Array): Uint8Array {
   for (; o < rows.byteLength; blocks++) {
     const first = key();
     const sep = prevLast ? first.subarray(0, sharedPrefix(prevLast, first) + 1) : first;
-    seps.set(sep, sepLen);
-    sepLen += sep.byteLength;
+    // A key is 8 KiB at most, so the spread stays far inside any engine's argument limit.
+    seps.push(...sep);
     prevLast = key();
     varint(sep.byteLength);
     varint(view.getUint32(o + 4, true));
     o += 8;
   }
-  new DataView(head.buffer).setUint32(0, blocks, true);
-  const end = h + sepLen;
+  const end = 4 + lens.length + seps.length;
   const out = new Uint8Array(end + 4);
-  out.set(head.subarray(0, h));
-  out.set(seps.subarray(0, sepLen), h);
-  new DataView(out.buffer).setUint32(end, crc32(out.subarray(0, end)), true);
+  const head = new DataView(out.buffer);
+  head.setUint32(0, blocks, true);
+  out.set(lens, 4);
+  out.set(seps, 4 + lens.length);
+  head.setUint32(end, crc32(out.subarray(0, end)), true);
   return out;
 }
 

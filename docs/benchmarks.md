@@ -1,6 +1,6 @@
 # Benchmarks
 
-These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M5 Max. Runs differ in load, so compare numbers inside one table, not across two.
+These tables compare opfs-lsm with the storage a web app would otherwise use: IndexedDB, the IndexedDB option of each framework, and SQLite on OPFS. [bench/README.md](../bench/README.md) describes each workload and how to run it. Under each table is the machine and the commit of its run. Every table here ran on an Apple M5 Max, except the writes at 200,000 issues, which ran on an Apple M2 Pro. Runs differ in load, so compare numbers inside one table, not across two.
 
 ## Storage calls
 
@@ -165,6 +165,23 @@ Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load av
 
 Warm, docstore is faster than Dexie on all 11 goals, from 2.1× to 65×. Cold, it is faster on 6 and slower on 4, the todo issues, the issue with its comments, the open issues by priority and the recent issues, and the runs do not separate the two on a person's open issues. IndexedDB cannot put an array field, the issue's labels, in one index with other fields. So Dexie walks the project's issues newest first, tests each one's labels and status, and stops after 50 matches, which reads more issues the rarer the label is. docstore's index holds the label, the project, the status and the update time, so it walks the entries of each open status newest first, together, and stops after 50 issues. Started together, the board's 6 reads end sooner than in turn on both stores when cold, by 1.2× on Dexie and 1.1× on docstore. Warm, docstore's times are equal and the runs do not separate Dexie's.
 
+The writes that build this workspace, from a later run on an Apple M2 Pro: the import of the first 70% of the history, then 8,729 sync batches with no pause between them.
+
+<!-- bench:table writes-large -->
+| Writes | Dexie | docstore | docstore vs Dexie |
+| --- | ---: | ---: | ---: |
+| Import, mean of 442 batches of up to 1,000 rows | 79.6 ms | 20.6 ms | 3.9× |
+| Sync, mean of 8,729 batches of about 50 changes | 14.3 ms | 4.21 ms | 3.4× |
+| One edit | 0.900 ms | 0.414 ms | 2.2× |
+| The 50 latest issues, read again after every 10th sync batch | 2.10 ms | 0.647 ms † | 3.2× |
+
+Medians of 5 runs per contender, in headless Chrome 158 on Apple M2 Pro, load average 2.2 to 2.7, commit 21de1eb8. Full results: [2026-11-25T07-43-36-apple-m2-pro](results/2026-11-25T07-43-36-apple-m2-pro.md).
+
+† The runs of a marked cell form two clusters, so its median hides two states.
+<!-- /bench:table -->
+
+The whole replay runs at 18.4k changes a second on docstore against 5,388 on Dexie. It writes faster than kv compacts, so a few batches wait for a compaction step: the slowest 0.1% of docstore's sync batches take 467 ms or more, and its slowest took 747 ms, against 71.7 ms and 135 ms on Dexie. [The research note](research/compaction-file-waits.md) has what such a batch waits for.
+
 ### TanStack DB live queries
 
 The same workspace, written through TanStack DB collections of users, projects, labels and issues, with four screens as live queries: a project's todo column, a project's open issues with a label, a person's open issues, and the 50 most recently updated issues. Each card has its assignee and label names. In a fresh tab the screens open one after another, as an app's would, each timed to its first answer; only the first starts cold. Then 851 sync batches of about 34 changes land, the first half with no screen open and the second half with all four open. Each batch is timed until it is stored and every open screen shows it. [bench/README.md](../bench/README.md#live-queries) describes the workload. Each cell is the mean per call or batch. The last column is SQLite's time over docstore's, both on demand.
@@ -193,8 +210,8 @@ Importing `@opfs-lsm/kv` adds **19.4 kB** of JavaScript to your main bundle (gzi
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
 | Main-thread JS | 19.4 kB | 56.5 kB | at import |
-| SharedWorker chunk | 13.8 kB | 41.1 kB | on the first `openDb` |
+| SharedWorker chunk | 14.0 kB | 41.4 kB | on the first `openDb` |
 | wasm engine | 6.6 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **39.8 kB** | **114.0 kB** | |
+| **Total after open** | **39.9 kB** | **114.3 kB** | |
 
-For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.4 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.7 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.5 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.7 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

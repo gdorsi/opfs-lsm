@@ -66,7 +66,8 @@ export type HostBudget = {
   /**
    * How much of each merge source a step reads at once, and the most a
    * `write` stop carries. The session holds about this much per source in
-   * wasm, and up to this much per source is in flight in JS.
+   * wasm, and up to this much per source is in flight in JS, plus two more
+   * in a step that overlaps its file waits (`pumpMerge`).
    */
   readonly chunkBytes: number;
   /** How much of a run's end a merge reads first. Never above `chunkBytes`, or every source's window grows to it. */

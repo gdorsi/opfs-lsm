@@ -41,7 +41,7 @@ describe("a compaction install", () => {
       const meta = await wal.meta();
       const base = (await loadGeneration(fs, meta.generation!))!;
       expect(base.runs).toHaveLength(4);
-      const step = (await mergeNextStep(fs, hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES), base, meta.top))!;
+      const step = (await mergeNextStep(fs, hostBudget(DEFAULT_COMPACTION_MEMORY_BYTES), base, meta.top, () => false))!;
       expect(step.inputs).toHaveLength(4);
       expect(step.outputs.length).toBeGreaterThan(0);
 

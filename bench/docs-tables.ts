@@ -167,6 +167,24 @@ export const TABLES: readonly Table[] = [
     rows: SCREENS,
   },
   {
+    id: "writes-large",
+    file: "2026-11-25T07-43-36-apple-m2-pro",
+    size: "large",
+    workload: "tracker/goals",
+    columns: [
+      { head: "Writes" },
+      { head: "Dexie", at: "tracker/dexie" },
+      { head: "docstore", at: "tracker/docstore" },
+      { head: "docstore vs Dexie", ratio: { of: "docstore", over: "Dexie" } },
+    ],
+    rows: [
+      { label: "Import, mean of 442 batches of up to 1,000 rows", phase: "replay", metric: "mean:import" },
+      { label: "Sync, mean of 8,729 batches of about 50 changes", phase: "replay", metric: "mean:sync" },
+      { label: "One edit", phase: "recent", metric: "mean:edit" },
+      { label: "The 50 latest issues, read again after every 10th sync batch", phase: "replay", metric: "mean:read" },
+    ],
+  },
+  {
     id: "writes",
     file: "2026-11-25T07-52-24-apple-m5-max",
     workload: "tracker/goals",
