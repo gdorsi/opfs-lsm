@@ -101,7 +101,7 @@ export async function mergeRuns(
     yieldBytes: 1024 * 1024,
   });
   try {
-    const outputs = await pumpMerge(fs, core, files, (i) => `out/${i}.sst`);
+    const outputs = await pumpMerge(fs, core, files, (i) => `out/${i}.sst`, () => 64 * 1024);
     const runs = await Promise.all(outputs.map(async ({ path, ...end }) => ({ body: (await fs.read(path, 0, Infinity))!, end })));
     return { runs };
   } finally {

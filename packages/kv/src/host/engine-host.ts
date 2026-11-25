@@ -180,6 +180,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
   const counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
   const publishTurn = serial();
   const foldTurn = serial();
+  /** A flush waits on a full L0 for the next compaction install. */
+  let stopped = false;
   /** Settles at the next compaction install, for a flush that waits on a full L0. */
   let nextInstall: { readonly settled: Promise<void>; readonly resolve: () => void } | undefined;
   let watching: IngestWatch | undefined;
@@ -327,7 +329,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         trusted = chunk.generation;
         if (chunk.kind === "stopped") {
           counts.l0Stops += 1;
+          stopped = true;
           pastStop = (await waitForInstall(installed)) === "idle";
+          stopped = false;
           continue;
         }
         foldedBytes += chunk.foldedBytes;
@@ -575,7 +579,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         // Gone when a flush installed a newer generation since: plan again.
         if (!base) continue;
         const budget = currentBudget();
-        const merged = await withRoom(() => mergeNextStep(fs, budget, base, meta.top));
+        const merged = await withRoom(() => mergeNextStep(fs, budget, base, meta.top, () => stopped));
         recycleEngine(budget.wasmRecycleBytes);
         if (!merged) return await settle(meta);
         const landed = await withRoom(() =>
