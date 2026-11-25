@@ -142,19 +142,22 @@ export default defineWorkload({
     },
     phase("update", async (ctx, store) => {
       const perOwner = Math.ceil(ctx.params.entries / 10 / OWNERS);
+      // Every owner's rows are loaded before the first timed call and released after the last: a load between two
+      // calls would count in the phase's span, and it costs each contender a different time.
+      const held = [];
+      for (let o = 0; o < OWNERS; o++) held.push(await store.hold({ kind: "owner", owner: ownerOf(o) }));
+      const txs: { ids: string[]; next: Map<string, Todo>; bytes: number }[] = [];
       for (let o = 0; o < OWNERS; o++) {
-        const held = await store.hold({ kind: "owner", owner: ownerOf(o) });
         const rows = ownerRows(ctx, o);
         const picked = [...permutation(rows.length, ctx.rng).subarray(0, perOwner)].map((k) => rows[k]!);
         for (let k = 0; k < picked.length; k += TX_UPDATE) {
           const next = new Map<string, Todo>();
           for (const i of picked.slice(k, k + TX_UPDATE)) next.set(todoId(i), todoRow(i, ctx.model.bump(i)));
-          const bytes = [...next.values()].reduce((t, r) => t + rowBytes(r), 0);
-          const ids = [...next.keys()];
-          await ctx.time("updateMany", bytes, () => store.updateMany(ids, (r) => next.get(r.id)!), next.size);
+          txs.push({ ids: [...next.keys()], next, bytes: [...next.values()].reduce((t, r) => t + rowBytes(r), 0) });
         }
-        await held.release();
       }
+      for (const { ids, next, bytes } of txs) await ctx.time("updateMany", bytes, () => store.updateMany(ids, (r) => next.get(r.id)!), next.size);
+      for (const h of held) await h.release();
     }),
     check("check-after", true),
     check("check-stored", false, "fresh"),
