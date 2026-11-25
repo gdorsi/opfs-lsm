@@ -27,6 +27,7 @@ await storage.close?.(); // closes db
 ## Limits
 
 - A key is at most 8 KiB, and a chunk with its key and 256 bytes at most 8 MiB, kv's batch limit. A larger write throws `ConstraintError`.
+- A key segment is at most 65,535 bytes. A longer one throws `ConstraintError`.
 - A key segment with a lone surrogate throws `Error`, since it cannot round-trip through UTF-8.
 
 ## Benchmarks

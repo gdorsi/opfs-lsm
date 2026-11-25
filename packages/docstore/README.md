@@ -228,7 +228,7 @@ await todos.clear();      // one catalog write, at any size
 
 ## Indexes
 
-`by` takes a field, a dot path such as `"meta.due"` up to four segments, or a list of fields. The examples start from these todos.
+`by` takes a field, a dot path such as `"meta.due"` up to four segments, or a list of 1 to 8 fields. The examples start from these todos.
 
 ```ts
 await todos.putMany([
@@ -790,7 +790,7 @@ try {
 
 | Error | When | What to do |
 |---|---|---|
-| `"schema"` | The stored catalog and this schema disagree, the catalog lacks the collection, or a queried index is still building. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema, or bump `version`. Query a building index again later. Rename the collection or index. |
+| `"schema"` | The stored catalog and this schema disagree, the catalog has another format (open a new database name after an upgrade that changes it), the catalog lacks the collection, or a queried index is still building. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema, or bump `version`. Query a building index again later. Rename the collection or index. |
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |
 | `"query"` | A query is malformed. | Fix the query. |

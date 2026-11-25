@@ -66,7 +66,7 @@ const status1 = createLiveQueryCollection((q) =>
 
 ## Transact
 
-An update stores the whole row as this tab holds it, so when two tabs update one row, the last write wins. `utils.transact` reads and writes in one docstore [`modifyMany`](../docstore/README.md#updates), so no other tab writes in between.
+An update stores the whole row as this tab holds it, so when two tabs update one row, the last write wins. `utils.transact` reads and writes in one docstore [`modifyMany`](../docstore/README.md#updates), so no other tab writes in between. To persist a manual TanStack transaction, call `todos.utils.acceptMutations(transaction)` from its `mutationFn`. It stores the mutations of every collection made from these options in one kv transaction.
 
 ```ts
 // merge may run more than once, so keep it pure
