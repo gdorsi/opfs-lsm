@@ -317,7 +317,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
 export const NEEDS_BROWSER = "openDb needs SharedWorker and navigator.storage.getDirectory";
 
 /** A client of the package SharedWorker for `name`. The handle that takes it closes it. */
-export function workerIngest(name: DbName): IngestClient {
+function workerIngest(name: DbName): IngestClient {
   // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
   // only emit a worker chunk for this exact shape. Built in a helper, Vite
   // treated it as a plain asset and inlined the unbundled entry as a

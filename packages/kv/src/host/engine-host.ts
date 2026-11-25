@@ -4,7 +4,7 @@ import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
-import { CountingFs, emptyIoCounters } from "../opfs/counting-fs.js";
+import type { IoCounters } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
@@ -36,10 +36,20 @@ import { coalesced, serial } from "../turns.js";
  * and `openDb` make a new one at the same path, so the host keeps no folder
  * across operations. Must create nothing.
  */
-type FsFactory = (name: DbName) => AsyncFs | undefined | Promise<AsyncFs | undefined>;
+export type FsFactory = (name: DbName) => AsyncFs | undefined | Promise<AsyncFs | undefined>;
+
+/**
+ * Counts what a host does, for `readStats`. Only `@opfs-lsm/kv/testing`
+ * gives one: the shipped SharedWorker has none, so no app downloads it.
+ */
+export type Meter = {
+  /** The folder of one operation on `name`, as the host uses it. */
+  fs(name: DbName, inner: AsyncFs): AsyncFs;
+  io(name: DbName): IoCounters;
+};
 
 /** The two stores of one database, opened for one operation. */
-type Stores = { readonly wal: IdBWal; readonly fs: CountingFs };
+type Stores = { readonly wal: IdBWal; readonly fs: AsyncFs };
 
 /** What a tab's request to the host rejects with once `destroyDb` removed the database. */
 function destroyed(): ClosedError {
@@ -49,7 +59,7 @@ function destroyed(): ClosedError {
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
 
-/** Host counters for one database, besides the fs IO its CountingFs keeps. */
+/** Host counters for one database, besides the fs IO its meter keeps. */
 type HostCounts = {
   flushes: number;
   l0Stops: number;
@@ -99,13 +109,14 @@ export class EngineHost {
   constructor(
     private readonly fsFactory: FsFactory,
     private readonly overrides: HostOverrides = {},
+    private readonly meter?: Meter,
   ) {}
 
   private db(name: string): HostedDb {
     const dbName = checkDbName(name);
     let db = this.dbs.get(dbName);
     if (!db) {
-      db = hostedDb(dbName, this.fsFactory, this.overrides);
+      db = hostedDb(dbName, this.fsFactory, this.overrides, this.meter);
       this.dbs.set(dbName, db);
     }
     return db;
@@ -174,9 +185,7 @@ export class EngineHost {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) {
-  /** The fs IO of every operation, for stats. */
-  const io = emptyIoCounters();
+function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, meter: Meter | undefined) {
   const counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
   const publishTurn = serial();
   const foldTurn = serial();
@@ -207,10 +216,10 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     return { ...hostBudget(asked), ...overrides };
   }
 
-  /** The folder as it is now. Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
-  async function folder(): Promise<CountingFs | undefined> {
+  /** The folder as it is now. Every fs the host uses goes through the meter, so ingest and compaction need no hooks for IO. */
+  async function folder(): Promise<AsyncFs | undefined> {
     const inner = await fsFactory(name);
-    return inner && new CountingFs(inner, io);
+    return inner && meter ? meter.fs(name, inner) : inner;
   }
 
   /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
@@ -238,15 +247,15 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
   }
 
   async function stats(): Promise<HostStats> {
-    const stores = await openStores();
-    if (!stores) throw destroyed();
-    let recorded: Generation;
-    try {
-      recorded = (await stores.wal.meta()).generation ?? GENERATION_NONE;
-    } finally {
-      stores.wal.close();
-    }
-    const latest = await loadGeneration(stores.fs.inner, recorded);
+    if (!meter) throw new StorageUnavailableError("this host keeps no stats");
+    const recorded = await withWal(
+      async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
+      () => Promise.reject(destroyed()),
+    );
+    // Not through the meter, so reading stats counts no IO.
+    const fs = await fsFactory(name);
+    if (!fs) throw destroyed();
+    const latest = await loadGeneration(fs, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
       const level = levelOf(run.path) ?? 0;
@@ -256,7 +265,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
       byLevel.set(level, entry);
     }
     return structuredClone({
-      fs: io,
+      fs: meter.io(name),
       ...counts,
       generation: latest?.generation ?? GENERATION_NONE,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
@@ -818,6 +827,16 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
+}
+
+/** Serve `host` to every tab that connects to this SharedWorker. */
+export function serveSharedWorker(host: EngineHost): void {
+  // Read off `globalThis`, so the main tsc build needs no webworker lib.
+  const scope = globalThis as unknown as { onconnect: ((ev: MessageEvent) => void) | null };
+  scope.onconnect = (ev) => {
+    const port = (ev as MessageEvent & { ports: MessagePort[] }).ports[0];
+    if (port) attachEngineHostPort(port, host);
+  };
 }
 
 /** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). */

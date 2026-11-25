@@ -25,6 +25,7 @@
   "type": "module",
   "sideEffects": [
     "./dist/host/shared-worker.js",
+    "./dist/host/metered-worker.js",
     "./dist/testing.js"
   ],
   "exports": {

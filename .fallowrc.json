@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
   "entry": [
     "packages/*/proof/**/*.ts",
+    "packages/kv/src/host/metered-worker.ts",
     "packages/*/scripts/**/*.ts",
     "packages/*/formal/**/check.ts",
     "packages/*/formal/run-all.ts",
