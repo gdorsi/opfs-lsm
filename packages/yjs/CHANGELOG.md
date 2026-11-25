@@ -1,5 +1,46 @@
 # @opfs-lsm/yjs
 
+## 0.4.0
+
+### Patch Changes
+
+- fa5d4ad: `doc.destroy()` after a failed write no longer causes an unhandled rejection, and a later `destroy()` waits for the same teardown and rejects with its error.
+- c7c5e7c: Updates made while a doc loads count toward `trimSize`, so a doc they bring to the threshold merges once quiet. Before, the load dropped them from the count and the doc could stay unmerged. `destroy()` also stores an update that went pending while the persistence was attached, which Yjs announces with no update event. Before, it was lost on reload.
+- e108001: `KvPersistence` throws for a document name with a lone surrogate. UTF-8 turned the surrogate into U+FFFD, so such a name read and wrote the updates of another document.
+- 81644ba: `whenSynced` rejects with `ConstraintError` for a document name too long for its update keys. Before, a name of 8182 to 8189 bytes loaded, then every flush rejected.
+- 7652ca7: A doc whose state is over 8 MiB is no longer merged, and `flush()` and `destroy()` resolve for it while no write of its updates failed. Before, the merge failed on kv's batch limit, and every later `flush()` and `destroy()` rejected with `ConstraintError` although every update was stored.
+- 508e1bd: A doc whose only content is a pending update (one that arrived before the update it builds on) is stored when the persistence attaches. Before, that update was lost on reload.
+- 74228e2: `KvPersistence` stores the content a doc already holds when the persistence is constructed, as one entry, the way y-indexeddb does. That content fired no update event, so it was never stored and a reload lost it.
+- Updated dependencies [4437556]
+- Updated dependencies [327c0e8]
+- Updated dependencies [66344c2]
+- Updated dependencies [488ee4d]
+- Updated dependencies [eeaff75]
+- Updated dependencies [7d39e3f]
+- Updated dependencies [eeaff75]
+- Updated dependencies [634bf1a]
+- Updated dependencies [df04143]
+- Updated dependencies [2def7c4]
+- Updated dependencies [402b24d]
+- Updated dependencies [fb5b609]
+- Updated dependencies [eb929d8]
+- Updated dependencies [047eed4]
+- Updated dependencies [ec242eb]
+- Updated dependencies [3f59e5f]
+- Updated dependencies [72d4295]
+- Updated dependencies [17f9b12]
+- Updated dependencies [ac545e6]
+- Updated dependencies [44b72e1]
+- Updated dependencies [fa776c8]
+- Updated dependencies [33d7488]
+- Updated dependencies [3aa934e]
+- Updated dependencies [df04143]
+- Updated dependencies [a282ddf]
+- Updated dependencies [423bec9]
+- Updated dependencies [5dee709]
+- Updated dependencies [93c2a32]
+  - @opfs-lsm/kv@0.4.0
+
 ## 0.3.0
 
 ### Patch Changes

@@ -1,5 +1,54 @@
 # @opfs-lsm/tanstack-db
 
+## 0.4.0
+
+### Patch Changes
+
+- 62d2118: A `like` or `ilike` read through a text index finds a letter whose lowercase composes with the mark after it. Before, `like(t, "%J̌%")` missed `"xJ̌y"`.
+- 2db4410: A case-sensitive `like` read through a text index finds text whose Σ lowercases to σ. Before, `like(t, "%ΑΣ%")` missed `"ΑΣΑ"`.
+- eeaff75: Two collections created from one `docstoreCollectionOptions` object now each store their writes. The options followed only the collection that started last, and an insert on the other one resolved without a write.
+- 81644ba: A string bound and a lexical window follow TanStack's UTF-16 order. Before, `lt(s, "Ａ")` missed `"😀"`, and a lexical window could show the wrong first rows.
+- c3cd729: The docs of `utils.transact` state when the collection shows its write: while another transaction on the collection is persisting, TanStack applies the synced row once that transaction settles.
+- Updated dependencies [5b06650]
+- Updated dependencies [a0131bf]
+- Updated dependencies [cb1ae07]
+- Updated dependencies [5f65dcc]
+- Updated dependencies [0a06cfa]
+- Updated dependencies [8abd22c]
+- Updated dependencies [81644ba]
+- Updated dependencies [42c5011]
+- Updated dependencies [5df9bc1]
+- Updated dependencies [4437556]
+- Updated dependencies [327c0e8]
+- Updated dependencies [66344c2]
+- Updated dependencies [488ee4d]
+- Updated dependencies [eeaff75]
+- Updated dependencies [7d39e3f]
+- Updated dependencies [eeaff75]
+- Updated dependencies [634bf1a]
+- Updated dependencies [df04143]
+- Updated dependencies [2def7c4]
+- Updated dependencies [402b24d]
+- Updated dependencies [fb5b609]
+- Updated dependencies [eb929d8]
+- Updated dependencies [047eed4]
+- Updated dependencies [ec242eb]
+- Updated dependencies [3f59e5f]
+- Updated dependencies [72d4295]
+- Updated dependencies [17f9b12]
+- Updated dependencies [ac545e6]
+- Updated dependencies [44b72e1]
+- Updated dependencies [fa776c8]
+- Updated dependencies [33d7488]
+- Updated dependencies [3aa934e]
+- Updated dependencies [df04143]
+- Updated dependencies [a282ddf]
+- Updated dependencies [423bec9]
+- Updated dependencies [5dee709]
+- Updated dependencies [93c2a32]
+  - @opfs-lsm/docstore@0.4.0
+  - @opfs-lsm/kv@0.4.0
+
 ## 0.3.0
 
 ### Patch Changes

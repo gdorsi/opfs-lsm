@@ -1,5 +1,54 @@
 # @opfs-lsm/docstore
 
+## 0.4.0
+
+### Minor Changes
+
+- cb1ae07: `index(name, by, { include })` declares a sorted or multi index whose entries also hold the listed top-level fields of their document. `queryEntries` on that index returns each entry as `{ id, values, fields }`, with `fields` typed `Pick<T, ...>` and holding the included fields the document has. A list page that shows only those fields now costs one range scan, with no document read. Entries of other indexes and of the rows have no `fields`. The index takes more space, and a write that changes an included field rewrites its entries. Changing `include` under a higher `version` rebuilds the index. `IndexInfo` gains `include`.
+  
+  The stored catalog format is now 2. A database written by an earlier version fails to open with `DocStoreError` `"schema"`, so open a new database name after you upgrade.
+- 0a06cfa: A slot of `eq` takes a value or a list of values: `issues.query({ index: "byStatus", eq: [projectId, ["todo", "started"]], reverse: true, limit: 50 })`. The page holds the documents of every listed value, in the order of the fields after `eq`, then by id, so the 50 most recently updated open issues are one query with no merge in the app. Several slots can hold lists, and each combination is one range, up to 64 combinations. A bound still applies to the field after `eq`, `after`, `reverse` and `offset` work as before, and a document found under two values of a multi index comes once. `queryEntries` gives each entry its own values, and the `fields` of a covering index. `count` returns how many results `query` would return. A list on a unique index or on the rows is a type error and a `DocStoreError` `"query"`. A cursor must be a result of the query: one whose value is not listed throws `"cursor"`.
+
+### Patch Changes
+
+- 5b06650: A write encodes its documents, and a read decodes them, in chunks of about 64 KiB of JSON: one `JSON.parse` and one `TextEncoder` or `TextDecoder` call per chunk instead of one per document. A short ASCII id or query word is encoded without a `TextEncoder` call. The stored bytes are the same. The documents of one change event are parsed together when a listener first reads any `doc`.
+- a0131bf: An index build names its index by collection id and index id. A collection that is dropped and declared again keeps its name and reuses its index ids under a new collection id. A build that outlived the `drop` could take the new index for its own, add documents of other collections to it and mark it ready. It now stops once its collection is gone.
+- 5f65dcc: A write builds the value of a covering index entry about twice as fast: its fields are written from an ordinary object, which `JSON.stringify` handles several times faster than one with no prototype, and the text is encoded into a shared buffer instead of one `TextEncoder.encode` allocation per entry. A put of one document encodes it the same way. The stored bytes are the same.
+- 8abd22c: A write, and `openDocStore`, decide their errors on a state that holds every write acked before the call, from any tab. A tab that had not yet read another tab's write could throw from what it held: `"unique"` for a value the other tab had freed or for a unique index its newer schema had removed, `modify`'s `fn` could get a document the other tab had replaced, and `openDocStore` could throw `"schema"` for a lower version than the one the other tab had stored. Such a call now reads the other tabs' writes and decides again.
+- 81644ba: A collection or index named like an `Object.prototype` member, such as `toString` or `__proto__`, throws `"schema"`. Before, such a name could break the open or lose the index. `drop` still takes one, and drops it only when the catalog stores it. A text index's text field may hold `null`, which gives an entry with no words. Every tab must run this version before an app stores `null` text: an older tab derives no entry for it, so its delete leaves one behind.
+- 42c5011: `get` and `getMany` read the documents of the state they read from, as queries do. A write on a handle can make another tab's records readable a moment before kv announces them. In that moment a query already showed a collection after the other tab's `clear`, and a `get` right after it still read the cleared documents, or nothing. Every read now takes one kv snapshot and the catalog of that snapshot. The store follows the catalog from kv's change feed by seq, so a read on a handle that is caught up reads no catalog, and a query saves the catalog read it used to make.
+- 5df9bc1: A unique value whose index key is exactly kv's 8 KiB limit is found by `eq`, `lte` and `gt`, and counted, as any other stored value. Before, those reads threw `ConstraintError` for a value the store had accepted.
+- 634bf1a: Smaller bundles: kv's main-thread JavaScript is 19.5 kB gzip, from 19.8 kB, and its SharedWorker chunk 13.4 kB, from 13.6 kB. The docstore chunk is 0.7 kB smaller before compression. Some docstore error messages changed with it: a `limit` or `offset` that is not valid says "must be an integer of at least 1" (or 0), a schema with a bad `include`, `drop` or text index reports one message for each, and a stored value that is not a JSON object reports "a stored value is not a JSON object". The error classes and codes are the same. A `by` list with a hole, such as `["a", ,]`, is now refused with code `schema`, as a hole in `include` or `drop` is.
+- Updated dependencies [4437556]
+- Updated dependencies [327c0e8]
+- Updated dependencies [66344c2]
+- Updated dependencies [488ee4d]
+- Updated dependencies [eeaff75]
+- Updated dependencies [7d39e3f]
+- Updated dependencies [eeaff75]
+- Updated dependencies [634bf1a]
+- Updated dependencies [df04143]
+- Updated dependencies [2def7c4]
+- Updated dependencies [402b24d]
+- Updated dependencies [fb5b609]
+- Updated dependencies [eb929d8]
+- Updated dependencies [047eed4]
+- Updated dependencies [ec242eb]
+- Updated dependencies [3f59e5f]
+- Updated dependencies [72d4295]
+- Updated dependencies [17f9b12]
+- Updated dependencies [ac545e6]
+- Updated dependencies [44b72e1]
+- Updated dependencies [fa776c8]
+- Updated dependencies [33d7488]
+- Updated dependencies [3aa934e]
+- Updated dependencies [df04143]
+- Updated dependencies [a282ddf]
+- Updated dependencies [423bec9]
+- Updated dependencies [5dee709]
+- Updated dependencies [93c2a32]
+  - @opfs-lsm/kv@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
