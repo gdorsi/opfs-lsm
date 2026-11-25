@@ -316,14 +316,14 @@ await todos.queryIds({ index: "search", match: "MOM ca" });
 await todos.queryIds({ index: "search", gte: 2, match: "m" });
 // => { ids: ["c", "a"] }
 await todos.queryIds({ index: "search", match: " - " });
-// throws DocStoreError "query", no words
+// => { ids: ["b", "c", "a"] }, no words is no filter
 await todos.queryIds({ // type error, open is not a text index
 	index: "open",
 	match: "milk"
 });
 ```
 
-A document whose text field is `null` has an entry with no words, which a query without `match` reads and a `match` never finds. A document without the field has no entry.
+A document whose text field is `null` has an entry with no words, which a query without words in `match` reads and a `match` with words never finds. A document without the field has no entry.
 
 ### Unique
 

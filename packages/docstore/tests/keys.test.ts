@@ -247,10 +247,10 @@ describe("scanPlan", () => {
     expect(code(() => scanPlan(two, { eq: [many(8), many(8)] }))).toBe("no error");
   });
 
-  it("rejects match with no words on a text index with code query", () => {
+  it("reads a match with no words as no filter", () => {
     const text: ScanTarget = { ...two, kind: "text" };
-    expect(code(() => scanPlan(text, { match: "  ,. " }))).toBe("query");
-    expect(code(() => scanPlan(text, { match: "x" }))).toBe("no error");
+    expect(scanPlan(text, { match: "  ,. " })).toEqual(scanPlan(text, {}));
+    expect(scanPlan(text, { match: "x" }).ranges[0]!.range.valueContains).toEqual([utf8.encode("x")]);
   });
 
   it("rejects a cursor from another eq group, past the upper bound, from another collection id, or not a cursor, with code cursor", () => {

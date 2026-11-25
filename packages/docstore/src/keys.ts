@@ -190,11 +190,13 @@ export function textValue(text: string): Uint8Array {
   return idBytes(wordsOf(text).join(" "));
 }
 
-/** kv keeps an entry iff its value contains every pattern: every typed word occurs inside a word of the text. */
-function matchPatterns(match: string): Uint8Array[] {
+/**
+ * kv keeps an entry iff its value contains every pattern: every typed word
+ * occurs inside a word of the text. A match with no words is no filter.
+ */
+function matchPatterns(match: string): Uint8Array[] | undefined {
   const words = wordsOf(match);
-  if (words.length === 0) badQuery("match has no words");
-  return words.map(idBytes);
+  return words.length === 0 ? undefined : words.map(idBytes);
 }
 
 export type ScanTarget =

@@ -376,12 +376,13 @@ describe("text search", () => {
     expect(await c.count({ index: "search", match: "milk", gte: 2 })).toBe(2);
   });
 
-  it("throws query for a match with no words, and scans every text entry in order without match", async () => {
+  it("reads every text entry in order for a match with no words, as without match", async () => {
     const { c } = await docs();
     await c.putMany([...titles, { id: "5", a: 0, t: "" }, { id: "6", a: 5 }]);
-    expect(await codeOf(c.query({ index: "search", match: "  ,. " }))).toBe("query");
-    expect(await codeOf(c.query({ index: "search", match: "" }))).toBe("query");
     expect(await hits(c, { index: "search" })).toEqual(["5", "1", "2", "3", "4"]);
+    expect(await hits(c, { index: "search", match: "  ,. " })).toEqual(["5", "1", "2", "3", "4"]);
+    expect(await hits(c, { index: "search", match: "", reverse: true })).toEqual(["4", "3", "2", "1", "5"]);
+    expect(await c.count({ index: "search", match: "-", gte: 2 })).toBe(3);
   });
 
   it("gives a document whose text path is missing no entry", async () => {

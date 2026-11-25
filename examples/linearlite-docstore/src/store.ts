@@ -150,26 +150,15 @@ function scanView(issues: Issues, filter: Filter): View {
   };
 }
 
-const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
-
-/** docstore's text words: a `match` keeps the titles that hold each of them inside one word. */
-const wordsOf = (text: string) =>
-  text
-    .normalize("NFC")
-    .toLowerCase()
-    .split(NON_WORD)
-    .filter((w) => w !== "");
-
 /**
  * A title search. The text index narrows the issues to the titles holding every word of the query, a substring test
  * makes it exact, and the result is filtered and sorted in memory.
  */
 function searchView(issues: Issues, filter: Filter): View {
-  const words = wordsOf(filter.q);
   let found: Promise<Issue[]> | undefined;
   const rows = () =>
     (found ??= issues
-      .query({ index: "byModified", ...(words.length > 0 && { match: words.join(" ") }) })
+      .query({ index: "byModified", match: filter.q })
       .then(({ docs }) => docs.filter(keeps(filter)).sort(orderOf(filter))));
   return { path: "search", total: () => rows().then((r) => r.length), read: async (offset, n) => (await rows()).slice(offset, offset + n) };
 }
