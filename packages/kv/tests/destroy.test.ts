@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName } from "../src/check.js";
 import { forgetDestroyed, readDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
-import { holdingFiles } from "../src/host/protocol.js";
+import { holdingFiles } from "../src/locks.js";
 import { openExistingWal, type WalMeta } from "../src/idb/wal.js";
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type Db } from "../src/index.js";
 import {

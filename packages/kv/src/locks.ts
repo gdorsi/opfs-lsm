@@ -30,6 +30,33 @@ export function reclaimLock(name: string): string {
   return `opfs-lsm-reclaim/${name}`;
 }
 
+/**
+ * Run `fn` holding the reclaim lock shared. While any tab holds it, the
+ * host removes no run file and no manifest, so a generation recorded
+ * during `fn` keeps its files until `fn` returns. Waits only for a
+ * reclaim already running. Without Web Locks it runs `fn` unprotected.
+ */
+export function holdingFiles<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  return withLock(reclaimLock(name), fn, "shared");
+}
+
+/**
+ * Run `fn` holding the reclaim lock exclusively, or skip it and return
+ * false when a tab holds it. Never waits, so no tab can stall the host.
+ */
+export async function unlessHeld(name: string, fn: () => Promise<void>): Promise<boolean> {
+  const manager = webLocks();
+  if (!manager) {
+    await fn();
+    return true;
+  }
+  return manager.request(reclaimLock(name), { mode: "exclusive", ifAvailable: true }, async (lock) => {
+    if (!lock) return false;
+    await fn();
+    return true;
+  });
+}
+
 export function compactLock(name: string): string {
   return `opfs-lsm-compact/${name}`;
 }

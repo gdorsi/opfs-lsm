@@ -24,9 +24,9 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
+import { type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
 import { removeDatabase } from "./destroy.js";
-import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
+import { fullLock, holdingFiles, layersChannel, openLock, webLocks, withLock } from "./locks.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
 import { reconcileOpen } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from "./seq.js";

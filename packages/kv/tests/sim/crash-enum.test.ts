@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { holdingFiles } from "../../src/host/protocol.js";
+import { holdingFiles } from "../../src/locks.js";
 import {
   openHarnessDb,
   ingest as ingestDb,
