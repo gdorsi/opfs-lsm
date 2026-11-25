@@ -22,20 +22,19 @@ the option. The worker holds one sync access handle, opened `read-only`, for eac
 of the page holds open. The tab starts the worker when `openDb` is called and never waits for it:
 an open resolves when it would without the option.
 
-The worker and the tab share one buffer, with a control region of 16 32-bit integers followed by
-2 MiB of data:
+The worker and the tab share one buffer: 16 integers of control, in this order, then the data.
 
 ```layout
-| i32 0  WAKE     the tab adds 1 and notifies for each request            |
-| i32 1  DONE     the worker stores the id of the request it answered     |
-| i32 2  REQ      the tab stores the id of its request                    |
-| i32 3  FILE     the number the tab gave the file when it asked for it   |
-| i32 4  OFF_LO   the low 32 bits of the offset                           |
-| i32 5  OFF_HI   the high bits of the offset                             |
-| i32 6  LEN      the bytes asked for                                     |
-| i32 7  STATUS   the bytes read, or -1                                   |
-| 32 bytes unused                                                        |
-| data            2 MiB                                                   |
+| i32 WAKE      the tab adds 1 and notifies for each request                 |
+| i32 DONE      the worker stores the id of the request it answered          |
+| i32 REQ       the tab stores the id of its request                         |
+| i32 FILE      the number the tab gave the file when it asked for it        |
+| i32 OFF_LO    the low 32 bits of the offset                                |
+| i32 OFF_HI    the high bits of the offset                                  |
+| i32 LEN       the bytes asked for                                          |
+| i32 STATUS    the bytes read, or -1                                        |
+| 32 bytes      unused                                                       |
+| data          2 MiB, where the worker puts the bytes of a read             |
 ```
 
 Opening and closing a handle go by message, and each is answered. A read uses the buffer alone.
