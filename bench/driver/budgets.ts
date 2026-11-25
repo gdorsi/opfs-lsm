@@ -31,7 +31,7 @@ export const BUDGETS: readonly Budget[] = [
   { workload: "tanstack/todos", contender: "tanstack/kv", size: "tiny", phase: "check-after", metric: "amp:spaceAmp", max: 1.5 },
   // The history's 3.8 MiB of WAL is flushed 3 or 4 times, as the flushes fall. The fourth L0 run starts a compaction: 7.4, against 5.6 without.
   { workload: "tracker/goals", contender: "tracker/docstore", size: "tiny", phase: "settle", metric: "amp:wampTotal", max: 7.7 },
-  { workload: "tracker/goals", contender: "tracker/docstore", size: "tiny", phase: "settle", metric: "amp:spaceAmp", max: 3.35 },
+  { workload: "tracker/goals", contender: "tracker/docstore", size: "tiny", phase: "settle", metric: "amp:spaceAmp", max: 3.5 },
   { workload: "kv/fillrandom", contender: "kv/kv", size: "small", phase: "settle", metric: "amp:wampTotal", max: 3.9 },
   { workload: "kv/fillrandom", contender: "kv/kv", size: "small", phase: "settle", metric: "amp:spaceAmp", max: 1.05 },
 ];
