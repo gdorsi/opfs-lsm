@@ -27,7 +27,7 @@ import { MemoryFs } from "./opfs/memory-fs.js";
 /**
  * Where the run files live and who flushes them. An fs comes with the client
  * of the host that publishes to it. Without one the fs is OPFS, and the client
- * is the metered SharedWorker's unless one is given.
+ * is the metered worker's unless one is given.
  */
 export type Backing =
   | { readonly fs: AsyncFs; readonly ingest: IngestClient }
@@ -75,14 +75,14 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
   });
 }
 
-/** A client of the SharedWorker that runs a `MeteredHost`, so `readStats` answers in a browser. */
+/** `workerIngest` on the worker that runs a `MeteredHost`, so `readStats` answers in a browser. */
 function meteredWorker(name: DbName): IngestClient {
   // Inline in the constructor, as in `workerIngest`, so bundlers emit the worker chunk.
-  const worker = new SharedWorker(
-    new URL("./host/metered-worker.js", import.meta.url),
-    { type: "module", name: `opfs-lsm:${name}` },
+  return createPortIngestClient(
+    typeof SharedWorker === "undefined"
+      ? new Worker(new URL("./host/metered-worker.js", import.meta.url), { type: "module", name: `opfs-lsm:${name}` })
+      : new SharedWorker(new URL("./host/metered-worker.js", import.meta.url), { type: "module", name: `opfs-lsm:${name}` }).port,
   );
-  return createPortIngestClient(worker.port);
 }
 
 export type HarnessOpenOptions = OpenOptions &
@@ -93,7 +93,7 @@ export type HarnessOpenOptions = OpenOptions &
      */
     readonly fs?: AsyncFs;
     /**
-     * Ingest client. Omit for the metered SharedWorker when the fs is OPFS,
+     * Ingest client. Omit for the metered worker when the fs is OPFS,
      * and for an in-process EngineHost on a given or memory fs.
      */
     readonly ingest?: IngestClient;

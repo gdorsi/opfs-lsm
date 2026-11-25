@@ -264,9 +264,10 @@ export interface Db {
   dangerousDestroy(): Promise<void>;
 }
 
+/** A page with SharedWorker also has Worker, which `openDb` starts where SharedWorker is missing. */
 export function canUseBrowserOpfs(): boolean {
   return (
-    typeof SharedWorker !== "undefined" &&
+    typeof Worker !== "undefined" &&
     typeof navigator !== "undefined" &&
     !!navigator.storage &&
     typeof navigator.storage.getDirectory === "function"
@@ -314,19 +315,23 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   });
 }
 
-export const NEEDS_BROWSER = "openDb needs SharedWorker and navigator.storage.getDirectory";
+export const NEEDS_BROWSER = "openDb needs a Worker and navigator.storage.getDirectory";
 
-/** A client of the package SharedWorker for `name`. The handle that takes it closes it. */
+/**
+ * A client of the package SharedWorker for `name`, or of a dedicated Worker
+ * running the same script where there is no SharedWorker. The handle that
+ * takes it closes it.
+ */
 function workerIngest(name: DbName): IngestClient {
   // The URL stays inline in the constructor: bundlers (Vite, webpack 5)
   // only emit a worker chunk for this exact shape. Built in a helper, Vite
   // treated it as a plain asset and inlined the unbundled entry as a
   // data: URL whose relative imports could not resolve.
-  const worker = new SharedWorker(
-    new URL("./host/shared-worker.js", import.meta.url),
-    { type: "module", name: `opfs-lsm:${name}` },
+  return createPortIngestClient(
+    typeof SharedWorker === "undefined"
+      ? new Worker(new URL("./host/shared-worker.js", import.meta.url), { type: "module", name: `opfs-lsm:${name}` })
+      : new SharedWorker(new URL("./host/shared-worker.js", import.meta.url), { type: "module", name: `opfs-lsm:${name}` }).port,
   );
-  return createPortIngestClient(worker.port);
 }
 
 /**

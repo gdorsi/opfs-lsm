@@ -807,12 +807,20 @@ function isClosedDatabase(err: unknown): boolean {
 
 /**
  * Serve the host `build` makes to every tab that connects to this
- * SharedWorker. It writes run files where OPFS files have `createWritable()`.
+ * SharedWorker, or, in a dedicated Worker, to the page that started it. It
+ * writes run files only in a SharedWorker whose OPFS files have
+ * `createWritable()`: each page runs its own dedicated Worker, and several
+ * hosts flushing one database is not verified.
  */
-export function serveSharedWorker(build: (writes: boolean) => EngineHost): void {
-  const host = build(!!globalThis.FileSystemFileHandle?.prototype.createWritable);
+export function serveWorker(build: (writes: boolean) => EngineHost): void {
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
-  const scope = globalThis as unknown as { onconnect: ((ev: MessageEvent) => void) | null };
+  const scope = globalThis as unknown as MessagePort & { onconnect?: ((ev: MessageEvent) => void) | null };
+  const shared = "onconnect" in scope;
+  const host = build(shared && !!globalThis.FileSystemFileHandle?.prototype.createWritable);
+  if (!shared) {
+    attachEngineHostPort(scope, host);
+    return;
+  }
   scope.onconnect = (ev) => {
     const port = (ev as MessageEvent & { ports: MessagePort[] }).ports[0];
     if (port) attachEngineHostPort(port, host);

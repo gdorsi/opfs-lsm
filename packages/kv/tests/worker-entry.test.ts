@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { serveSharedWorker } from "../src/host/engine-host.js";
+import { serveWorker } from "../src/host/engine-host.js";
 import type { Db } from "../src/index.js";
 import { createPortIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
 
@@ -30,11 +30,25 @@ afterEach(async () => {
 function startShared(fileHandle: new () => object): MessagePort {
   vi.stubGlobal("FileSystemFileHandle", fileHandle);
   vi.stubGlobal("onconnect", null);
-  serveSharedWorker((writes) => new EngineHost(() => fs, { writes }));
+  serveWorker((writes) => new EngineHost(() => fs, { writes }));
   const { port1, port2 } = new MessageChannel();
   ports.push(port1, port2);
   const scope = globalThis as unknown as { onconnect: (ev: { ports: MessagePort[] }) => void };
   scope.onconnect({ ports: [port2] });
+  return port1;
+}
+
+/** Runs the entry as a dedicated Worker's script, whose global scope is the page's one port. */
+function startDedicated(): MessagePort {
+  vi.stubGlobal("FileSystemFileHandle", class { createWritable() {} });
+  const { port1, port2 } = new MessageChannel();
+  ports.push(port1, port2);
+  vi.stubGlobal("addEventListener", port2.addEventListener.bind(port2));
+  vi.stubGlobal("removeEventListener", port2.removeEventListener.bind(port2));
+  vi.stubGlobal("postMessage", port2.postMessage.bind(port2));
+  serveWorker((writes) => new EngineHost(() => fs, { writes }));
+  // A dedicated worker's scope gets its page's messages without a start call.
+  port2.start();
   return port1;
 }
 
@@ -55,5 +69,14 @@ describe("the worker entry", () => {
   it("writes no run file in a SharedWorker without createWritable, as in Safari 16 to 25", async () => {
     await writeAndFlush(startShared(class {}));
     expect(fs.publishedPaths()).toEqual([]);
+  });
+
+  it("serves its global scope in a dedicated Worker, and writes no run file there", async () => {
+    await writeAndFlush(startDedicated());
+    expect(fs.publishedPaths()).toEqual([]);
+    const db = opened[0]!;
+    expect(new TextDecoder().decode(await db.get(enc.encode("k")))).toBe("v");
+    await db.dangerousDestroy();
+    expect(await db.get(enc.encode("k"))).toBeUndefined();
   });
 });
