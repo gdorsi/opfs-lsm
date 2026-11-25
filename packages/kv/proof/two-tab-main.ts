@@ -12,6 +12,7 @@
  *   ?scenario=quota    databases with a reserve under an origin limit the script sets, with a handler in each tab and with none
  *   ?scenario=destroy  destroyDb with other tabs open: one live, one crashed, one frozen, one navigated away
  *   ?role=holder&tag=t&db=name  a tab that holds `name` open for the destroy scenario, read through DevTools
+ *   ?sync=1            open every database with `syncReads` from the sync-reads entry; the page must be cross-origin isolated
  */
 const params = new URLSearchParams(location.search);
 const ROLE = params.get("role");
@@ -21,6 +22,11 @@ const AUTO = params.has("auto");
 const DB_NAME = params.get("name") ?? "two-tab";
 const QUOTA = params.get("scenario") === "quota";
 const DESTROY = params.get("scenario") === "destroy";
+const SYNC = params.has("sync");
+/** Spread into every open of the main and destroy scenarios: `syncReads`, imported only on a page that asks for it. */
+async function syncOption(): Promise<{ syncReads?: import("../dist/index.js").SyncReads }> {
+  return SYNC ? { syncReads: (await import("../dist/opfs/sync-reads.js")).syncReads } : {};
+}
 
 const statusEl = document.getElementById("status")!;
 const out = document.getElementById("out")!;
@@ -59,6 +65,8 @@ type Handle = {
   ): Promise<unknown>;
   get(key: Uint8Array): Promise<Uint8Array | undefined>;
   ingest(): Promise<{ generation: number }>;
+  /** Run-file reads served synchronously so far. */
+  syncReads(): Promise<number>;
   range(): AsyncIterable<{ key: Uint8Array; value: Uint8Array }>;
   view<T>(
     body: (snap: {
@@ -146,6 +154,11 @@ async function watchFull(name: string, mode: FullMode): Promise<FullReport> {
 }
 
 type Db = import("../dist/index.js").Db;
+
+/** The run-file reads `db` served synchronously so far, 0 when it does not read that way. */
+async function syncReads(db: Db): Promise<number> {
+  return (await (await import("../dist/testing.js")).readStats(db)).tab.syncReads?.reads ?? 0;
+}
 
 async function sstBytes(db: Db): Promise<number> {
   return (await (await import("../dist/testing.js")).readStats(db)).host.layout.reduce((n, l) => n + l.bytes, 0);
@@ -326,7 +339,7 @@ async function holder(): Promise<void> {
   }
   sessionStorage.setItem("held", "1");
   const testing = await import("../dist/testing.js");
-  const db = await testing.openHarnessDb({ name: params.get("db")!, maxWalBytes });
+  const db = await testing.openHarnessDb({ name: params.get("db")!, maxWalBytes, ...(await syncOption()) });
   let closed: string | null = null;
   let restored = false;
   db.changes((e) => {
@@ -345,6 +358,7 @@ async function holder(): Promise<void> {
   Object.assign(globalThis, {
     holder: {
       state: () => ({ closed, restored, reloaded: false }),
+      syncReads: () => syncReads(db),
       /** A view that reads the first row, then waits, then reads the last one, which is on another page. */
       async startView() {
         let started!: () => void;
@@ -472,7 +486,7 @@ async function destroyScenario(): Promise<void> {
   const mod = await import("../dist/index.js");
   const testing = await import("../dist/testing.js");
   const name = `${DB_NAME}-destroy`;
-  const db = await testing.openHarnessDb({ name, maxWalBytes });
+  const db = await testing.openHarnessDb({ name, maxWalBytes, ...(await syncOption()) });
   let ownClosed: string | null = null;
   db.changes((e) => {
     if (e.kind === "closed") ownClosed = e.reason;
@@ -482,6 +496,13 @@ async function destroyScenario(): Promise<void> {
   await db.put(enc.encode("tail"), enc.encode("t"));
   await openHolder("b", name);
   must((await devtools("eval", "b", { expr: "holder.startView()" })) === "started", "tab b did not start its view");
+  if (SYNC) {
+    must((await db.get(rowKey(0))) !== undefined, "this tab missed the first row");
+    const [own, other] = [await syncReads(db), await devtools<number>("eval", "b", { expr: "holder.syncReads()" })];
+    must(own > 0 && other > 0, `reads served synchronously: this tab ${own}, the other tab ${other}`);
+    log(`both tabs hold the run files open for sync reads: this tab served ${own}, the other tab ${other}`);
+    log("sync-reads ok");
+  }
   const old = await walFloor(name);
 
   const t0 = performance.now();
@@ -497,7 +518,7 @@ async function destroyScenario(): Promise<void> {
   must(!(await folderExists(name)), "the folder is still in OPFS");
   log("folder gone");
 
-  const again = await testing.openHarnessDb({ name, maxWalBytes });
+  const again = await testing.openHarnessDb({ name, maxWalBytes, ...(await syncOption()) });
   let rows = 0;
   for await (const _ of again.range()) rows += 1;
   must(rows === 0, `the reopened database reads ${rows} rows`);
@@ -505,6 +526,8 @@ async function destroyScenario(): Promise<void> {
   const { generation } = await testing.ingest(again);
   must(seq > old.head && generation > old.top, `seq ${seq} after head ${old.head}, manifest ${generation} after top ${old.top}`);
   must(text(await again.get(enc.encode("new"))) === "n", "the write after the reopen did not read back");
+  // The worker opens the new run in a folder that was removed and made again since it last opened one there.
+  if (SYNC) must((await syncReads(again)) > 0, "the reopened database served no read synchronously");
   await again.close();
   log(`reopened empty: seq ${seq} past the old head ${old.head}, manifest ${generation} past the old top ${old.top}`);
 
@@ -583,9 +606,10 @@ async function openHandle(
     name,
     writerId,
     maxWalBytes,
+    ...(await syncOption()),
     ...(shared ? { fs: await shared.folder(name), ingest: shared.ingest } : {}),
   });
-  return Object.assign(db, { ingest: () => testing.ingest(db) });
+  return Object.assign(db, { ingest: () => testing.ingest(db), syncReads: () => syncReads(db) });
 }
 
 async function rowsOf(db: Handle): Promise<Rows> {
@@ -828,6 +852,13 @@ async function scenario(self: Handle, other: OtherTab, open: (name: string) => P
   const flushed = await other.get("gone/1");
   must(flushed === null, `other tab read gone/1=${flushed} after ingesting the range delete`);
   log("other tab saw gone/1 and gone/2 absent after the range delete");
+
+  if (SYNC) {
+    const served = await self.syncReads();
+    must(served > 0, "no run-file read was served synchronously");
+    log(`run-file reads served synchronously: ${served}`);
+    log("sync-reads ok");
+  }
 
   await twoDatabases(open, self, other);
 

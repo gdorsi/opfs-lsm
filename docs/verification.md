@@ -23,6 +23,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | `destroyDb`, the `opfs-lsm-destroyed` row, the open lock, recovery rule 0, or the host's opens that never create | `formal:power-loss`, then `tests/sim/crash-enum.test.ts` with a long sweep (below), then `KV_CLOSE_SEEDS=1000` on `tests/sim/close-random.test.ts` (`KV_CLOSE_FIRST=<seed> KV_CLOSE_SEEDS=1` replays a seed), then `drive destroy`, then `power-loss-chrome --destroy`, then `kill-chrome --minutes 10` |
 | How a tab follows another: a BroadcastChannel row, `catchUp`, `follow`, a generation install that moves the memtable (`advance`), `changes()` (`applyRecord`, `announce`), or `dangerousDestroy` seen from a second handle | `KV_FOLLOW_DEPTH=4` on `tests/sim/tab-follow.test.ts`, `KV_INFLIGHT_SEEDS=400` on `tests/sim/in-flight-feed.test.ts` (`KV_INFLIGHT_FIRST=<seed> KV_INFLIGHT_SEEDS=1` replays a seed), and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. No formal model covers it. |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
+| The sync-read path: `syncReads`, the dedicated worker and its buffer protocol, `readSync` in `SstReader` and the page cache, `ReadFs.quiesce`, or `beforeClose` on the WAL connection | `tests/page-cache.test.ts`, `tests/sst-reader.test.ts`, `tests/wal-before-close.test.ts` and `tests/quiesce.test.ts`, then `drive sync-reads` and `drive sync-reads-destroy`, then `drive two-tab` and `drive destroy` for the option off, then `node bench/cli.ts smoke --sync-reads` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
 | `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/yjs/src/index.ts`, or a kv change claimed to speed up Yjs | `drive bench yjs/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
@@ -55,7 +56,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `tanstack-query/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `sync-reads`, `sync-reads-destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `tanstack-query/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -70,6 +71,8 @@ The helper runs:
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `quota` | `TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `destroy` | `TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `sync-reads` | `TWO_TAB_SYNC_READS=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `sync-reads-destroy` | `TWO_TAB_SYNC_READS=1 TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
 | `bench-smoke` | `pnpm bench:smoke` |
 
@@ -82,6 +85,8 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok` |
 | `quota` | `tabs=2`, `mode=SharedWorker`, `OPFS write is refused`, `storage full answered once, by tab`, `run files`, `the reserve file is back`, `no handler: one warning in each tab, no row lost`, `limit lifted: the reserve file is back`, `quota ok`. The `fill of a 24 MiB reserve` line times the fill. |
 | `destroy` | `mode=SharedWorker`, `other tab closed reason=destroyed`, `other tab put and view read rejected with ClosedError`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`. The `frozen tab:` and `tab navigated away:` lines are facts about the Chrome it ran on: a frozen tab holds `destroyDb` until it resumes, and a page in the back/forward cache is evicted. |
+| `sync-reads` | The `two-tab` strings, `run-file reads served synchronously: ` with a positive count, and `sync-reads ok` |
+| `sync-reads-destroy` | The `destroy` strings, `both tabs hold the run files open for sync reads`, and `sync-reads ok` |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
 
 Evidence stays after cleanup:

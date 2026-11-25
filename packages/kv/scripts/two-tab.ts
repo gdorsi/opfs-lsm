@@ -7,6 +7,7 @@
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_SYNC_READS=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts   (alone, or with TWO_TAB_DESTROY=1)
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -54,6 +55,8 @@ type RunOptions = {
   quota: boolean;
   /** Run the destroyDb scenario, which asks this script to open, crash, freeze and navigate tabs. */
   destroy: boolean;
+  /** Open every database with `syncReads`, on pages served cross-origin isolated, which a SharedArrayBuffer needs. */
+  syncReads: boolean;
 };
 
 function chromePath(): string {
@@ -467,7 +470,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     const op = q.get("op");
     const tag = q.get("tag") ?? "";
     if (op === "open") {
-      const url = `http://127.0.0.1:${port}/proof/two-tab.html?${new URLSearchParams({ role: "holder", tag, db: q.get("db") ?? "" })}`;
+      const url = `http://127.0.0.1:${port}/proof/two-tab.html?${new URLSearchParams({ role: "holder", tag, db: q.get("db") ?? "", ...sync })}`;
       holders.set(tag, { targetId: await openTarget(wsUrl!, url) });
       await Promise.race([latch(tag).promise, sleep(30_000).then(() => Promise.reject(new Error(`tab ${tag} did not get ready`)))]);
       return "ready";
@@ -510,6 +513,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   };
   let wsUrl: string | undefined;
   let quotaSession: PageSession | undefined;
+  const sync: Record<string, string> = options.syncReads ? { sync: "1" } : {};
 
   const server = http.createServer(async (req, res) => {
     const urlPath = (req.url ?? "/").split("?")[0] ?? "/";
@@ -609,6 +613,7 @@ async function runOnce(options: RunOptions): Promise<number> {
         "content-type": contentType(filePath),
         // The profile is new on each run, so nothing stale is cached. "no-store" keeps a page out of the back/forward cache.
         "cache-control": options.destroy ? "no-cache" : "no-store",
+        ...(options.syncReads ? { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp" } : {}),
       });
       res.end(body);
     });
@@ -625,7 +630,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "opfs-two-tab-"));
 
-  const query = new URLSearchParams({ auto: "1", name: "two-tab" });
+  const query = new URLSearchParams({ auto: "1", name: "two-tab", ...sync });
   if (options.nobc) query.set("nobc", "1");
   if (options.quota) query.set("scenario", "quota");
   if (options.destroy) query.set("scenario", "destroy");
@@ -636,6 +641,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     auto: "1",
     name: "two-tab",
     role: "b",
+    ...sync,
   });
   if (options.nobc) tabBQuery.set("nobc", "1");
   if (options.quota) tabBQuery.set("scenario", "quota");
@@ -687,6 +693,9 @@ async function runOnce(options: RunOptions): Promise<number> {
     } else if (!options.quota && !options.destroy && !parsed.log.includes("two-databases ok")) {
       console.error("missing the two-databases ok line");
       exitCode = 1;
+    } else if (options.syncReads && !parsed.log.includes("sync-reads ok")) {
+      console.error("missing the sync-reads ok line");
+      exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");
       exitCode = 1;
@@ -726,6 +735,7 @@ async function main(): Promise<number> {
     nobc: flag("TWO_TAB_NOBC"),
     quota: flag("TWO_TAB_QUOTA"),
     destroy: flag("TWO_TAB_DESTROY"),
+    syncReads: flag("TWO_TAB_SYNC_READS"),
   };
   for (let i = 0; i < repeat; i += 1) {
     if (repeat > 1) console.log(`run ${i + 1}/${repeat}`);
