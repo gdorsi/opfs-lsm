@@ -762,6 +762,35 @@ async function twoDatabases(
   log("two-databases ok");
 }
 
+/**
+ * Every other step opens through the harness, which starts the worker that
+ * keeps a meter. This one opens through `openDb`, so the run also loads the
+ * SharedWorker an app gets.
+ */
+async function shippedWorker(): Promise<void> {
+  const mod = await import("../dist/index.js");
+  const testing = await import("../dist/testing.js");
+  const name = `${DB_NAME}-shipped`;
+  await mod.destroyDb(name);
+  const db = await mod.openDb({ name });
+  try {
+    await db.put(enc.encode("k"), enc.encode("v"));
+    const { generation } = await testing.ingest(db);
+    must(generation > 0, `the shipped worker flushed nothing: generation ${generation}`);
+    must((await opfsFiles(name)).length > 0, `opfs-lsm/${name}/ holds no files`);
+    must(text(await db.get(enc.encode("k"))) === "v", "the shipped worker lost a write");
+    const stats = await testing.readStats(db).then(
+      () => "answered",
+      (err: Error) => err.name,
+    );
+    must(stats === "StorageUnavailableError", `readStats on the shipped worker: ${stats}`);
+  } finally {
+    await db.close();
+  }
+  await mod.destroyDb(name);
+  log("shipped-worker ok");
+}
+
 async function scenario(self: Handle, other: OtherTab, open: (name: string) => Promise<Handle>): Promise<void> {
   const t0 = performance.now();
   log(`mode=${modeLabel()}`);
@@ -830,6 +859,7 @@ async function scenario(self: Handle, other: OtherTab, open: (name: string) => P
   log("other tab saw gone/1 and gone/2 absent after the range delete");
 
   await twoDatabases(open, self, other);
+  if (!LOCAL) await shippedWorker();
 
   if (NOBC) {
     must(bcPosts > 0, "BroadcastChannel replacement was not used");

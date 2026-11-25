@@ -66,7 +66,7 @@ cmd_doctor() {
     echo "wasm: present"
   fi
 
-  if [[ ! -f "$ROOT/packages/kv/dist/index.js" || ! -f "$ROOT/packages/kv/dist/host/shared-worker.js" ]]; then
+  if [[ ! -f "$ROOT/packages/kv/dist/index.js" || ! -f "$ROOT/packages/kv/dist/host/shared-worker.js" || ! -f "$ROOT/packages/kv/dist/host/metered-worker.js" ]]; then
     echo "kv dist: MISSING (run: verify-opfs-lsm launch)"
     ok=0
   else
