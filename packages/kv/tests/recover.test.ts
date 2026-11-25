@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { checkDbName, checkKey, checkValue, opsBytes, type CheckedOp } from "../src/check.js";
+import { checkDbName, checkKey, checkValue, flushBytes, type CheckedOp } from "../src/check.js";
 import { ClosedError, CorruptDatabaseError } from "../src/errors.js";
 import type { ChangeEvent } from "../src/index.js";
 import { adopt, TabWal, encodeOps, listUningested, uningestedBytes } from "../src/idb/wal.js";
@@ -116,7 +116,7 @@ describe("advanceIngested", () => {
     // Seqs 1 and 2 stay: a power loss can keep this commit and lose manifest 1.
     expect(await adopt(wal, { expect: await wal.meta(), generation: 0, through: 0, floor: 0, top: 0 })).toBe(true);
     expect(await seqs(wal)).toEqual([1, 2, 3]);
-    expect(await uningestedBytes(wal, 1 << 30)).toBe(3 * opsBytes(put(1)));
+    expect(await uningestedBytes(wal, 1 << 30)).toBe(3 * flushBytes(put(1)));
     wal.close();
   });
 

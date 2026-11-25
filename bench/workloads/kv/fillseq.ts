@@ -6,7 +6,7 @@ const PAGE = 50;
 /** The values one page of the full scan reads. */
 const READ_PAGE = 1_000;
 
-/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, pages an offset deep and reads of many keys. */
+/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, pages an offset deep in both directions and reads of many keys. */
 export default defineWorkload({
   family: "kv",
   title: "ascending fill, full scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, offsets and reads of many keys",
@@ -85,6 +85,20 @@ export default defineWorkload({
         const offset = Math.ceil(entries / 100);
         const skips = Array.from({ length: 200 }, () => ({ from: Math.floor(ctx.rng() * (entries - offset - PAGE + 1)), limit: PAGE, op: "skip", count: 1, offset }));
         (await scanAll(ctx, skips)).forEach((n, i) => ctx.check(n === PAGE, `skip from ${skips[i]!.from} read ${n} of ${PAGE} values`));
+      },
+    },
+    {
+      name: "skipreverse",
+      page: "same",
+      timed: true,
+      async run(ctx) {
+        const { entries } = ctx.params;
+        const offset = Math.ceil(entries / 100);
+        const reads = Array.from({ length: 200 }, (): Bounded => {
+          const hi = offset + PAGE + Math.floor(ctx.rng() * (entries - offset - PAGE + 1));
+          return { lo: 0, hi, limit: PAGE, op: "skip", count: 1, reverse: true, offset };
+        });
+        (await boundedAll(ctx, reads)).forEach((n, i) => ctx.check(n === PAGE, `reverse skip below ${reads[i]!.hi} read ${n} of ${PAGE} values`));
       },
     },
     {

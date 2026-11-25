@@ -51,6 +51,12 @@ Create worktrees inside `.claude/worktrees/` in the repository, never change cod
 - **A mechanism gets what a reimplementer needs**: the format, the steps, the invariant. Proofs, liveness arguments and test descriptions go in `docs/verification.md` or `docs/research/`.
 - **Edit in place.** A change that adds lines should cut lines elsewhere, or move a topic to its own file and link it.
 
+## docs/research
+
+[docs/research/README.md](docs/research/README.md) lists every research note with its status and its learning in one row. Read it before a performance experiment or a design change, to see what was already tried. Open a note only for its numbers or its reasons. A note is dated evidence. When it disagrees with the code or with design.md, the note is the stale one.
+
+A PR that changes a verdict updates the note's `Status:` line and its row. The README's "Write or change a note" has the rules, and `pnpm check:docs` checks the ones a script can.
+
 ## Verification
 
 [docs/verification.md](docs/verification.md) is the source of truth for which skill to run, the command order, and what a pass looks like. The skills under `.agents/skills/` hold the property list and the feature recipes.

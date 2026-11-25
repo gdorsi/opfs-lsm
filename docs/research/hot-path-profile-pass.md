@@ -1,11 +1,13 @@
 # A profile pass over the kv and docstore hot paths
 
+Status: rejected. No code changed. Three memtable variants were measured and rejected, and the
+memtable stays as design.md, "Memtable" describes it. The `sync` write tail at 200,000 issues is
+still open.
+
 Date: 2026-11-24. Chrome 157 headless, macOS arm64, Apple M2 Pro, commit `f8854bdd`. Other
 sessions ran headless Chromium on the machine during every measurement, with a load average of
 10 to 30 on 10 cores. Identical runs of one build took 3.5 s to 9 s, so this note compares
 shares inside one run and never wall times between runs. No Chrome A/B was run.
-
-Status: nothing changed. Three memtable variants were measured and rejected.
 
 ## Question
 
@@ -52,7 +54,8 @@ text index, and most index keys hold `updatedAt`, so a patch rewrites them. Docs
 entry that did not change.
 
 A search makes 9.5 probes and compares 56 bytes in all, 6 bytes a probe, so the shared-prefix
-skip works and the byte loop is not the cost. In Chrome a search takes about 0.4 µs, 33 ns a
+skip works and the byte loop is not the cost. That skip shipped before this pass, in `fb5b6093`
+(2026-11-20), and is in every measurement here. In Chrome a search takes about 0.4 µs, 33 ns a
 probe. A probe reads the row object and then its key, two objects that sit apart in memory.
 
 Three variants, each measured as its share of one profiled node replay:
@@ -77,13 +80,12 @@ Two designs were not built:
 
 ## Bundle size
 
-kv's import budget is 19,900 gzip bytes and the main-thread chunk has almost no room under it.
+At `f8854bdd`, kv's import budget was 19,900 gzip bytes and the main-thread chunk had almost no
+room under it. `bench/size/rows.ts` holds the current budget.
 `node bench/cli.ts size --check` passes on Node 24, which CI uses, and reports
 `kv at import 19934 > 19900 gzip` on Node 26.13.1 for the same tree: the two versions gzip the
 same file to different sizes. Measure with Node 24, after a build of the packages, since the
 size build reads each package's `dist`.
-
-A change to kv's main-thread code has to remove as many bytes as it adds.
 
 ## Write tail latency at 200,000 issues
 

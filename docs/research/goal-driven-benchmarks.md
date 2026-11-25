@@ -1,263 +1,73 @@
-# Goal-driven benchmarks
+# A dataset plus goals replaces the app benchmarks
 
-Question: can a synthetic dataset plus a fixed set of goals ("count the todo issues of a project", "the first 50 todo issues with assignee and label names") replace the benchmarks that drive example apps, with less overlap between access patterns and coverage of index-driven loads and joins whose rows sit on many 32 KB pages? Is there prior art?
+Status: shipped. `tracker/goals` replaced the app benchmarks, and each access pattern has one owning workload. bench/README.md describes both, in "Goal workloads" and "Adding a workload or contender", and docs/benchmarks.md publishes the goal numbers.
 
-Conventions as in the other research notes. **[E]** external fact, cited with the owner's URL. **[R]** repo fact, cited by path. **[I]** inference. **[M]** measured in this checkout. Fetched 2026-11-16.
+Date: 2026-11-16, sources fetched that day. The first run was on size `small`, on top of main at #283, in Chrome 157 headless on an Apple M2 Pro at load average 1.1, with `node bench/cli.ts run tracker/ --size small --reps 3`. The published goal tables supersede its numbers, so this note keeps only the four that drove a change.
 
----
+## Question
 
-## 0. Answer
+Can a synthetic dataset plus a fixed set of goals ("count the todo issues of a project", "the first 50 todo issues with assignee and label names") replace the benchmarks that drive example apps, with less overlap between access patterns and coverage of index-driven loads and joins whose rows sit on many 32 KB pages? Is there prior art?
 
-1. Yes, for the questions the engine has to answer. "Dataset plus business questions" is how most database benchmarks work: TPC-H, TPC-C/E, LDBC SNB, JOB, LinkBench. db_bench and YCSB, which the kv half of the suite copies, are the exception (§5).
-2. The tool for "no overlap" is LDBC's query × choke-point matrix: each query is designed against named technical challenges, and a gap is fixed by changing a query (§6). §3 applies it to this suite.
-3. Two LDBC choke points name what the example apps never isolated: CP-3.3 *scattered index access* and CP-3.2 *dimensional clustering* (§6). In docstore, an index page of 50 is one range plus 50 point gets, each on whatever 32 KB page its row landed on [R: packages/docstore/src/snapshot.ts].
-4. Realism moves from the app into the generator. Skew and correlation are built in (§7). The store is built by replaying a history, not by bulk-loading the final state, because an LSM's shape depends on write order (§7). Bindings are curated so a goal's reps do comparable work (§10).
-5. Example apps catch what a goal cannot: rendering competing for the main thread, several tabs. That is a reason to test them, not to benchmark them. The app benchmarks are removed. Each pattern they owned alone belongs to a goal, to a phase of an adapter workload, or to the live-query workload on the tracker dataset, and each shipped adapter keeps one workload. The suite is 13 workloads, one owner per access pattern, and the check is code (§3).
-6. First numbers at `small` (§4): the goals separate the libraries by access pattern in a way the app benchmarks never did, and they point at specific docstore API gaps (no index values in a query, no group-by, no offset).
+Before the change, the app benchmarks (linearlite, whiteboard, pages, todos) mixed the app's model, TanStack DB, sync and storage in each number. The linearlite data was denormalized and loaded in one sync, so no join and no aged store was ever measured. The engine half, db_bench and YCSB A to F on raw keys, overlapped heavily, and no key was an index entry pointing at a row.
 
----
+## Verdict
 
-## 1. What the suite measured before goals
+1. Yes. "Dataset plus business questions" is how most database benchmarks work: TPC-H, TPC-C, TPC-E, LDBC SNB, JOB and LinkBench. db_bench and YCSB are the exception.
+2. LDBC's query by choke-point matrix is the tool for "no overlap". Each query is designed against named technical challenges, and a gap is fixed by changing a query. The suite's form of it is one owning workload per access pattern, checked in code by `bench/core/patterns.ts` and `bench:smoke --check`.
+3. Two LDBC choke points name what the example apps never isolated: CP-3.3, scattered index access, and CP-3.2, dimensional clustering.
+4. Realism moves from the app into the generator. Skew and correlation are built in, the store is built by replaying a history, and bindings are curated so a goal's reps do comparable work.
+5. Example apps catch what a goal cannot, such as rendering that competes for the main thread, or several tabs. That is a reason to test them, not to benchmark them.
 
-[R: bench/README.md at #283] The suite had two halves.
+## The shape chosen, and the one rejected
 
-- **Engine workloads.** db_bench and YCSB A to F on raw keys. They isolate engine paths, but six YCSB mixes and five db_bench fills overlap heavily, and no key is an index entry pointing at a row.
-- **App workloads.** linearlite, whiteboard, pages and todos ran headless. Each number mixed the app's model, TanStack DB, sync and storage. The linearlite data was denormalized (the assignee was a string on the issue, with no labels or projects) and loaded in one sync, so no join and no aged store was ever measured.
+**Goal contract (chosen).** A dataset declares a spec type of goals. Every contender answers every goal with its own library's query API and indexes, as LDBC and js-framework-benchmark allow, and an oracle checks every answer. The cost is a hand-written goal body per goal and contender, so each number also measures the skill of whoever wrote the contender. Shortcuts get a note in `fastPath`, not a ban, as in js-framework-benchmark.
 
-Batched small-value ingest appeared in five workloads. Blob append plus prefix load appeared in every CRDT workload. Index pages appeared in three.
+**Declarative plans over a shared executor (rejected).** A goal would be a small logical plan, and one executor would run it through a five-call access interface each contender supplies. Every contender would make the same access sequence, but the executor would be a query engine living in the bench. It would fix docstore's access path, so a docstore API that answers a goal better could never show. SQLite's planner would need a second lowering of the plan to SQL. Two interpreters of one plan language are a list kept in step by hand. Three of its parts were kept: the `recent` writes on top of a settled store, the goal on a list a bulk edit just emptied (`drainedPage`), and coverage as a checked list.
 
-## 2. The shape
+The rules a contender follows, and their sources:
 
-Two whole shapes were sketched and compared.
+- **Rows as given, plus native indexes, and no app-maintained derived state.** TPC-H bans auxiliary structures that span tables, because materialized views turned TPC-D into lookups. LDBC allows precomputation that stays consistent under updates. The question here is what a library gives an app, so anything the library declares natively is allowed. Counters and copied names kept by app code are not.
+- **History, not bulk load.** An LSM's final contents do not fix its on-disk shape. Write order and timing decide how many runs exist and how much they overlap, which tombstones and superseded versions remain, and whether one issue's index entries share a block. A sorted bulk load is the LSM's best case. Every benchmark below that has updates loads a prefix of a simulated history and replays the rest.
+- **Cold per goal.** A fresh tab is the only cold measurement fair to engines whose caches a page cannot drop.
+- **Curated bindings.** Bindings near one cost quantile, picked by a seeded picker, the same for every rep and contender, after Gubichev and Boncz.
 
-- **Goal contract (chosen).** A dataset declares a spec type: goal name → params and answer, with a doc comment as the answer spec [R: bench/datasets/tracker/types.ts]. Every contender implements every goal with its own library's query API and indexes, as LDBC and js-framework-benchmark allow (§5, §8). The oracle answers each goal by brute force over plain Maps. `tsc` fails while a contender, the oracle or the curation misses a goal.
-- **Declarative plans over a shared executor (rejected).** A goal is a small logical plan, and one executor runs it through a five-call access interface each contender supplies. Every contender would make the same access sequence, but the executor would be a query engine living in the bench. It would fix docstore's access path, so a docstore API that answers a goal better could never show. SQLite's planner would need a second lowering of the plan to SQL. Two interpreters of one plan language are a list kept in step by hand.
+## Workloads the trim removed
 
-Three parts of the rejected sketch were kept:
+On 2026-11-16, each removed workload's timed ops were checked against an owner that makes the same call on the same contenders at the same layer:
 
-- the `recent` writes on top of a settled store;
-- the goal on a list a bulk edit just emptied (`drainedPage`);
-- coverage as a checked list (§3).
+- `kv/overwrite`: its batched puts are `kv/fillrandom`'s, and the old versions compaction drops are in `kv/ycsb-a`'s settle and `kv/compaction-memory`'s rounds.
+- `kv/ycsb-b`, `kv/ycsb-c`: `kv/ycsb-a`'s zipfian reads and updates, in other proportions.
+- `kv/ycsb-d`: its inserts are single blind puts, as `kv/ycsb-a`'s updates are. Its reads of the latest keys read data above the settled levels, as `kv/ycsb-a`'s and `kv/fillrandom`'s unsettled reads do.
+- `kv/ycsb-e`: its scans of 1 to 100 keys are a seek followed by nexts, as in `kv/fillseq`.
+- `table/todos` and its family: `tracker/goals` compares docstore with Dexie, and with SQLite.
 
-The rules, and why:
+`kv/fillsync`, `kv/deleterandom` and `kv/ycsb-f` each made a call no other kv workload made, so they became phases of `kv/fillrandom` and `kv/ycsb-a`. The four app workloads (`linearlite/first-sync`, `linearlite/browse`, `yjs/whiteboard-session`, `pages/type`) went too. Reads during a large sync moved to the tracker replay, paced typing and a reopen before the settle to the trace workloads, the tracker screens to `tracker/goals`, and live-query overhead to `tanstack-live/screens`.
 
-- **Rows as given, plus native indexes. No app-maintained derived state.** TPC-H bans auxiliary structures that span tables, because materialized views turned TPC-D into lookups. LDBC allows precomputation that stays consistent under updates (§5, §10). The question here is what a library gives an app, so anything the library declares natively is allowed (an index, and a native aggregate if docstore ever ships one). Counters and copied names kept by app code are not.
-- **History, not bulk load.** Import 70%, age with the rest as sync batches, settle, then write `recent` on top. Bulk-loading sorted rows is the LSM's best case (§7).
-- **Cold per goal.** One fresh page per goal: `cold` is the first call after open, `first` calls the other bindings once, and `warm` repeats them. A fresh tab is the only cold measurement fair to engines whose caches a page cannot drop (§10).
-- **Curated bindings.** Up to 5 bindings near one cost quantile, picked by a seeded picker, the same for every rep and contender (§10).
+## What the first run showed
 
-The cost of this shape is about 33 hand-written goal bodies (11 goals × 3 contenders). Each number measures the library's own path, plus the skill of whoever wrote the contender. Shortcuts get a note in `fastPath`, not a ban, as in js-framework-benchmark (§8).
+Each number is the median over 3 reps of the op's mean latency, under the conditions in the Date line:
 
-## 3. Coverage and the trim
+- `assigneeLoad` took 4.3 ms warm on docstore against 0.5 on SQLite. docstore had no group-by and no index values in a query, so it made 480 counts.
+- `deepWindow` took 1.9 ms warm against 0.43. docstore had no offset, so it walked ids and then read rows.
+- `statusPage` `first` (engine warm, rows not yet read) took 3.8 ms on docstore against 1.3 on Dexie and 1.1 on SQLite. Each of the 50 rows can sit on a different 32 KB page, which a tab loads from OPFS on first touch.
 
-One owner per access pattern. The matrix is code [R: bench/core/patterns.ts]: one list names every pattern, every workload declares the patterns it owns in a required `owns`, and a goal workload derives its own from its dataset and its goals. `bench:smoke --check` fails when a pattern has no owner or two [R: bench/cli.ts]. A kv pattern stays with a kv workload even where a document workload makes the same calls, because the kv family is the one that compares raw kv with IndexedDB.
+docstore has since gained `queryEntries`, which returns index values without reading documents, included fields, and `offset` ([packages/docstore/README.md](../../packages/docstore/README.md)). It still has no group-by.
 
-The suite has 13 workloads. The "also hit by" column lists workloads that make the same calls without owning them.
+## Prior art
 
-| workload | owns | also hit by |
-|---|---|---|
-| kv/fillrandom | a single awaited put; batched random ingest, flush and compaction, W-Amp; point gets that hit and miss; cold open; batched deletes and the space compaction gives back | kv/compaction-memory, kv/ycsb-a |
-| kv/fillseq | sequential ingest; full scan; seeks followed by 10 or 100 nexts | |
-| kv/ycsb-a | zipfian reads with blind updates (YCSB A); zipfian reads with read-modify-writes in one transaction (YCSB F) | |
-| kv/compaction-memory | the memory peak of compaction | |
-| tracker/goals | document ingest with index upkeep; a list read while a large sync lands; bulk and single edits above the settled store; reads right after an edit; one pattern per goal | tanstack-live/screens |
-| tanstack/todos | TanStack DB eager: persisting transactions, loading every row | tanstack-live/screens |
-| tanstack-ondemand/queries | TanStack DB on demand: a live query that loads its rows through an index | tanstack-live/screens |
-| tanstack-live/screens | a screen's live query (joins, order, limit) to its first answer, the screens opened one after another in a fresh tab; keeping open screens current while sync batches land | |
-| yjs/trace | Yjs persistence of an editing trace; typing at one key per frame; reopen before and after settle | yjs/many-docs |
-| yjs/many-docs | Yjs: many small documents, each loaded cold | |
-| automerge/trace | the same for Automerge | automerge/many-docs |
-| automerge/many-docs | Automerge: many small documents, each loaded cold | |
-| fate/read-cache | fate persistence: saving request results, loading them cold from storage alone | |
+- **TPC-H** bans auxiliary structures over more than one table (Cl. 1.5.7) and optimizer hints that name tables, indexes or queries (Cl. 5.2.7). Tiny materialized views can hold "the parameterized answers". Oracle's 1998 Million Dollar Challenge exploited this, and TPC-D split into TPC-R and TPC-H. Its generator correlates dates on purpose (`l_shipdate = o_orderdate + random[1:121]`) [https://www.tpc.org/TPC_Documents_Current_Versions/pdf/TPC-H_v3.0.1.pdf, https://homepages.cwi.nl/~boncz/snb-challenge/chokepoints-tpctc.pdf].
+- **TPC-C** gets skew from `NURand` and checks correctness with 12 post-run invariants such as `W_YTD = sum(D_YTD)`, a cheap oracle [https://www.tpc.org/tpcc/detail5.asp]. **TPC-E** defines its initial population as 300 days of trade history [https://www.tpc.org/tpce/default5.asp].
+- **LDBC SNB Interactive** chains short O(log n) reads to complex reads by a random walk over their results, takes updates from the generator's timeline, and declares indexes and materialized views in the schema, the same for every run [https://arxiv.org/abs/2001.02299]. Its choke points rate each query's impact, and v2 replaced IC 14 to cover CP-7.6. CP-3.3 says "efficiency of index lookup is very different depending on the locality of keys". CP-3.2 suggests time-increasing ids, so a date filter becomes a range read. CP-6.1 warns that few distinct parameter values let a result cache answer repeated queries.
+- **JOB** variants differ only in their selections yet have "different optimal query plans that yield widely differing (sometimes by orders of magnitude) runtimes" [https://www.vldb.org/pvldb/vol9/p204-leis.pdf].
+- **LinkBench** comes from a 6-day trace of a MySQL shard behind TAO, with `assoc_range` at 50.7% of operations, and measures at steady state after a bulk load and a growth phase [https://research.facebook.com/publications/linkbench-a-database-benchmark-based-on-the-facebook-social-graph/].
+- **Cao et al. (FAST '20)** found that YCSB's placement of hot keys caused "at least 500% more read-bytes" and "only 17% of the cache hits" of the real workload [https://www.usenix.org/conference/fast20/presentation/cao-zhichao].
+- **Aging.** Conway et al. slowed reads up to 30× with a thousand `git pull`s [https://www.usenix.org/conference/fast17/technical-sessions/presentation/conway]. Geriatrix found unaged results overstate performance by up to 75% on SSD, and rankings can flip [https://www.usenix.org/conference/atc18/presentation/kadekodi]. Didona et al. saw RocksDB at 2.6–3.6× its steady-state throughput in the first 15 minutes [https://www.vldb.org/pvldb/vol14/p364-didona.pdf].
+- **js-framework-benchmark** checks every implementation's HTML against the vanillajs reference, and gives shortcuts notes rather than bans [https://github.com/krausest/js-framework-benchmark]. Speedometer 3 times complete user journeys and says it "should not be used as a way to compare the performance of different JavaScript frameworks" [https://browserbench.org/Speedometer3.0/about.html].
+- **Local-first trackers.** Zero's gigabugs is a Linear-style tracker with 1.2M bugs, and its generator draws projects as `floor(r²·n)`, comments as exponential with mean 3, and 1 to 3 uniform labels per issue [https://github.com/rocicorp/mono/blob/main/apps/zbugs/scripts/generate-synthetic.ts]. ElectricSQL's linearlite data has uniform status and priority and no labels or projects [https://github.com/electric-sql/electric/blob/main/examples/linearlite/db/generate_data.js]. Neither ships a goal suite, and none was found for Triplit, InstantDB, TinyBase or LiveStore.
 
-Ten kv, table and adapter workloads are gone. Seven only repeated an owner's pattern. Each of their timed ops was checked against an owner that makes the same call on the same contenders at the same layer:
+## Pitfalls
 
-- **kv/overwrite.** Its batched puts are kv/fillrandom's `putMany`. Old versions dropped by compaction are in kv/ycsb-a's settle after 50,000 updates, and in kv/compaction-memory's rounds over a key pool.
-- **kv/ycsb-b, kv/ycsb-c.** Their zipfian reads and updates are kv/ycsb-a's, in other proportions.
-- **kv/ycsb-d.** Its inserts are single blind puts, the call kv/ycsb-a's updates make. Its reads of the latest keys read data above the settled levels, as kv/ycsb-a's reads of keys it just updated and kv/fillrandom's reads before compaction do. At the document layer, `recentActivity` owns the newest end of a time index.
-- **kv/ycsb-e.** Its scans of 1 to 100 keys are seeks followed by nexts, kv/fillseq's `seek`.
-- **table/todos, with the `table` family and its docstore and Dexie contenders.** tracker/goals compares docstore with Dexie, and with SQLite: batched ingest with index upkeep, single edits, index pages and counts, joins by id, deletes in sync batches, and cold opens.
-- **fate/mutations.** fate's journal goes through the same storage calls as its cache (`writeBatch`, `scan`, `read`, `exclusive`), which fate/read-cache measures. Its time was mostly fate walking its own journal.
-
-The other three each made a kv call that no other kv workload makes, so each is now a phase of an owner:
-
-- **kv/fillsync** is kv/fillrandom's first phase: 1,000 puts at `small`, each awaited, on the empty store, as before.
-- **kv/deleterandom** is two phases at the end of kv/fillrandom: batched deletes of a random tenth, then a settle with the footprint and untimed reads that check the deletes. They run after the cold open, so the cold open still measures a store of N random keys.
-- **kv/ycsb-f** is a phase of kv/ycsb-a, after YCSB A and a settle: `KvStore.update`, a read-modify-write in one transaction, is a kv call nothing else times against IndexedDB.
-
-The four app workloads are gone too: linearlite/first-sync, linearlite/browse, yjs/whiteboard-session and pages/type. The examples carry no benchmark code. Each pattern they owned alone has another owner:
-
-- **Reads during a large sync** (linearlite/first-sync timed the first rows while the import ran). The tracker's replay reads the 50 most recently updated issues every 10 batches and checks them against the oracle at that point of the history.
-- **Paced writes under a frame budget** (the whiteboard's drags, the notes typing). Both trace workloads type their last 300 keystrokes at one per 16 ms frame, with the main thread recorded.
-- **A cold load of a document whose latest updates have not settled** (the whiteboard and notes reopens). Both trace workloads reopen the document in a fresh tab before kv settles, then again after.
-- **Screens of an issue tracker** (linearlite/browse). The tracker goals own them, on normalized data with joins.
-- **TanStack DB's live-query overhead inside an app** (linearlite's screens were live queries). tanstack-live/screens runs four tracker screens as live queries on each TanStack adapter, opens them one after another in a fresh tab, timing each to its first answer (only the first starts cold), and times each sync batch until every open screen shows it, with the screens closed for the first half of the batches and open for the second.
-
-## 4. First results
-
-[M] `node bench/cli.ts run tracker/ --size small --reps 3` on this branch, on top of main at #283: 20,000 issues, 43,000 comments, 87,000 history events. Apple M2 Pro, Chrome 157 headless, load average 1.1. Each cell is the median over 3 reps of the op's mean latency, in ms. `open` is the store's open on a fresh page. `cold` is the first goal call after it. `first` calls the other bindings once, with the engine warm and their rows not yet read. `warm` repeats them.
-
-| goal | docstore cold / first / warm | Dexie cold / first / warm | SQLite cold / first / warm |
-|---|---|---|---|
-| open (any fresh page) | 17 | 2.1 | 29 |
-| statusCounts | 5.6 / 1.2 / 0.41 | 10.6 / 9.3 / 8.0 | 1.6 / 0.35 / 0.26 |
-| statusPage | 7.1 / 3.8 / 0.42 | 2.5 / 1.3 / 1.0 | 2.9 / 1.1 / 0.50 |
-| drainedPage | 6.2 / – / 1.3 | 10.2 / – / 6.2 | 2.0 / – / 0.29 |
-| deepWindow | 12.6 / 6.7 / 1.9 | 18.3 / 14.1 / 12.4 | 2.2 / 0.83 / 0.43 |
-| issueThread | 5.4 / 1.7 / 0.14 | 1.5 / 0.66 / 0.43 | 1.9 / 0.32 / 0.36 |
-| triagePage | 13.4 / 6.0 / 1.3 | 4.7 / 3.6 / 2.9 | 6.8 / 2.8 / 2.3 |
-| labelPage | 6.4 / 3.3 / 0.35 | 7.0 / 6.0 / 4.7 | 8.3 / 3.4 / 2.9 |
-| myIssues | 9.6 / 4.8 / 0.48 | 2.4 / 1.4 / 1.2 | 4.0 / 1.2 / 0.74 |
-| recentActivity | 3.6 / – / 0.63 | 2.1 / – / 1.2 | 2.5 / – / 0.70 |
-| assigneeLoad | 14.8 / 5.9 / 4.3 | 11.9 / 10.1 / 9.1 | 3.2 / 0.70 / 0.50 |
-| search | 6.3 / 2.5 / 0.27 | 6.2 / 6.9 / 5.8 | 2.4 / 1.1 / 0.77 |
-
-| writes | docstore | Dexie | SQLite |
-|---|---|---|---|
-| import, 47 batches of up to 1,000 rows (total) | 0.80 s | 2.9 s | 1.0 s |
-| sync, 870 batches of up to 50 events (total) | 3.2 s | 5.8 s | 11.7 s |
-| one edit | 0.61 | 0.40 | 1.1 |
-| bulk: 1,027 issues to done | 61 | 155 | 85 |
-| reread: a count and two lists read right after an edit | 1.7 | 15.3 | 0.43 |
-
-What the goals show that the app workloads could not:
-
-- **Warm reads are docstore's strength.** It is fastest warm on 7 of 11 goals, because reads run on the tab's main thread from its page cache, with no IPC.
-- **Cold and `first` reads are its weakness, and the pattern is CP-3.3.**
-  - `statusPage` `first` takes 3.8 ms against 1.3 and 1.1, and `myIssues` 4.8 against 1.4 and 1.2. Each of the 50 rows can sit on a different 32 KB page, which a tab loads from OPFS on first touch.
-  - Opening adds 17 ms per fresh page, against 2 ms for Dexie.
-  - The next experiment is to count the distinct pages per goal: a smaller read unit, or a row layout that clusters by a hot index, are the candidates.
-- **API gaps show up as numbers.**
-  - `assigneeLoad` costs 4.3 ms warm against 0.5 for SQLite: docstore has no group-by and no index values in a query, so it makes 480 counts.
-  - `deepWindow` costs 1.9 against 0.43: there is no offset, so it walks ids and then reads rows.
-- **Tombstone-heavy ranges cost 3×.** `drainedPage` returns 7 rows in 1.3 ms warm, while `statusPage` returns 50 in 0.42. The bulk edit left the range mostly deletes above the settled levels.
-- **Writes are strong.**
-  - Sync batches are 1.8× faster than Dexie and 3.7× faster than SQLite. SQLite pays one worker round trip per statement, and its commits wait for the disk (`synchronous=FULL`, its default) where the IndexedDB contenders commit with Chrome's relaxed durability.
-  - The import is 1.3× faster than SQLite and 3.6× faster than Dexie. docstore has no transaction across collections, so its contender writes a batch as one kv transaction per collection, where Dexie and SQLite commit the whole batch atomically.
-
-An earlier run on main before #282, at load average 8 to 10, showed the same pattern, with docstore's `first` page reads about twice as slow. #282 added kv's read-ahead in scans.
-
-Two caveats about cold:
-
-- IndexedDB's backend lives in the browser process, which outlives the tab. A fresh tab is therefore a warmer start for Dexie than for kv or SQLite, which read OPFS from a new tab or worker. That matches a reload, not a browser restart.
-- Every contender's `cold` also pays JIT warm-up of its own code in the new tab.
-
----
-
-Sections 5 to 10 are the prior art.
-
-## 5. Dataset + goals benchmarks
-
-| | Dataset | Goals | Precomputation | Validation | Overlap control |
-|---|---|---|---|---|---|
-| TPC-H | dbgen, uniform values, deliberately correlated dates | 22 SQL templates, parameters uniform random (Cl. 2.1.3.2) | MVs effectively banned (Cl. 1.5.7) | qualification DB, fixed parameters, Appendix C answers | none explicit, analyzed post hoc |
-| TPC-C | 9 record types scaled by warehouses, NURand skew | 5 transactions, fixed mix | n/a | 12 consistency conditions, ACID tests | mix ratios |
-| TPC-E | EGen, 33 tables, "realistic content", 300 initial trade days | 12 transactions | n/a | ACID, audit | mix ratios |
-| CH-benCHmark | TPC-C schema + Supplier/Nation/Region | TPC-C txns + 22 TPC-H queries rewritten for that schema | as TPC | as TPC | n/a |
-| LDBC SNB | Datagen, correlated, skewed, deterministic, SF 0.003–30000 | English + reference SQL/Cypher, any API | allowed if consistent under updates | validation set + cross-validation | choke-point matrix |
-| JOB | real IMDB, 21 tables, 3.6 GB CSV | 33 structures × 2–6 variants = 113 | n/a (research) | n/a | variants differ only in selections |
-| LinkBench | synthetic graph fit to a production trace | 10 operations, trace mix | n/a | n/a | ops from trace |
-
-**TPC-H** [E: https://www.tpc.org/TPC_Documents_Current_Versions/pdf/TPC-H_v3.0.1.pdf]
-- Cl. 1.5.7: an auxiliary-structure directive "may reference no more than one base table", and only primary-key, foreign-key or date columns. Nothing may materialize columns "derived from more than one table".
-- Cl. 5.2.7: settings may not "make reference to specific tables, indices or queries" to hint the optimizer.
-- Cl. 2.3.1: validation runs the same text and driver on an unmodified qualification DB with default parameters and must match Appendix C.
-- Query text must be the spec SQL or an approved variant. That is the opposite of idiomatic.
-- Why MVs are banned [E: Boncz/Neumann/Erling, https://homepages.cwi.nl/~boncz/snb-challenge/chokepoints-tpctc.pdf]: tiny MVs can hold "the parameterized answers". Oracle's 1998 Million Dollar Challenge exploited this, and TPC-D split into TPC-R (MVs allowed) and TPC-H (outlawed).
-- The generator correlates dates on purpose (`l_shipdate = o_orderdate + random[1:121]`), so date clustering gives locality across the join.
-
-**TPC-C** [E: https://www.tpc.org/tpcc/detail5.asp, spec v5.11]: skew via `NURand(A,x,y)` (Cl. 2.1.6). Correctness is checked as 12 post-run invariants such as `W_YTD = sum(D_YTD)` (Cl. 3.3.2). That is a cheap oracle.
-
-**TPC-E** [E: https://www.tpc.org/tpce/default5.asp, spec v1.14.0]: the initial population is the trade history the SUT would produce in 300 "Initial Trade Days". The dataset is defined as a history.
-
-**CH-benCHmark** [E: https://db.in.tum.de/research/projects/CHbenCHmark/]: the growing database makes the OLTP insert rate interfere with OLAP response times [E: Funke et al., https://www.tpc.org/tpctc/tpctc2011/slides_and_papers/Metrics_for_Measuring_the_Performance_of_the_Mixed_Workload_CH_benCHmark.pdf].
-
-**LDBC SNB Interactive** [E: spec https://arxiv.org/abs/2001.02299; SIGMOD'15 https://ir.cwi.nl/pub/23380/23380B.pdf]
-- Complex reads cover 1–3-hop neighbourhoods. Short reads are O(log n) lookups (profile view, post view) chained to complex reads by a random walk over their results. Updates come from Datagen's timeline.
-- The calibration target is 10% of time on updates, 50% on complex reads and 40% on short reads, with "each query type tak[ing] approximately equal amount of CPU time (i.e., queries that touch more data run less frequently)".
-- The v2 mix by operation count is about 8% complex, 72% short, 20% inserts and 0.2% deletes.
-- Indexes and MVs are declared in the schema as Explicit Auxiliary Data Structures, the same for every run. The driver may not post-process values.
-- A run is a 30-minute warm-up plus a 2-hour measurement.
-
-**JOB** [E: https://www.vldb.org/pvldb/vol9/p204-leis.pdf]
-- Variants differ only in their selections, yet they have "different optimal query plans that yield widely differing (sometimes by orders of magnitude) runtimes".
-- Synthetic generators use "the very same simplifying assumptions (uniformity, independence, principle of inclusion) that query optimizers make".
-
-**LinkBench** [E: https://research.facebook.com/publications/linkbench-a-database-benchmark-based-on-the-facebook-social-graph/]
-- Built from a 6-day trace of a MySQL shard behind TAO, so it holds cache-miss reads plus writes. `assoc_range` is 50.7% of operations, `obj_get` 12.9%, `assoc_count` 4.9%.
-- Heavy-tailed out-degree and Zipf hotness, *loosely* correlated by blending two distributions with probability p_corr.
-- The run is a bulk load, then a request phase where the graph grows. Results come at steady state after warm-up.
-
-## 6. Choke-point design and the coverage matrix
-
-- Definition [E: Boncz et al.]: "Choke points are those technological challenges underlying a benchmark, whose resolution will significantly improve the performance of a product." Their Table 1 rates each of the 28 choke points' impact on each of the 22 queries as light, medium or strong.
-- Method [E: SIGMOD'15 §3]: users supply the scenarios and systems architects name the choke points. Each query is designed against them. In Q9, for example, the planner must choose index nested-loop joins for the first two joins and a hash join for the last.
-- Matrix [E: SNB spec Table A.1]: rows are BI 1–20 and IC 1–14, and columns are the choke points. Each choke point also lists the queries that cover it. A gap is fixed by changing a query: IC 14 was replaced in v2 to cover CP-7.6.
-- Choke points relevant to a browser document store [E: SNB spec App. A]:
-  - CP-3.3 *Scattered index access patterns*: "efficiency of index lookup is very different depending on the locality of keys". Covered by IC 5, 7–14.
-  - CP-3.2 *Dimensional clustering*: identifiers chosen to create locality. SIGMOD'15 suggests time-increasing post ids, so "created before date X" becomes a range read with no sort.
-  - CP-1.3 *Top-k pushdown* and CP-2.4 *Sparse foreign key joins*.
-  - CP-6.1 *Inter-query result reuse*: few distinct parameter values let a result cache answer repeated queries.
-  - CP-9.x updates: insert and delete nodes and edges, including recursive deletes.
-
-## 7. Data realism and write history
-
-- **Correlation by construction.** LDBC Datagen [E: spec §3.3] uses a Facebook-like degree distribution and homophily via "correlation dimensions". Flashmob events cluster posts in time, and the output is deterministic regardless of the number of cores. LinkBench models only the correlations its trace showed.
-- **Trace-derived synthesis** [E: Cao et al. FAST'20, https://www.usenix.org/conference/fast20/presentation/cao-zhichao]
-  - In YCSB, "hot KV-pairs are either randomly allocated across the whole key-space or clustered together". It caused "at least 500% more read-bytes" and "only 17% of the cache hits" of the real workload. Their key-range model reached +43% read bytes and 77% of the cache hits.
-  - db_bench `mixgraph` takes the fitted parameters: generalized Pareto value sizes and scan lengths, power-law key access, two-term-exponential key-range hotness, sine QPS. A key range should be about one SST [E: https://github.com/facebook/rocksdb/wiki/RocksDB-Trace%2C-Replay%2C-Analyzer%2C-and-Workload-Generation].
-- **Aging**
-  - Conway et al. [E: https://www.usenix.org/conference/fast17/technical-sessions/presentation/conway]: a thousand `git pull`s slowed reads up to 30×, and writing the same small files in different orders slowed reads 15–175×.
-  - Geriatrix [E: https://www.usenix.org/conference/atc18/presentation/kadekodi]: unaged results overstate performance by up to 30% on HDD and 75% on SSD, and rankings can flip.
-  - Impressions says aging must precede benchmarking [E: https://static.usenix.org/events/fast09/tech/full_papers/agrawal/agrawal.pdf].
-- **Steady state** [E: Didona et al., https://www.vldb.org/pvldb/vol14/p364-didona.pdf]: RocksDB showed 2.6–3.6× its steady-state throughput in the first 15 minutes (Pitfall 1). Pitfall 4 is testing a single dataset size.
-- **Bulk load or history?** [I] An LSM's final contents do not fix its on-disk shape. Write order and timing do:
-  - how many runs exist and how much they overlap;
-  - the tombstones and superseded versions that updates leave behind;
-  - whether one issue's index entries sit in one block or are spread over many runs.
-
-  A sorted bulk load of the final state is the best case. Every benchmark above that has updates loads a *prefix* of a simulated history and replays the rest (LDBC 90/10, TPC-E's 300 days, LinkBench's growth phase). So: **replay at least a tail of history**, and report the engine's shape when measurement starts.
-
-## 8. UI-level goal benchmarks
-
-- **Speedometer 3** [E: https://browserbench.org/Speedometer3.0/about.html, https://github.com/WebKit/Speedometer]
-  - TodoMVC apps add, complete and remove 100 todos in many frameworks.
-  - A test is an unmeasured prepare step plus measured steps, each split into a sync phase and an async phase.
-  - The score is the inverse of the geometric mean. Workloads are "complete user journeys".
-  - Changes need two of the three browser projects, and a new version needs all three [E: Governance.md].
-  - It "should not be used as a way to compare the performance of different JavaScript frameworks."
-- **js-framework-benchmark** [E: https://github.com/krausest/js-framework-benchmark]
-  - Fixed goals (create 1k or 10k rows, update every 10th row, select, swap, remove, append, clear, startup, memory), timed with rendering from the Chrome timeline.
-  - The HTML "must be identical with the one created by the reference implementation vanillajs", and `isKeyed` must pass. Both act as an output oracle.
-  - Shortcuts get *notes*, not bans: manual DOM (#772), explicit event delegation (#801), rAF (#796), per-row selection flags (#800). "Please don't over-optimize."
-  - Only keyed implementations are run. The score is a weighted geometric mean.
-
-## 9. Local-first and browser DBs with a task-tracker dataset
-
-- **Zero / gigabugs** [E: https://zero.rocicorp.dev/docs/samples]: a Linear-style tracker with 1.2M bugs and over 1 GB of data that loads "from cold start in < 2s".
-  - The repo's generator [E: https://github.com/rocicorp/mono/blob/main/apps/zbugs/scripts/generate-synthetic.ts] defaults to 1M issues, 100 projects and 100 users, seeded with xoshiro128**.
-  - Projects are drawn as `floor(r²·n)`, comments are exponential with mean 3, labels are uniform 1–3 per issue, 70% of issues are open and 70% are assigned uniformly. `created` is independent of id.
-  - A real seed of Zero's own GitHub issues also ships. [I] It is not stated whether `gigabugs_v3` comes from this script.
-  - No goal suite: client benches are micro. Release notes 1.8 claim `issue.related('creator').related('comments')` hydrates "about 1.3x faster" with no method [E: https://zero.rocicorp.dev/docs/release-notes/1.8].
-- **ElectricSQL linearlite** [E: https://github.com/electric-sql/electric/blob/main/examples/linearlite/db/generate_data.js]: uniform faker status and priority, 0–1 comments, no labels or projects. No benchmark.
-- **Others.** A qualitative LiveStore vs Vulcan linearlite gist [E: https://gist.github.com/tantaman/f5faa1c627b69aa68f45066f17eae2a1]. A closed TanStack DB "linearlarge" PR [E: https://github.com/TanStack/db/pull/891]. Micro or CRUD suites from Replicache [E: https://doc.replicache.dev/concepts/performance], PGlite [E: https://pglite.dev/benchmarks] and wa-sqlite [E: https://github.com/rhashimoto/wa-sqlite]. Nothing found for Triplit, InstantDB, TinyBase or LiveStore.
-
-## 10. Pitfalls
-
-- **Precomputed answers:** TPC-D's MVs, CP-6.1 result reuse, parameters with few distinct values (TPC-H has 5 region names).
-- **Query-specific tuning** [E: Raasveldt et al. DBTest'18, https://hannes.muehleisen.org/publications/DBTEST2018-performance-testing.pdf]: everything in a standard benchmark is known ahead of time. The fix is to also run "a set of different queries".
-- **Parameter choice** [E: Gubichev & Boncz TPCTC'14, https://webvm.db.in.tum.de/~gubichev/papers/tpctc_parameters.pdf]
-  - Uniform bindings over IMDB gave one template a runtime variance of 17·10⁴.
-  - Requirements: bounded variance, a stable distribution across streams, and the same optimal plan for every binding.
-  - Curation takes intermediate counts from generation and greedily picks bindings with similar counts. Very different cases become separate variants.
-  - SNB v2 buckets parameters per simulated day, so they never target rows not yet inserted or already deleted.
-- **Cold vs hot** (Raasveldt): report cold and hot runs separately. A cold run measured by mistake is often warm. Leaving out preprocessing such as index builds is unfair, and results must be verified.
-
-
-## Could not fetch or not found
-
-- The absurd-sql post (jlongster.com/future-sql-web) and the TinyBase performance guide both returned 404.
-- The CH-benCHmark DBTest'11 PDF was not read: I used the project page and the metrics paper instead. For Impressions I only had the abstract.
-- The cells of TPC-H Analyzed's Table 1 are shading, which was lost in PDF extraction.
-- I found no query benchmarks for Triplit, InstantDB or LiveStore.
-- Zero's `zql-benchmarks` appear only in a search summary of the 1.7 notes, not on the fetched page or on `main`.
+- **Precomputed answers.** TPC-D's materialized views, CP-6.1's result reuse, and parameters with few distinct values (TPC-H has 5 region names).
+- **Query-specific tuning.** Everything in a standard benchmark is known ahead of time, so also run "a set of different queries" [https://hannes.muehleisen.org/publications/DBTEST2018-performance-testing.pdf].
+- **Parameter choice.** Uniform bindings over IMDB gave one template a runtime variance of 17·10⁴. Curation picks bindings with similar intermediate counts, and splits very different cases into variants. SNB v2 buckets parameters per simulated day, so a binding never targets a row not yet inserted or already deleted [https://webvm.db.in.tum.de/~gubichev/papers/tpctc_parameters.pdf].
+- **Cold against hot.** Report them apart. A cold run measured by mistake is often warm. In this suite every contender's cold call also pays the JIT warm-up of its own code in the new tab, and IndexedDB's backend outlives the tab, so Dexie's cold is a reload, not a browser restart.

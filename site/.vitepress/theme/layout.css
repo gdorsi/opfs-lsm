@@ -1,3 +1,44 @@
+/* The mark, in the brand's color. At 22.5px a cell is 4.5px and a gap 1.5px, whole pixels on a 2x screen. */
+.logo-mark {
+  flex: none;
+  width: 22.5px;
+  height: 22.5px;
+  margin-right: 9px;
+  fill: var(--vp-c-brand-1);
+}
+
+.logo-bit-clear {
+  fill-opacity: 0.28;
+}
+
+.logo-bit-set {
+  animation: logo-bit-write 160ms ease-out backwards;
+  animation-delay: calc(var(--order) * 14ms);
+}
+
+@keyframes logo-bit-write {
+  from {
+    opacity: 0.28;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-bit-set {
+    animation: none;
+  }
+}
+
+/* The site's name is set in the monospace face, in the navbar and on the home page's name line. */
+.VPNavBarTitle a.title,
+.home-line-name {
+  font-family: var(--vp-font-family-mono);
+  letter-spacing: -0.02em;
+}
+
+.VPNavBarTitle a.title {
+  font-size: 15px;
+}
+
 /* The "alpha" tag after the site title. */
 .alpha-tag {
   margin-left: 8px;
@@ -5,6 +46,7 @@
   border: 1px solid var(--vp-c-divider);
   border-radius: 999px;
   color: var(--vp-c-text-2);
+  font-family: var(--vp-font-family-base);
   font-size: 11px;
   font-weight: 500;
   line-height: 18px;

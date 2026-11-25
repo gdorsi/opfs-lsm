@@ -1,6 +1,10 @@
 # Docs site
 
-The VitePress site published at https://gdorsi.github.io/opfs-lsm/. Its home page frames a build of the [LinearLite demo](../examples/linearlite-docstore), served from the same origin under `demo/`. `pnpm docs:dev` starts both, and `pnpm docs:build` builds both into `site/.vitepress/dist`.
+The VitePress site published at https://opfs-lsm.guidodorsi.dev/. Its home page frames a build of the [LinearLite demo](../examples/linearlite-docstore), served from the same origin under `demo/`. `pnpm docs:dev` starts both, and `pnpm docs:build` builds both into `site/.vitepress/dist`.
+
+## Logo
+
+The mark is the sixteen bits of "ol", the initials of opfs-lsm, in ASCII: a 4 by 4 matrix with a row per four bits. [`.vitepress/theme/Logo.vue`](.vitepress/theme/Logo.vue) draws it in the navbar and on the home page. The favicon and the iOS home screen icon are files in [`public/`](../public) at the repository root, because VitePress serves the `public` folder of its source directory, and the site's source directory is the repository.
 
 ## Telemetry
 
@@ -39,7 +43,7 @@ Two limits remain. Each request reaches Everr's ingest from the visitor's IP add
 | Setting | Purpose | Local value | Remote value | Set in | Read at |
 |---|---|---|---|---|---|
 | `VITE_EVERR_INGEST_ENDPOINT` | The OTLP base URL. Unset turns telemetry off. | `<otlp-url-from-status>` | `https://ingest.everr.dev/` | The shell that builds or serves. In CI, the repository variable `EVERR_INGEST_ENDPOINT`. | Build time |
-| `VITE_EVERR_PUBLIC_INGEST_KEY` | The public ingest key, sent as a bearer token. | Unset | The public key for `https://gdorsi.github.io` | In CI, the repository variable `EVERR_PUBLIC_INGEST_KEY`. | Build time |
+| `VITE_EVERR_PUBLIC_INGEST_KEY` | The public ingest key, sent as a bearer token. | Unset | The public key for `https://opfs-lsm.guidodorsi.dev` | In CI, the repository variable `EVERR_PUBLIC_INGEST_KEY`. | Build time |
 | `VITE_EVERR_SERVICE_VERSION` | `service.version` | Unset, so the SDK's version | The commit | In CI, `github.sha`. | Build time |
 | `serviceName` | `service.name` | `opfs-lsm-site`, `opfs-lsm-demo` | The same | The two `telemetry.ts` files. | Build time |
 | `deploymentEnvironment` | `deployment.environment.name` | Vite's mode | `production` | The two `telemetry.ts` files. | Build time |
@@ -95,12 +99,12 @@ Local collection needs no ingest key.
 
 ### Remote installation / production
 
-The remote installation is https://app.everr.dev. Its ingest endpoint is `https://ingest.everr.dev/`. The site is served from the origin `https://gdorsi.github.io`.
+The remote installation is https://app.everr.dev. Its ingest endpoint is `https://ingest.everr.dev/`. The site is served from the origin `https://opfs-lsm.guidodorsi.dev`.
 
-1. Mint a public key at https://app.everr.dev/api-keys with the origin `https://gdorsi.github.io`. A browser can send only with a public, origin-bound key, and a request from any other origin is refused. Origins cannot be edited later, so a new origin needs a new key.
+1. Mint a public key at https://app.everr.dev/api-keys with the origin `https://opfs-lsm.guidodorsi.dev`. A browser can send only with a public, origin-bound key, and a request from any other origin is refused. Origins cannot be edited later, so a new origin needs a new key.
 2. In the repository's settings, under **Secrets and variables**, **Actions**, **Variables**, set `EVERR_INGEST_ENDPOINT` to `https://ingest.everr.dev/` and `EVERR_PUBLIC_INGEST_KEY` to the key. They are variables, not secrets, because the key ships in the page source. Never commit the key.
 3. Push to `main`, or run the `docs` workflow again. The build reads the variables, so a change to either takes effect only in a new build. Records from a CI build carry `deployment.environment.name` set to `production` and `service.version` set to the commit.
-4. Open https://gdorsi.github.io/opfs-lsm/, start the demo, and change a filter. Run `everr cloud login` if the CLI has no session, and choose the organization that owns the key. Then query the fresh records:
+4. Open https://opfs-lsm.guidodorsi.dev/, start the demo, and change a filter. Run `everr cloud login` if the CLI has no session, and choose the organization that owns the key. Then query the fresh records:
 
    ```sh
    everr cloud query "SELECT Timestamp, ServiceName, Body FROM logs WHERE Timestamp > now() - INTERVAL 10 MINUTE AND ServiceName IN ('opfs-lsm-site', 'opfs-lsm-demo') AND toString(ResourceAttributes.\`deployment.environment.name\`) = 'production' ORDER BY Timestamp DESC LIMIT 50"

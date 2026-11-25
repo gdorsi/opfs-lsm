@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The sixteen bits of "ol" in ASCII, one row per four bits. Four 3px cells and three 1px gaps make 15px, so the
+       matrix starts at the corner and every cell lands on whole pixels at 16px. -->
+  <style>
+    rect { fill: #3451b2 }
+    .clear { fill-opacity: .28 }
+    @media (prefers-color-scheme: dark) { rect { fill: #a8b1ff } }
+  </style>
+  <rect class="clear" x="0" y="0" width="6" height="6" rx="1"/>
+  <rect x="8" y="0" width="6" height="6" rx="1"/>
+  <rect x="16" y="0" width="6" height="6" rx="1"/>
+  <rect class="clear" x="24" y="0" width="6" height="6" rx="1"/>
+  <rect x="0" y="8" width="6" height="6" rx="1"/>
+  <rect x="8" y="8" width="6" height="6" rx="1"/>
+  <rect x="16" y="8" width="6" height="6" rx="1"/>
+  <rect x="24" y="8" width="6" height="6" rx="1"/>
+  <rect class="clear" x="0" y="16" width="6" height="6" rx="1"/>
+  <rect x="8" y="16" width="6" height="6" rx="1"/>
+  <rect x="16" y="16" width="6" height="6" rx="1"/>
+  <rect class="clear" x="24" y="16" width="6" height="6" rx="1"/>
+  <rect x="0" y="24" width="6" height="6" rx="1"/>
+  <rect x="8" y="24" width="6" height="6" rx="1"/>
+  <rect class="clear" x="16" y="24" width="6" height="6" rx="1"/>
+  <rect class="clear" x="24" y="24" width="6" height="6" rx="1"/>
+</svg>

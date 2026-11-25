@@ -1,5 +1,9 @@
 # Covering indexes for the SQLite tracker contender
 
+Status: rejected. Covering indexes made SQLite's card lists up to 1.33× faster but the replay 1.13× slower, the sprint close 1.50× slower and the database 1.33× larger, so `bench/contenders/tracker/sqlite.ts` keeps plain indexes. bench/README.md's "Families" table says so.
+
+Date: 2026-11-24. Apple M5 Max, commit `ccedee1d`. The run setup is under Result.
+
 docstore's three card indexes include the fields of an issue card, so the status page, a person's issues and the recent issues read no issue document. SQLite can do the same with indexes that hold every column a card reads. This note measures that variant against the contender as it is.
 
 ## The variant

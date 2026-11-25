@@ -1,15 +1,18 @@
 # Faster WAL reads and a 1 MiB ingest limit
 
+Status: shipped. Ranged `getAll` reads, byte rows and the 1 MiB `maxWalBytes` default are in the
+code, described in design.md's [WAL records](../design.md#wal-records),
+[Reading the tail](../design.md#reading-the-tail) and [Trigger](../design.md#trigger). Since
+2026-11-23 a tail read uses ranges of 100 seqs, not 25,000.
+
+Date: 2026-11-06 to 2026-11-08. Headless Chrome 156, macOS, yjs bench at `DOCS=5000` (250,000 WAL
+rows).
+
 Question: in the yjs load bench, kv with auto-ingest off spent about 80% of its
 open in reading the IndexedDB WAL. Opening replayed the whole uningested WAL
 into a fresh memtable, on the tab's main thread, every `openDb`. At 250,000 WAL
 rows the ~740 ms open split into ~680 ms reading 250k rows and ~50 ms replaying
 them.
-
-Status: all three changes shipped on 2026-11-06/08. The formats and the policy
-they chose are design.md's "WAL records", "Append" and "Limits". Everything
-below was measured on the yjs bench (`DOCS=5000`: 250,000 WAL rows), headless
-Chrome 156, macOS.
 
 ## Findings that drove it
 
@@ -35,7 +38,7 @@ Chrome 156, macOS.
 
 - **Ranged `getAll`.** Seqs are gapless above `ingestedThrough`, so a value's
   position gives its seq and the `getAllKeys` pass goes away. The readers
-  fetch `(ingestedThrough, head]` in 25,000-seq ranges, all in flight in one
+  fetched `(ingestedThrough, head]` in 25,000-seq ranges, all in flight in one
   transaction; a short range throws `wal gap`.
 - **Byte rows.** One `ArrayBuffer` per batch (type byte, u32 key length, key,
   u32 value length, value); decode hands out `subarray` views. Nothing decoded

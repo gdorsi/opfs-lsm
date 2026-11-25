@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import { opsBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
+import { flushBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
 import { ClosedError, codeOfError, CommitError, StorageFullError, unavailable } from "../errors.js";
 import {
   asGeneration,
@@ -376,25 +376,17 @@ async function readRecords(
 }
 
 /**
- * What an op counts toward a flush chunk at least. The encoder keeps a few
- * dozen bytes per entry whatever its size, so a chunk of tiny ops would
- * otherwise cost far more memory than its op bytes say.
- */
-const FLUSH_MIN_OP_BYTES = 32;
-
-/**
- * The oldest records with `after < seq <= head` whose op bytes fit in
+ * The oldest records with `after < seq <= head` whose `flushBytes` fit in
  * `maxBytes`, and at least one. It reads one record first, then sizes each
  * read from the bytes per record so far, so a WAL of large records is never
  * read far past the cap. A record that would not fit is read and left for the
- * next call. An op counts as at least `minOpBytes`.
+ * next call.
  */
 async function readRecordsUpTo(
   wal: IDBObjectStore,
   after: Seq,
   head: Seq,
   maxBytes: number,
-  minOpBytes = 0,
 ): Promise<WalRecord[]> {
   const records: WalRecord[] = [];
   let bytes = 0;
@@ -408,7 +400,7 @@ async function readRecordsUpTo(
     for (const [i, value] of values.entries()) {
       const at = asSeq(lo + i);
       const ops = decodeOps(value, at);
-      const size = Math.max(opsBytes(ops), ops.length * minOpBytes);
+      const size = flushBytes(ops);
       if (records.length > 0 && bytes + size > maxBytes) return records;
       records.push({ seq: at, ops });
       bytes += size;
@@ -580,14 +572,18 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   /**
    * What follows a transaction the browser aborted for lack of space: with
    * `release`, the host releases the reserve, then the connection is
-   * replaced. The appends that failed together share one recovery, so one
-   * call to the host. False when it failed.
+   * replaced, also when the host's call failed. The appends that failed
+   * together share one recovery, so one call to the host. False when it
+   * failed.
    */
   function recover(release: boolean): Promise<boolean> {
     const room = release ? makeRoom : undefined;
     recovering ??= (async () => {
-      await room?.();
-      await reconnect();
+      try {
+        await room?.();
+      } finally {
+        await reconnect();
+      }
     })().finally(() => {
       recovering = undefined;
       next();
@@ -912,7 +908,7 @@ export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
 }
 
 /**
- * Op bytes of the records above ingestedThrough, read from the records.
+ * `flushBytes` of the records above ingestedThrough, read from the records.
  * The read stops once the next record would pass `cap`. The
  * answer is then at least `cap`: the bytes already read, when those
  * already pass `cap`, otherwise `cap`. The ingest watch compares that
@@ -927,15 +923,15 @@ export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number>
   const records = await readRecordsUpTo(store, through, head, cap);
   await done;
   let bytes = 0;
-  for (const record of records) bytes += opsBytes(record.ops);
+  for (const record of records) bytes += flushBytes(record.ops);
   const last = records[records.length - 1]?.seq ?? head;
   return last < head ? Math.max(bytes, cap) : bytes;
 }
 
 /**
  * The records with seq > ingestedThrough, ascending: only the oldest ones
- * whose op bytes fit in `maxBytes`, and at least one: a record larger than
- * the cap comes alone. An op counts as at least `FLUSH_MIN_OP_BYTES`.
+ * whose `flushBytes` fit in `maxBytes`, and at least one: a record larger
+ * than the cap comes alone.
  */
 export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
@@ -944,7 +940,7 @@ export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: nu
   const through = await metaSeq(meta, META_INGESTED);
   const head = await headOf(tx, through);
   const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, limit.maxBytes, FLUSH_MIN_OP_BYTES);
+  const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
   await done;
   return records;
 }

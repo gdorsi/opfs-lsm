@@ -5,7 +5,7 @@
  * a number has one formula. Records hold raw facts only; everything here is
  * derived at read time, so fixing a formula re-derives old result files.
  *
- * Amplification follows docs/research/benchmark-prior-art.md section 2.2:
+ * Amplification follows "Byte counters for kv" in docs/research/benchmark-prior-art.md:
  *
  *   W-Amp engine = (flush + compaction bytes written) / user bytes in
  *   W-Amp total  = (WAL + flush + compaction + manifest bytes) / user bytes in
