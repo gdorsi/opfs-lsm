@@ -6,4 +6,4 @@ import { MeteredHost } from "./metered-host.js";
  * The SharedWorker `@opfs-lsm/kv/testing` opens: the shipped one with a
  * meter, so `readStats` answers in a browser.
  */
-serveSharedWorker(new MeteredHost((name) => findBrowserFs(name)));
+serveSharedWorker((writes) => new MeteredHost((name) => findBrowserFs(name), { writes }));

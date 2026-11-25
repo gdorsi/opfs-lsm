@@ -51,6 +51,16 @@ export type Meter = {
 
 const UNMETERED: Meter = { fs: (_name, inner) => inner, flushed() {}, compacted() {} };
 
+/** How a host is built. */
+export type HostOptions = HostOverrides & {
+  /**
+   * False where the host cannot write run files (design.md, "Where code
+   * runs"): it folds nothing, compacts nothing and keeps no reserve, so every
+   * record stays in the WAL. Default true.
+   */
+  readonly writes?: boolean;
+};
+
 /** The two stores of one database, opened for one operation. */
 type Stores = { readonly wal: IdBWal; readonly fs: AsyncFs };
 
@@ -100,10 +110,10 @@ type IngestWatch = {
 export class EngineHost {
   private readonly dbs = new Map<DbName, HostedDb>();
 
-  /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
+  /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     private readonly fsFactory: FsFactory,
-    private readonly overrides: HostOverrides = {},
+    private readonly overrides: HostOptions = {},
     private readonly meter: Meter = UNMETERED,
   ) {}
 
@@ -176,7 +186,8 @@ export class EngineHost {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, meter: Meter) {
+function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, meter: Meter) {
+  const writes = overrides.writes !== false;
   const publishTurn = serial();
   const foldTurn = serial();
   /** A flush waits on a full L0 for the next compaction install. */
@@ -236,14 +247,17 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, 
     }
   }
 
+  /** A host that writes no run file answers with the recorded generation. */
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
-    const { generation } = await fold();
-    const compaction = compact();
-    if (!waitForCompaction) {
-      compaction.catch(() => undefined);
-      return { generation };
+    if (writes) {
+      const { generation } = await fold();
+      const compaction = compact();
+      if (!waitForCompaction) {
+        compaction.catch(() => undefined);
+        return { generation };
+      }
+      await compaction;
     }
-    await compaction;
     return {
       generation: await withWal(
         async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
@@ -354,7 +368,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, 
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
+  /** Ignored by a host that writes no run file: it has nothing to flush and no reserve to keep. */
   function addWatcher(policy: WatchPolicy): void {
+    if (!writes) return;
     const watch = watching ?? startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
@@ -789,8 +805,12 @@ function isClosedDatabase(err: unknown): boolean {
   );
 }
 
-/** Serve `host` to every tab that connects to this SharedWorker. */
-export function serveSharedWorker(host: EngineHost): void {
+/**
+ * Serve the host `build` makes to every tab that connects to this
+ * SharedWorker. It writes run files where OPFS files have `createWritable()`.
+ */
+export function serveSharedWorker(build: (writes: boolean) => EngineHost): void {
+  const host = build(!!globalThis.FileSystemFileHandle?.prototype.createWritable);
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
   const scope = globalThis as unknown as { onconnect: ((ev: MessageEvent) => void) | null };
   scope.onconnect = (ev) => {

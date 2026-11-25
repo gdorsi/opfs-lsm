@@ -5,8 +5,7 @@ import { GENERATION_NONE, type Generation } from "../seq.js";
 import { engineMemoryBytes, watchEngine } from "../store/engine.js";
 import { loadGeneration } from "../store/generation.js";
 import { levelOf } from "../store/levels.js";
-import type { HostOverrides } from "./budget.js";
-import { destroyed, EngineHost, type FsFactory, type Meter } from "./engine-host.js";
+import { destroyed, EngineHost, type FsFactory, type HostOptions, type Meter } from "./engine-host.js";
 import type { HostStats } from "./protocol.js";
 
 /** What this context's engine dropped, recycled and reserved since this module loaded. */
@@ -63,7 +62,7 @@ export class MeteredHost extends EngineHost {
   private readonly counted: Map<DbName, Counts>;
   private readonly folder: FsFactory;
 
-  constructor(fsFactory: FsFactory, overrides?: HostOverrides) {
+  constructor(fsFactory: FsFactory, overrides?: HostOptions) {
     const counted = new Map<DbName, Counts>();
     super(fsFactory, overrides, countingMeter(counted));
     this.counted = counted;
