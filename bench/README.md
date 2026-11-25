@@ -36,8 +36,6 @@ To publish a run:
 3. Set the table's `file` in `docs-tables.ts` to the new stamp.
 4. Run `node bench/cli.ts docs`, and commit the page with the run.
 
-The TanStack Query rows of the framework adapters table wait commented out in `docs-tables.ts`, since its run predates `tanstack-query/cache`. Uncomment them when the table's `file` moves to a run that holds that workload.
-
 A new row or table is an entry in `docs-tables.ts` and, for a table, a pair of markers in the page. The command fails on a marker with no table, a table with no marker, and a cell with no series. `docs --check` needs no Chrome and no build. `pnpm check:docs` runs it, so CI fails when a table differs from its run. The Bundle size table does not come from a result file, so it stays by hand.
 
 ## Families
