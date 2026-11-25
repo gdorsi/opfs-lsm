@@ -1,6 +1,6 @@
 # Browser support
 
-`@opfs-lsm/kv` needs a worker, OPFS, IndexedDB and WebAssembly in the page. Its host runs in a SharedWorker, or in a dedicated Worker where the page has no SharedWorker. The host flushes and compacts only in a SharedWorker whose OPFS files have `createWritable()`. Elsewhere `openDb` still opens, and the host [writes no file](#where-the-host-cannot-write). Where OPFS or a worker of either kind is missing or fails to start, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
+`@opfs-lsm/kv` needs a worker, OPFS, IndexedDB and WebAssembly in the page. Its host runs in a SharedWorker, or in a dedicated Worker where the page has no SharedWorker. The host flushes and compacts only in a SharedWorker whose OPFS files have `createWritable()`. Elsewhere `openDb` still opens, and the host [writes no file](#where-the-host-cannot-write). Where OPFS or a worker of either kind is missing, the browser refuses to start the worker, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
 Three APIs set the minimum version at which the host writes in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
@@ -16,6 +16,7 @@ kv with a writing host is Baseline 2026. [Baseline](https://web.dev/baseline) na
 - Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26. On Safari and iOS 16 to 25 the host runs in the SharedWorker and writes no file.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so there the host runs in a dedicated Worker and writes no file.
 - Android WebView: MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so the host runs in a dedicated Worker in apps and browsers built on it.
+- Code inside a dedicated WebWorker has no SharedWorker in any browser, so an `openDb` called there starts its host in another dedicated Worker, which writes no file. A page of the origin that opens the same database runs a host that flushes the worker's writes too. While no such page is open, nothing flushes.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
 - `@opfs-lsm/kv/tuple` also calls `String.prototype.isWellFormed()`, which raises its minimum to Chrome and Edge 111, and Firefox and Firefox Android 119.
 - `@opfs-lsm/docstore` also calls `String.prototype.isWellFormed()`, itself and through `@opfs-lsm/kv/tuple`, so it has the same minimum. So do `@opfs-lsm/yjs` and `@opfs-lsm/tanstack-query`, which call it on a document name and on a storage key.
@@ -26,11 +27,11 @@ A host that writes no file still serves every tab. Each write lands in the Index
 
 - Each tab holds the whole database in its memtable.
 - The WAL grows with every write, overwrite and delete, and each `openDb` replays all of it.
-- A delete frees no space. `dangerousDestroy` and `destroyDb` do, and so does the first open in a browser whose host writes, which flushes the whole WAL.
-- No reserve is kept. A write the browser refuses rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
+- A delete frees no space. `dangerousDestroy` and `destroyDb` do, with the run files a writing host left, and so does the first open in a browser whose host writes, which flushes the whole WAL.
+- It keeps no reserve, and releases none that a writing host in another context keeps. A write the browser refuses rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
 - In a dedicated Worker, each open handle starts its own host.
 
-Node tests on fake-indexeddb cover this path. It also ran in Safari 18.6 on macOS, and in desktop Chrome with SharedWorker removed. It has not run in iOS Safari, Samsung Internet or a WebView.
+Node tests on fake-indexeddb cover this path. It also ran in Safari 18.6 on macOS, in desktop Chrome with SharedWorker removed, and inside a dedicated WebWorker in both. It has not run in iOS Safari, Samsung Internet or a WebView.
 
 ## Versions and tests
 

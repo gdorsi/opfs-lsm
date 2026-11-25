@@ -38,9 +38,9 @@ await openDb({ name: "my notes" });
 // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
 
 // Where the SharedWorker cannot write OPFS files, as in Safari 16
-// to 25, or where there is none, as in Samsung Internet, nothing is
-// flushed: rows stay in the WAL and in each tab's memory (see
-// Browser support).
+// to 25, or where there is none, as in Samsung Internet or inside a
+// dedicated WebWorker, nothing is flushed: rows stay in the WAL and
+// in each tab's memory (see Browser support).
 
 // In Node, which has neither OPFS nor a Worker:
 await openDb({ name: "notes" });
