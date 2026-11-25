@@ -3,7 +3,7 @@
  *
  *   run [workload…] [--size tiny|small|large] [--reps N] [--contenders a,b] [--headed] [--seed N]
  *       [--timeout MS (per phase, default 1800000)]
- *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N]
+ *       [--max-peak-bytes N] [--compaction-memory-bytes N] [--cache-bytes N] [--sync-reads]
  *   smoke [--check] [--seed N]
  *                           every workload × contender, size tiny, 1 rep, correctness and the byte budgets;
  *                           --check first applies the bundle-size budgets to the size rows' build,
@@ -65,6 +65,7 @@ async function main(): Promise<number> {
       "max-peak-bytes": { type: "string", default: "" },
       "compaction-memory-bytes": { type: "string", default: "" },
       "cache-bytes": { type: "string", default: "" },
+      "sync-reads": { type: "boolean", default: false },
       seed: { type: "string", default: String(DEFAULT_SEED) },
     },
   });
@@ -88,6 +89,7 @@ async function main(): Promise<number> {
         kv: {
           ...bytesFlag("compactionMemoryBytes", "compaction-memory-bytes", values["compaction-memory-bytes"], KV_MIN_BYTES.compactionMemoryBytes),
           ...bytesFlag("cacheBytes", "cache-bytes", values["cache-bytes"], KV_MIN_BYTES.cacheBytes),
+          ...(values["sync-reads"] ? { syncReads: true as const } : {}),
         },
       });
     }
@@ -173,7 +175,7 @@ async function run(o: {
 }
 
 /** kv raises a smaller figure to these, so a record of less would name an option the run did not have. */
-const KV_MIN_BYTES: Required<KvOptions> = { compactionMemoryBytes: 8 * 1024 * 1024, cacheBytes: 1024 * 1024 };
+const KV_MIN_BYTES: Required<Omit<KvOptions, "syncReads">> = { compactionMemoryBytes: 8 * 1024 * 1024, cacheBytes: 1024 * 1024 };
 
 function seedFlag(value: string): number {
   const seed = Number(value);

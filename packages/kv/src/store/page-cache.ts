@@ -73,9 +73,10 @@ export class PageCache {
 
   /**
    * The resident value, or a Miss whose load has started. Concurrent
-   * lookups of one key share one load.
+   * lookups of one key share one load. A `load` that answers with no wait
+   * makes its value resident at once, and the lookup does not miss.
    */
-  lookup<T>(key: CacheKey, admit: Admit, load: () => Promise<Sized<T>>): T | Miss {
+  lookup<T>(key: CacheKey, admit: Admit, load: () => Sized<T> | Promise<Sized<T>>): T | Miss {
     const held = heldReads();
     const kept = held?.get(key);
     if (kept !== undefined) return kept as T;
@@ -87,7 +88,13 @@ export class PageCache {
     }
     let p = this.loading.get(key);
     if (!p) {
-      const started: Promise<readonly Fill[]> = load().then(
+      const loaded = load();
+      if (!(loaded instanceof Promise)) {
+        this.insert(key, loaded, admit);
+        held?.set(key, loaded.value);
+        return loaded.value;
+      }
+      const started: Promise<readonly Fill[]> = loaded.then(
         (s) => {
           if (this.loading.get(key) === started) {
             this.loading.delete(key);

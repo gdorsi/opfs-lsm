@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter, OpenFile } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile, SyncReadCount } from "./async-fs.js";
 import { levelOfDir } from "../store/levels.js";
 
 /** Calls and bytes for one path class. */
@@ -64,8 +64,26 @@ export class CountingFs implements AsyncFs {
         add(this.counters.read, path, out.byteLength);
         return out;
       },
+      ...(file.readSync
+        ? {
+            readSync: (offset: number, length: number) => {
+              const out = file.readSync!(offset, length);
+              if (out) add(this.counters.read, path, out.byteLength);
+              return out;
+            },
+            syncReady: () => file.syncReady?.() === true,
+          }
+        : {}),
       close: () => file.close(),
     };
+  }
+
+  quiesce(): Promise<void> | undefined {
+    return this.inner.quiesce?.();
+  }
+
+  syncReads(): SyncReadCount | undefined {
+    return this.inner.syncReads?.();
   }
 
   list(dir: string): Promise<readonly string[]> {

@@ -459,8 +459,23 @@ dec(await tabB.get(key)); // => "world"
 | `memtableBytes` | 16 MiB, at least 1 MiB | Unflushed rows this tab holds. At the limit a write waits for a flush ([Backpressure](../../docs/design.md#backpressure)). |
 | `compactionMemoryBytes` | 32 MiB, at least 8 MiB | Memory the SharedWorker spends to flush and compact ([Memory budget](../../docs/design.md#memory-budget)). |
 | `reserveBytes` | 24 MiB | Bytes the SharedWorker keeps in a file and gives back when the browser refuses a write. 0 keeps none. See [Storage quota](#storage-quota). |
+| `syncReads` | off | Read SST files synchronously, through a dedicated worker. Pass `syncReads` from `@opfs-lsm/kv/sync-reads`. Chromium only, on a cross-origin isolated page. |
 
 When tabs pass different values, the SharedWorker uses the smallest `compactionMemoryBytes` and the largest `reserveBytes` until the last tab closes the database.
+
+```ts
+import { openDb } from "@opfs-lsm/kv";
+import { syncReads } from "@opfs-lsm/kv/sync-reads";
+
+const db = await openDb({ name: "app", syncReads });
+```
+
+With `syncReads`, a read of a block that is not cached returns in the same task. Without it, such a read waits for a round trip to the browser process. A dedicated worker holds the SST files open and answers through a `SharedArrayBuffer`. That takes two things:
+
+- A cross-origin isolated page: one served with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+- A browser that opens a sync access handle read-only. Today only Chromium does.
+
+Where either is missing, the database opens and reads as it does without the option, with no error and no warning. Only an app that imports `@opfs-lsm/kv/sync-reads` bundles the code behind the option.
 
 ## Errors
 

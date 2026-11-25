@@ -13,6 +13,8 @@ export type KvStats = {
     walBytes: number;
     /** This tab's OPFS IO (open load, installs). Counted only for a Db that `openHarnessDb` opened. */
     fs?: IoCounters;
+    /** Run-file reads this handle served synchronously. Present while a Db opened with `syncReads` reads that way. */
+    syncReads?: { reads: number; bytes: number };
   };
   host: HostStats;
 };
@@ -26,11 +28,13 @@ function internalsOf(db: Db) {
 export async function readStats(db: Db): Promise<KvStats> {
   const { name, wal, fs, ingestClient } = internalsOf(db);
   const host = await ingestClient.stats(name);
+  const syncReads = fs.syncReads?.();
   return {
     tab: {
       walAppends: wal.appendedRecords,
       walBytes: wal.appendedBytes,
       ...(fs instanceof CountingFs ? { fs: structuredClone(fs.counters) } : {}),
+      ...(syncReads ? { syncReads } : {}),
     },
     host,
   };

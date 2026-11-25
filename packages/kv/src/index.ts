@@ -17,6 +17,7 @@ export {
   type ChangeOp,
   type StorageFull,
 } from "./db.js";
+export type { SyncReads } from "./opfs/async-fs.js";
 export {
   OpfsLsmError,
   ConstraintError,

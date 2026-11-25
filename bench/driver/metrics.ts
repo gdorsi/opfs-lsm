@@ -76,7 +76,7 @@ export type Measures = {
   /** Sorted by workload, size, phase order, contender, then metric. */
   readonly all: readonly Series[];
   get(at: At): Series | undefined;
-  /** Each set of kv options a run overrode, such as "cacheBytes 4194304". Empty when every run used the defaults. */
+  /** Each set of kv options a run overrode, such as "cacheBytes 4194304" or "syncReads". Empty when every run used the defaults. */
   readonly kvOptions: readonly string[];
   /** The distinct seeds of the runs without an error, ascending. */
   readonly seeds: readonly number[];
@@ -345,8 +345,11 @@ export function versus(a: Series, b: Series): Verdict {
 
 const keyOf = (at: At) => [at.workload, at.size, at.contender, at.phase ?? "", at.metric].join("\0");
 
+/** A kv override in words: its name and bytes, or the name alone for a switch such as `syncReads`. */
+const overrideText = ([option, value]: [string, number | boolean]) => (value === true ? option : `${option} ${value}`);
+
 /** The seed and kv overrides a run had, in one string: runs of one series must share it. */
-const configOf = (r: RunRecord) => `seed ${r.params.seed}, kv ${Object.entries(r.kv ?? {}).sort().map(([option, bytes]) => `${option} ${bytes}`).join(" ") || "defaults"}`;
+const configOf = (r: RunRecord) => `seed ${r.params.seed}, kv ${Object.entries(r.kv ?? {}).sort().map(overrideText).join(" ") || "defaults"}`;
 
 /**
  * Every series the records hold. Failed runs are skipped. Throws when a run has two phases of one name, and when the runs
@@ -412,7 +415,7 @@ export function measure(records: readonly RunRecord[]): Measures {
   const kvOptions = new Set<string>();
   for (const r of records) {
     const overrides = Object.entries(r.kv ?? {});
-    if (!r.error && overrides.length > 0) kvOptions.add(overrides.map(([option, bytes]) => `${option} ${bytes}`).join(", "));
+    if (!r.error && overrides.length > 0) kvOptions.add(overrides.map(overrideText).join(", "));
   }
   const seeds = [...new Set(records.filter((r) => !r.error).map((r) => r.params.seed))].sort((x, y) => x - y);
   const failed = new Map<string, number>();

@@ -10,6 +10,8 @@ export type SizeRow = {
   readonly id: string;
   readonly source: string;
   readonly note: string;
+  /** The id of a row whose files this one leaves out: it measures what its import adds to an app that has that row's. */
+  readonly over?: string;
   /** Includes kv: must reach exactly one SharedWorker chunk and one .wasm. */
   readonly kv?: true;
   /** Fail `bench:size --check` and `bench:smoke --check` when brotli-after-open exceeds this many bytes. */
@@ -24,15 +26,21 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     kv: true,
     source: `export { openDb } from "@opfs-lsm/kv";`,
     note: "openDb: main-thread JS + SharedWorker + wasm",
-    budget: 36_200,
+    budget: 36_420,
     importBudget: 19_700,
+  },
+  {
+    id: "kv-sync-reads",
+    over: "kv",
+    source: `export { syncReads } from "@opfs-lsm/kv/sync-reads"; export { openDb } from "@opfs-lsm/kv";`,
+    note: "what the opt-in syncReads entry adds to kv: its module and its dedicated worker",
   },
   {
     id: "docstore",
     kv: true,
     source: `export { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore"; export { openDb } from "@opfs-lsm/kv";`,
     note: "collection, defineSchema, openDocStore and openDb, includes kv",
-    budget: 47_800,
+    budget: 48_070,
   },
   { id: "dexie", source: `export { default } from "dexie";`, note: "Dexie" },
   { id: "yjs", source: `export * as Y from "yjs";`, note: "yjs alone, to subtract from the two rows below" },

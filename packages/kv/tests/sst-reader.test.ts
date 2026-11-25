@@ -5,7 +5,8 @@ import type { SstEntry } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstBlockIndex, sstGet, sstRunEnd } from "./oracle/sst-ref.js";
 import { SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
-import { bytesFile, cacheUsage, drain, loadsDone, runGet } from "./runs.js";
+import { Miss, valueOf, type LayerEntry } from "../src/store/cursor.js";
+import { bytesFile, cacheUsage, drain, loadsDone, ownedEntry, runGet } from "./runs.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
@@ -184,6 +185,82 @@ describe("lazy sst reader", () => {
 
     expect(got.map(show)).toEqual(all.slice(100, 104).map(show));
     expect(together.count).toBe(alone.count);
+  });
+
+  describe("a run file that answers reads with no wait", () => {
+    const body = encodeSstRef(indexWorkload(2_000));
+    const all = decodeSst(body);
+    const probes = probesOf(all);
+    const bounds = [undefined, { start: all[300]!.key, endExclusive: all[1_700]!.key }];
+
+    /** `bytes` as a file whose `readSync` answers while `answers` says so, given how many reads were asked of it before. */
+    function syncRun(answers: (asked: number) => boolean = () => true, bytes = body): SstReader {
+      const file = bytesFile(bytes);
+      let asked = 0;
+      return new SstReader(
+        {
+          size: file.size,
+          read: (offset, length) => file.read(offset, length),
+          readSync: (offset, length) => (answers(asked++) ? bytes.slice(offset, offset + length) : undefined),
+          syncReady: () => answers(asked),
+        },
+        new PageCache(),
+        sstRunEnd(body),
+      );
+    }
+
+    const entryText = (e: LayerEntry) => `${[...e.key]}:${e.kind}:${e.seq}:${e.kind === "put" ? [...valueOf(e)] : ""}`;
+
+    it("gets and scans miss nothing, and return what a file read with a wait returns", async () => {
+      const waits = openRun(body, new PageCache());
+      const reader = syncRun();
+      const got: string[] = [];
+      for (const k of probes) {
+        const at = ownedEntry(reader.get(k), k);
+        expect(at).not.toBeInstanceOf(Miss);
+        got.push(show(at as SstEntry | undefined));
+      }
+      expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
+
+      for (const reverse of [false, true]) {
+        for (const within of bounds) {
+          const cursor = syncRun().cursor(within, reverse);
+          const scanned: string[] = [];
+          for (let e = cursor.peek(); e !== undefined; e = cursor.peek()) {
+            expect(e).not.toBeInstanceOf(Miss);
+            scanned.push(entryText(e as LayerEntry));
+            cursor.next();
+          }
+          expect(scanned.length).toBeGreaterThan(1_000);
+          expect(scanned).toEqual((await drain(waits.cursor(within, reverse))).map(entryText));
+        }
+      }
+    });
+
+    it("a Bloom filter that does not decode fails no get", () => {
+      const index = sstBlockIndex(body);
+      const damaged = body.slice();
+      damaged.fill(0, index.blockStart[index.sepEnd.length]!);
+      const reader = syncRun(() => true, damaged);
+      const got = probes.map((k) => show(ownedEntry(reader.get(k), k) as SstEntry | undefined));
+      expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
+    });
+
+    it("reads return the same entries once the file stops answering with no wait", async () => {
+      const waits = openRun(body, new PageCache());
+      // The first 5 reads are answered, so the gets and each scan go from one way of reading to the other.
+      const stops = () => syncRun((asked) => asked < 5);
+      const reader = stops();
+      const got: string[] = [];
+      for (const k of probes) got.push(show(await runGet(reader, k)));
+      expect(got).toEqual(probes.map((k) => show(sstGet(all, k))));
+
+      for (const reverse of [false, true]) {
+        for (const within of bounds) {
+          expect((await drain(stops().cursor(within, reverse))).map(entryText)).toEqual((await drain(waits.cursor(within, reverse))).map(entryText));
+        }
+      }
+    });
   });
 
   describe("a cold scan through coalesced reads", () => {

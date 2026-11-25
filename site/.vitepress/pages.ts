@@ -49,6 +49,7 @@ const sections: Section[] = [
       { label: "Manifest format", source: "docs/manifest-format.md", route: "internals/manifest-format" },
       { label: "SST file format", source: "docs/sst-format.md", route: "internals/sst-format" },
       { label: "Reserve", source: "docs/reserve.md", route: "internals/reserve" },
+      { label: "Sync reads", source: "docs/sync-reads.md", route: "internals/sync-reads" },
     ],
   },
 ];

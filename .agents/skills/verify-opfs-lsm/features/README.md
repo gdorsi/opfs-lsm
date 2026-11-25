@@ -41,3 +41,4 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.
 - [Storage full: the reserve and `onStorageFull`](./quota.md): a real origin limit refuses a flush, the reserve takes it, one tab's handler answers, and the warning when no tab has one.
 - [destroyDb with other tabs open](./destroy.md) — every handle closes, both stores go, the next open starts past them, and crashed, frozen and back/forward-cached tabs.
+- [Sync reads through a dedicated worker](./sync-reads.md) — the two-tab and destroy scenarios with `syncReads` from `@opfs-lsm/kv/sync-reads` on cross-origin isolated pages: reads are served synchronously, and `destroyDb` still removes the folder.

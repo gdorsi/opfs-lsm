@@ -14,7 +14,7 @@ function splitPath(path: string): string[] {
  * across tabs and workers of the origin, so the host deletes a run only when
  * no reader holds it.
  */
-class BrowserReadFs implements ReadFs {
+export class BrowserReadFs implements ReadFs {
   /** `root` can be a lookup still running: every call waits for it. */
   constructor(
     protected readonly root: FileSystemDirectoryHandle | Promise<FileSystemDirectoryHandle>,

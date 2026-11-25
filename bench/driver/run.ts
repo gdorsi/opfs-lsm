@@ -67,7 +67,7 @@ async function runOne(run: PlannedRun, opts: RunOptions): Promise<RunRecord> {
   const chrome = await launchChrome({ headless: opts.headless, onProgress: (line) => opts.log(`    ${line}`) });
   try {
     chromeVersion = chrome.version;
-    const query = new URLSearchParams(Object.entries(opts.kv).map(([option, bytes]) => [option, String(bytes)]));
+    const query = new URLSearchParams(Object.entries(opts.kv).map(([option, value]) => [option, String(value)]));
     const url = `${opts.origin}/index.html${query.size > 0 ? `?${query}` : ""}`;
     let tabs: [Tab | undefined, Tab | undefined] = [undefined, undefined];
     let carry: string | undefined;

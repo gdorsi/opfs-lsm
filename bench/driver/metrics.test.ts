@@ -355,6 +355,12 @@ suite("kv options", () => {
     assert.deepEqual(measure([run([atRate(1)], small), run([atRate(1)], small), run([atRate(1)], { contender: "kv/idb" })]).kvOptions, ["cacheBytes 4194304"]);
   });
 
+  test("a switch is listed by its name alone", () => {
+    assert.deepEqual(measure([run([atRate(1)], { kv: { syncReads: true } })]).kvOptions, ["syncReads"]);
+    assert.deepEqual(measure([run([atRate(1)], { kv: { cacheBytes: 4_194_304, syncReads: true } })]).kvOptions, ["cacheBytes 4194304, syncReads"]);
+    assert.throws(() => measure([run([atRate(1)], { kv: { syncReads: true } }), run([atRate(1)])]), /kv syncReads and with seed 1, kv defaults/);
+  });
+
   test("runs of one series with and without an override are not pooled", () => {
     assert.throws(() => measure([run([atRate(1)], { kv: { cacheBytes: 4_194_304 } }), run([atRate(1)])]), /kv cacheBytes 4194304 and with seed 1, kv defaults/);
   });

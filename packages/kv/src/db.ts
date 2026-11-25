@@ -33,7 +33,7 @@ import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from ".
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import type { OpenFile, ReadFs, RemovableFs, SyncReads } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, runsOfCopy, type GenerationMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
@@ -86,6 +86,18 @@ export type OpenOptions = {
    * the database.
    */
   readonly reserveBytes?: number;
+  /**
+   * Read run files synchronously: pass `syncReads` from
+   * `@opfs-lsm/kv/sync-reads`. A read of a page that is not in the cache
+   * then returns in the same task, where it otherwise waits for a round
+   * trip to the browser process. A dedicated worker holds the files open and
+   * answers through a SharedArrayBuffer, so the page must be cross-origin
+   * isolated, and the browser must open a sync access handle read-only,
+   * which only Chromium does. Anywhere else the option changes nothing, and
+   * says nothing. Only an app that imports that entry bundles the code.
+   * Off by default.
+   */
+  readonly syncReads?: SyncReads;
 };
 
 type StorageFullHandler = (full: StorageFull) => Promise<void>;
@@ -303,7 +315,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
     return (name) => {
       if (!parent) throw new StorageUnavailableError(NEEDS_BROWSER);
       return {
-        fs: openBrowserReadFs(name, parent),
+        fs: options.syncReads?.readFs(name, parent) ?? openBrowserReadFs(name, parent),
         ingest: workerIngest(name),
         ownsIngestClient: true,
         writerId: newWriterId(),
@@ -396,7 +408,7 @@ async function openStores(
   try {
     const wal = await TabWal.open(
       name,
-      () => void heldDb?.closeFor("destroyed"),
+      { beforeClose: () => tabFs.quiesce?.(), onAskedToClose: () => void heldDb?.closeFor("destroyed") },
       () => ingest.makeRoom(name),
     );
     heldWal = wal;
@@ -1334,10 +1346,12 @@ class DbImpl implements Db {
    * Close the handle, with `reason` in its `closed` event. "destroyed": the
    * WAL connection was asked to close, by `destroyDb`'s fence or by the
    * browser deleting the database. A read that fails afterwards rejects
-   * with `ClosedError`: the files may be gone.
+   * with `ClosedError`: the files may be gone. Resolves once the fs has
+   * let go of what would stop the folder's removal (`ReadFs.quiesce`).
    */
   async closeFor(reason: "close" | "destroyed"): Promise<void> {
-    if (this.closed) return;
+    // A second close resolves with the first: `quiesce` hands back the wait in flight.
+    if (this.closed) return this.fs.quiesce?.();
     this.closed = true;
     this.emit({ kind: "closed", reason });
     this.listeners.clear();
@@ -1351,6 +1365,9 @@ class DbImpl implements Db {
     }
     if (this.watched) this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
+    // Before the connection closes: `destroyDb` removes the folder once every connection has.
+    const quiesced = this.fs.quiesce?.();
+    if (quiesced) await quiesced;
     this.wal.close();
     this.release(this.installed);
     if (this.loaded) this.release(this.loaded);
