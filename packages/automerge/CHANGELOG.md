@@ -1,5 +1,42 @@
 # @opfs-lsm/automerge
 
+## 0.4.0
+
+### Patch Changes
+
+- c3cd729: The README states the exact chunk limit: a chunk with its key and 256 bytes is at most 8 MiB, kv's batch limit.
+- eeaff75: A storage key with a segment past 65,535 bytes now throws `ConstraintError`, as every other key over 8 KiB does. It threw a plain `Error`.
+- 891c829: `removeRange` removes a key range with one range delete. It no longer reads the range before it deletes it.
+- Updated dependencies [4437556]
+- Updated dependencies [327c0e8]
+- Updated dependencies [66344c2]
+- Updated dependencies [488ee4d]
+- Updated dependencies [eeaff75]
+- Updated dependencies [7d39e3f]
+- Updated dependencies [eeaff75]
+- Updated dependencies [634bf1a]
+- Updated dependencies [df04143]
+- Updated dependencies [2def7c4]
+- Updated dependencies [402b24d]
+- Updated dependencies [fb5b609]
+- Updated dependencies [eb929d8]
+- Updated dependencies [047eed4]
+- Updated dependencies [ec242eb]
+- Updated dependencies [3f59e5f]
+- Updated dependencies [72d4295]
+- Updated dependencies [17f9b12]
+- Updated dependencies [ac545e6]
+- Updated dependencies [44b72e1]
+- Updated dependencies [fa776c8]
+- Updated dependencies [33d7488]
+- Updated dependencies [3aa934e]
+- Updated dependencies [df04143]
+- Updated dependencies [a282ddf]
+- Updated dependencies [423bec9]
+- Updated dependencies [5dee709]
+- Updated dependencies [93c2a32]
+  - @opfs-lsm/kv@0.4.0
+
 ## 0.3.0
 
 ### Patch Changes
