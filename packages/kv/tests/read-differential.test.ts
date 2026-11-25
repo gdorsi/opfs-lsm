@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, assert, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { prefixBound, type Db } from "../src/index.js";
 import { createLocalIngestClient, EngineHost, ingest, MemoryFs, openHarnessDb } from "../src/testing.js";
@@ -15,7 +15,9 @@ import { compactHost } from "./compact-host.js";
  * runs coexist. Views and range iterators stay open across writes,
  * flushes and compactions, and every read API answers: get, getMany with
  * repeated keys and with decode, range, count, rangeValues and rangeJoin.
- * A key is sometimes passed as a view into a larger buffer.
+ * A key is sometimes passed as a view into a larger buffer. Every key and
+ * value is compared byte for byte. Odd seeds read through a 1 MiB cache,
+ * even seeds through the default one.
  * A wider sweep: KV_READ_SEEDS=400 KV_READ_STEPS=200, KV_READ_INVERT=1
  * (start above endExclusive).
  */
@@ -71,6 +73,28 @@ const valueKey = (keys: readonly Uint8Array[], value: Uint8Array): Uint8Array | 
 };
 
 type Entry = { key: Uint8Array; value: Uint8Array };
+type Bytes = Uint8Array | undefined;
+
+const same = (a: Bytes, b: Bytes) => (a === undefined || b === undefined ? a === b : compareBytes(a, b) === 0);
+
+/** A short form for a failure message: `show`, the length and a hash of every byte, since `show` keeps 24 bytes as UTF-8. */
+function brief(b: Bytes): string {
+  if (b === undefined) return "none";
+  let h = 0x811c9dc5;
+  for (const x of b) h = Math.imul(h ^ x, 0x01000193) >>> 0;
+  return `${show(b)}${b.length > 24 ? "" : `(${b.length})`}#${h.toString(16)}`;
+}
+
+/** Rows of keys and values, equal byte for byte. */
+function expectBytes(got: readonly (readonly Bytes[])[], want: readonly (readonly Bytes[])[], message: string): void {
+  const equal = got.length === want.length && got.every((row, i) => row.length === want[i]!.length && row.every((b, j) => same(b, want[i]![j])));
+  if (equal) return;
+  assert.deepEqual(got.map((row) => row.map(brief).join(" = ")), want.map((row) => row.map(brief).join(" = ")), message);
+  throw new Error(`${message}: the bytes differ where the short forms agree`);
+}
+
+const rows = (list: readonly Entry[]) => list.map((e) => [e.key, e.value]);
+const copy = (b: Uint8Array) => b.slice();
 
 async function run(seed: number): Promise<void> {
   let state = seed;
@@ -79,7 +103,8 @@ async function run(seed: number): Promise<void> {
   const fs = new MemoryFs();
   const host = new EngineHost(() => fs, { flushRunBytes: 2048, l0StopRuns: Number.POSITIVE_INFINITY, maxSources: 3 });
   const name = `read-differential-${process.pid}-${++n}`;
-  db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30, rowPostMs: 0, cacheBytes: 1 << 20 });
+  const cache = seed % 2 === 1 ? { cacheBytes: 1 << 20 } : {};
+  db = await openHarnessDb({ name, fs, ingest: createLocalIngestClient(host), maxWalBytes: 1 << 30, rowPostMs: 0, ...cache });
   const d = db;
   const oracle = new Oracle();
   let v = 0;
@@ -180,8 +205,6 @@ async function run(seed: number): Promise<void> {
   };
   const showRange = (range: OracleRange) =>
     JSON.stringify({ ...range, start: range.start && show(range.start), endExclusive: range.endExclusive && show(range.endExclusive), valueContains: range.valueContains?.map(show) });
-  const entries = (list: readonly Entry[]) => list.map((e) => `${show(e.key)}(${e.key.length})=${show(e.value)}`);
-  const sizeOf = (x: Uint8Array | undefined) => (x === undefined ? "none" : `${x.length}:${show(x)}`);
 
   const viewAcrossWrites = async () => {
     await d.view(async (snap) => {
@@ -191,22 +214,23 @@ async function run(seed: number): Promise<void> {
       const label = `${log.join(", ")}: view at ${p}`;
       const probe = [key(), key(), key()];
       probe.push(probe[0]!);
-      expect((await snap.getMany(probe.map(asView))).map(sizeOf), `${label} getMany`).toEqual(probe.map((k) => sizeOf(oracle.valueAt(k, p))));
+      expectBytes((await snap.getMany(probe.map(asView))).map((v) => [v]), probe.map((k) => [oracle.valueAt(k, p)]), `${label} getMany`);
       const range = randomRange();
       const want = oracle.rangeAt(range, p);
       const got: Entry[] = [];
       for await (const e of snap.range(range)) got.push(e);
-      expect(entries(got), `${label} range ${showRange(range)}`).toEqual(entries(want));
+      expectBytes(rows(got), rows(want), `${label} range ${showRange(range)}`);
       expect(await snap.count(range), `${label} count ${showRange(range)}`).toBe(want.length);
-      const values = await snap.rangeValues(range, (b) => sizeOf(b));
-      expect(values.map((e) => `${show(e.key)}=${e.value}`), `${label} rangeValues`).toEqual(want.map((e) => `${show(e.key)}=${sizeOf(e.value)}`));
-      const joined = await snap.rangeJoin(range, (e) => valueKey(keys, e.value), (b) => sizeOf(b));
-      expect(joined.map((j) => `${show(j.entry.key)}->${j.joined}`), `${label} rangeJoin`).toEqual(
+      const values = await snap.rangeValues(range, copy);
+      expectBytes(values.map((e) => [e.key, e.value]), rows(want), `${label} rangeValues`);
+      const joined = await snap.rangeJoin(range, (e) => valueKey(keys, e.value), copy);
+      expectBytes(
+        joined.map((j) => [j.entry.key, j.entry.value, j.joined]),
         want.map((e) => {
           const k = valueKey(keys, e.value);
-          const target = k && oracle.valueAt(k, p);
-          return `${show(e.key)}->${target === undefined ? undefined : sizeOf(target)}`;
+          return [e.key, e.value, k && oracle.valueAt(k, p)];
         }),
+        `${label} rangeJoin`,
       );
     });
     log.push("view");
@@ -221,7 +245,7 @@ async function run(seed: number): Promise<void> {
     if (!first.done) got.push(first.value);
     await writeOrMove();
     for (let r = await it.next(); !r.done; r = await it.next()) got.push(r.value);
-    expect(entries(got), `${log.join(", ")}: range across writes at ${p} ${showRange(range)}`).toEqual(entries(oracle.rangeAt(range, p)));
+    expectBytes(rows(got), rows(oracle.rangeAt(range, p)), `${log.join(", ")}: range across writes at ${p} ${showRange(range)}`);
   };
 
   for (let step = 0; step < Number(process.env.KV_READ_STEPS ?? 60); step++) {
@@ -233,26 +257,26 @@ async function run(seed: number): Promise<void> {
 
     const label = log.join(", ");
     const probe = key();
-    expect(sizeOf(await d.get(asView(probe))), `${label}: get ${show(probe)}(${probe.length})`).toBe(sizeOf(oracle.valueAt(probe)));
+    expectBytes([[await d.get(asView(probe))]], [[oracle.valueAt(probe)]], `${label}: get ${brief(probe)}`);
     const many = [key(), key(), key(), new Uint8Array(0)];
     many.push(many[rnd(many.length)]!, many[0]!);
-    expect((await d.getMany(many.map(asView))).map(sizeOf), `${label}: getMany`).toEqual(many.map((k) => sizeOf(oracle.valueAt(k))));
-    expect(await d.getMany(many, (b) => sizeOf(b)), `${label}: getMany decode`).toEqual(
-      many.map((k) => (oracle.valueAt(k) === undefined ? undefined : sizeOf(oracle.valueAt(k)))),
-    );
+    const wantMany = many.map((k) => [oracle.valueAt(k)]);
+    expectBytes((await d.getMany(many.map(asView))).map((v) => [v]), wantMany, `${label}: getMany`);
+    expectBytes((await d.getMany(many, copy)).map((v) => [v]), wantMany, `${label}: getMany decode`);
     for (let r = 0; r < 3; r++) {
       const range = randomRange();
       const want = oracle.rangeAt(range);
       const got: Entry[] = [];
       for await (const e of d.range(range)) got.push(e);
-      expect(entries(got), `${label}: range ${showRange(range)}`).toEqual(entries(want));
+      expectBytes(rows(got), rows(want), `${label}: range ${showRange(range)}`);
       expect(await d.count(range), `${label}: count ${showRange(range)}`).toBe(want.length);
     }
   }
 }
 
 for (const seed of Array.from({ length: Number(process.env.KV_READ_SEEDS ?? 8) }, (_, i) => i + 1)) {
-  it(`reads agree with the oracle over many and long keys, several blocks, L0 over L1, and views and scans across writes (seed ${seed})`, async () => {
-    await expect(run(seed)).resolves.toBeUndefined();
+  it(`reads agree with the oracle over many and long keys, several blocks, L0 over L1, and views and scans across writes (seed ${seed}, ${seed % 2 === 1 ? "1 MiB" : "default"} cache)`, async () => {
+    expect.hasAssertions();
+    await run(seed);
   }, 120_000);
 }

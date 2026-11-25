@@ -6,6 +6,9 @@
  * or third component, ordered queries without a limit, and windows past the
  * end. It also runs on-demand and eager collections whose loads read
  * slowly while writes from this tab and another one land and windows move.
+ * A window shows the order values TanStack shows, over rows the query keeps,
+ * with any rows at a tie on its ends. After the writes, each document holds
+ * the last write of one of the tabs that wrote it.
  *
  * TSDB_DIFF_RUNS (default 200 here, as each case is short) and TSDB_DIFF_SEED
  * replay or widen it.
@@ -13,6 +16,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
@@ -175,27 +179,86 @@ const pick = (k: OrderKey) => ({ direction: k.dir, nulls: k.nulls, stringSort: k
 const strip = (rows: readonly object[]) => rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !k.startsWith("$"))) as Doc);
 const byId = (a: Doc, b: Doc) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
+type Rows = { toArray: readonly object[] };
+type Window = { readonly offset: number; readonly limit: number };
+
 /**
- * An ordered window's rows; only the ids are compared where the order leaves ties, since TanStack breaks ties by
- * insertion into its index, which differs between the two collections.
+ * A live query under test, `want` over every document, and for a window
+ * `full`, the same query without it, with `window` the one last set.
  */
-function shown(q: { toArray: readonly object[] }, spec: Spec): unknown {
+type Query = { readonly spec: Spec; readonly got: Live; readonly want: Live; readonly full?: Live; window?: Window };
+type Live = ReturnType<typeof liveQuery>;
+const live = (q: Query) => [q.got, q.want, ...(q.full ? [q.full] : [])];
+
+/**
+ * An ordered window's order values; its ids are checked by `badSelection`,
+ * since TanStack breaks ties by insertion into its index, which differs
+ * between the two collections.
+ */
+function shown(q: Rows, spec: Spec): unknown {
   const rows = strip(q.toArray);
   if (spec.order.length === 0) return rows.sort(byId);
   if (!spec.window) return rows.map((r) => spec.order.map((k) => r[k.field]).concat(r.id)).sort();
   return rows.map((r) => spec.order.map((k) => r[k.field]));
 }
 
-async function agree(pairs: readonly { got: { toArray: readonly object[] }; want: { toArray: readonly object[] }; spec: Spec }[], what: string) {
+/**
+ * Why `rows` is no window of `full` at `offset` and `limit`: a row the filter
+ * drops, shown twice or with other fields, a wrong count, or a row missing
+ * whose order value lies strictly inside the window. Ties at its two ends
+ * may pick any rows.
+ */
+function badSelection(rows: readonly Doc[], full: readonly Doc[], order: readonly OrderKey[], { offset, limit }: Window): string | undefined {
+  const byKey = new Map(full.map((d) => [d.id, d]));
+  const ids = rows.map((r) => r.id);
+  if (new Set(ids).size !== ids.length) return `shows an id twice: ${ids.join(",")}`;
+  const stray = rows.find((r) => !isDeepStrictEqual(r, byKey.get(r.id)));
+  if (stray) return `shows ${JSON.stringify(stray)}, but the query over every document holds ${JSON.stringify(byKey.get(stray.id))}`;
+  const size = Math.min(limit, Math.max(0, full.length - offset));
+  if (rows.length !== size) return `shows ${rows.length} rows, not min(limit ${limit}, ${full.length} matching - offset ${offset})`;
+  const window = full.slice(offset, offset + limit);
+  const value = (d: Doc) => JSON.stringify(order.map((k) => d[k.field]));
+  const ends = new Set(window.length > 0 ? [value(window[0]!), value(window.at(-1)!)] : []);
+  const missing = window.filter((d) => !ends.has(value(d)) && !ids.includes(d.id));
+  if (missing.length > 0) return `misses ${missing.map((d) => d.id).join(",")}, inside the window by order value`;
+  return undefined;
+}
+
+function mismatch(q: Query): string | undefined {
+  if (JSON.stringify(shown(q.got, q.spec)) !== JSON.stringify(shown(q.want, q.spec))) return "order values";
+  return q.full && q.window && badSelection(strip(q.got.toArray), strip(q.full.toArray), q.spec.order, q.window);
+}
+
+async function agree(queries: readonly Query[], what: string) {
   const deadline = Date.now() + 3000;
   for (;;) {
-    const diff = pairs.find((p) => JSON.stringify(shown(p.got, p.spec)) !== JSON.stringify(shown(p.want, p.spec)));
+    const diff = queries.find((q) => mismatch(q) !== undefined);
     if (!diff) return;
     if (Date.now() > deadline) {
-      assert.deepEqual(shown(diff.got, diff.spec), shown(diff.want, diff.spec), `${what}: ${JSON.stringify(diff.spec)}`);
+      const message = `${what}: ${JSON.stringify(diff.spec)} at ${JSON.stringify(diff.window)}`;
+      assert.deepEqual(shown(diff.got, diff.spec), shown(diff.want, diff.spec), message);
+      assert.fail(`${message}: ${mismatch(diff)}`);
     }
     await new Promise((r) => setTimeout(r, 2));
   }
+}
+
+/**
+ * Why `stored` loses a write. Writes of one id through one handle land in
+ * call order, and through the two handles in either, so each id holds the
+ * last write of one of the handles that wrote it, or its first document.
+ */
+function lostWrite(initial: readonly Doc[], writes: readonly Write[], stored: readonly (Doc | undefined)[]): string | undefined {
+  for (const [i, id] of IDS.entries()) {
+    const last = new Map<Write["via"], Doc | null>();
+    for (const w of writes) if (w.id === id) last.set(w.via, w.fields && { id, ...w.fields });
+    const allowed = last.size > 0 ? [...last.values()] : [initial.find((d) => d.id === id) ?? null];
+    const got = stored[i] ?? null;
+    if (!allowed.some((doc) => isDeepStrictEqual(doc, got))) {
+      return `${id} holds ${JSON.stringify(got)}, and the last writes allow ${allowed.map((doc) => JSON.stringify(doc)).join(" or ")}`;
+    }
+  }
+  return undefined;
 }
 
 let dbs = 0;
@@ -239,10 +302,15 @@ async function check(docs: readonly Doc[], specs: readonly Spec[], writes: reado
       reference.delete(id);
     }
   };
-  const queries = specs.map((spec) => ({ spec, got: liveQuery(target, spec), want: liveQuery(reference, spec) }));
+  const queries: Query[] = specs.map((spec) => ({
+    spec,
+    got: liveQuery(target, spec),
+    want: liveQuery(reference, spec),
+    ...(spec.window && { full: liveQuery(reference, { ...spec, window: undefined, moves: [] }), window: spec.window }),
+  }));
   try {
     if (concurrent) {
-      const loads = queries.flatMap((q) => [q.got.preload(), q.want.preload()]);
+      const loads = queries.flatMap((q) => live(q).map((c) => c.preload()));
       const others: Promise<unknown>[] = [];
       for (const w of writes) {
         const doc = w.fields && { id: w.id, ...w.fields };
@@ -250,9 +318,12 @@ async function check(docs: readonly Doc[], specs: readonly Spec[], writes: reado
         else others.push(doc ? other!.putMany([doc]) : other!.delete(w.id));
         await new Promise((r) => setImmediate(r));
       }
+      // @tanstack/db 1.0.0-rc.1.5 drops a window moved while the first load of an unindexed source is in flight, and the query stays empty.
+      await Promise.all(loads);
       for (const q of queries) {
         for (const move of q.spec.window ? q.spec.moves : []) {
           others.push(q.got.utils.setWindow(move) as Promise<unknown>, q.want.utils.setWindow(move) as Promise<unknown>);
+          q.window = move;
           await new Promise((r) => setImmediate(r));
         }
       }
@@ -260,12 +331,14 @@ async function check(docs: readonly Doc[], specs: readonly Spec[], writes: reado
       // Writes of one id from both tabs commit in either order: the database says which won.
       await kvs[0]!.sync();
       const stored = await mine!.getMany(IDS);
+      const lost = lostWrite(docs, writes, stored);
+      if (lost) assert.fail(`after concurrent writes ${JSON.stringify(writes)}: ${lost}`);
       IDS.forEach((id, i) => set(id, stored[i] ?? null));
       await agree(queries, `after concurrent writes ${JSON.stringify(writes)}`);
       cases++;
       return;
     }
-    await Promise.all(queries.flatMap((q) => [q.got.preload(), q.want.preload()]));
+    await Promise.all(queries.flatMap((q) => live(q).map((c) => c.preload())));
     await agree(queries, "at rest");
     for (const w of writes) {
       const doc = w.fields && { id: w.id, ...w.fields };
@@ -278,12 +351,13 @@ async function check(docs: readonly Doc[], specs: readonly Spec[], writes: reado
     for (const q of queries) {
       for (const move of q.spec.window ? q.spec.moves : []) {
         await Promise.all([q.got.utils.setWindow(move), q.want.utils.setWindow(move)]);
+        q.window = move;
         await agree([q], `after setWindow(${JSON.stringify(move)})`);
       }
     }
     cases++;
   } finally {
-    for (const q of queries) await Promise.all([q.got.cleanup(), q.want.cleanup()]);
+    for (const q of queries) await Promise.all(live(q).map((c) => c.cleanup()));
     await Promise.all([target.cleanup(), reference.cleanup()]);
     for (const kv of kvs) await kv.close();
   }

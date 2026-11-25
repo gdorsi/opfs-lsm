@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../../src/bytes.js";
 import type { Db } from "../../src/index.js";
+import { compactLock } from "../../src/locks.js";
 import { createLocalIngestClient, EngineHost, ingest, openHarnessDb } from "../../src/testing.js";
 import { compactHost } from "../compact-host.js";
 import { checkDatabase, deleteWal } from "./check-database.js";
@@ -159,18 +160,23 @@ async function secondLoss(before: readonly DurableOp[], first: Cut, random: () =
   const b = new Traced(`fault-crash-${++runs}`, 64);
   let log: Oracle;
   let after: DurableOp[];
+  const firstLoss = `first loss keeps idb ${first.idb} opfs ${first.opfs}`;
   try {
     await b.load(before, first);
-    const db = await b.open().catch(() => undefined);
-    // A crash state that does not open is the one-loss sweep's to report.
-    if (!db) return { states: 0, failures: [] };
+    let db: Db;
+    try {
+      db = await b.open();
+    } catch (err) {
+      return { states: 1, failures: [`${firstLoss}: does not open: ${(err as Error).name}: ${(err as Error).message}\n${describeCut(before, first)}`] };
+    }
     const all: OracleEntry[] = [];
     for await (const e of db.range()) all.push({ key: new Uint8Array(e.key), value: new Uint8Array(e.value) });
     const logA = committedLog(before);
     const read = logA.rangeCandidates({}, all, 0);
     if (read.length === 0) {
       await db.close();
-      return { states: 0, failures: [] };
+      const shown = all.map((e) => `${dec.decode(e.key)}=${dec.decode(e.value)}`).join(", ");
+      return { states: 1, failures: [`${firstLoss}: range() = [${shown}] is no log prefix\n${describeCut(before, first)}`] };
     }
     log = logA.prefix(read.at(-1)!);
     for (const ops of AFTER_RECOVERY) {
@@ -193,10 +199,17 @@ async function secondLoss(before: readonly DurableOp[], first: Cut, random: () =
   for (const cut of cuts) {
     const second: Cut = { idb: idbA.length + cut.idb, opfs: opfsA.length + cut.opfs };
     await checkCrashState(ops, log, second, "power").catch((err: Error) =>
-      failures.push(`first loss keeps idb ${first.idb} opfs ${first.opfs}: ${err.message.split("\n")[0]}\n${describeCut(ops, second)}`),
+      failures.push(`${firstLoss}: ${err.message.split("\n")[0]}\n${describeCut(ops, second)}`),
     );
   }
   return { states: cuts.length, failures };
+}
+
+/** The IndexedDB commits a power loss that keeps `opfs` OPFS ops cannot lose: through the last strict one before them (`powerCuts`). */
+function strictKept(ops: readonly DurableOp[], opfs: number): number {
+  const last = ops.filter((op) => op.store === "opfs")[opfs - 1]?.i ?? -1;
+  const idb = ops.filter((op): op is Extract<DurableOp, { store: "idb" }> => op.store === "idb");
+  return idb.findLastIndex((op) => op.strict === true && op.i < last) + 1;
 }
 
 function report(failures: readonly string[]): void {
@@ -232,7 +245,7 @@ describe("a failed durable op, then a crash", () => {
       for (let i = 0; i < STATES; i++) {
         // The power goes at a point of the run: OPFS keeps every op up to it, and IndexedDB loses its last one to three commits.
         const at = processCut(ops, 1 + Math.floor(random() * ops.length));
-        const lost = Math.min(at.idb, 1 + Math.floor(random() * 3));
+        const lost = Math.min(at.idb - strictKept(ops, at.opfs), 1 + Math.floor(random() * 3));
         const out = await secondLoss(ops, { idb: at.idb - lost, opfs: at.opfs }, random);
         states += out.states;
         failures.push(...out.failures.map((f) => `commit site ${n} (${site}), ${f}`));
@@ -242,7 +255,14 @@ describe("a failed durable op, then a crash", () => {
     expect(states).toBeGreaterThan(50);
   }, 600_000);
 
-  it("a manifest a failed commit left, whose run a sweep removed, is never read after two power losses", async () => {
+  /**
+   * A flush publishes manifest 2 and its run, and its commit fails. An idle
+   * sweep against generation 1 keeps both. A power loss takes the appends
+   * back, the next flush writes other rows, and a second power loss drops
+   * that flush's manifest: the database still reads a log prefix, with clean
+   * files.
+   */
+  it("a manifest a failed commit left, through an idle sweep and two power losses, never reads over other rows", async () => {
     const index = (list: readonly DurableOp[], text: string): number => {
       const i = list.map(describeOp).findIndex((d) => d.includes(text));
       if (i < 0) throw new Error(`no op ${text} in\n${list.map(describeOp).join("\n")}`);
@@ -267,9 +287,15 @@ describe("a failed durable op, then a crash", () => {
         a.faults.failAt = a.faults.sites.length + 1;
         await expect(ingest(db)).rejects.toBeInstanceOf(Error);
         a.faults.heal();
-        // A second tab opens, and the host's idle pass sweeps against generation 1.
+        // A second tab opens, and the host's idle pass sweeps against generation 1. Only a sweep lists the folder's root.
+        a.faults.kinds = new Set<SiteKind>(["idb-write", "fs-read"]);
         const other = await a.open();
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        const deadline = Date.now() + 5_000;
+        while (!a.faults.sites.includes("list /")) {
+          if (Date.now() > deadline) throw new Error("the host's idle pass never swept");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        await navigator.locks.request(compactLock(a.name), async () => undefined);
         await other.close();
         await db.close();
       });

@@ -5,6 +5,8 @@
  *
  * - every call settles, and a rejection is a `ClosedError` on a handle that
  *   `close()` or `destroyDb` closed;
+ * - a handle that `close()` or `destroyDb` closed rejects its next put with
+ *   `ClosedError`;
  * - each `changes()` listener gets `closed` once, as its last event, with
  *   reason "close" or "destroyed";
  * - after `destroyDb` a reopen reads nothing;
@@ -210,16 +212,23 @@ async function run(seed: number): Promise<void> {
     const outcome = await Promise.race([Promise.all(calls).then(() => "settled"), hung]);
     clearTimeout(timer);
     expect(outcome, `${label}: every call settles (${end})`).toBe("settled");
+    for (const [i, { db }] of handles.entries()) {
+      if (!closed.has(db)) continue;
+      const next = await db.put(utf(`r${round}/after`), utf("after")).then(
+        () => "resolved",
+        (err: unknown) => (err instanceof ClosedError ? "ClosedError" : String(err)),
+      );
+      expect(next, `${label}: the next put on handle ${i} after ${end}`).toBe("ClosedError");
+    }
     for (const { db } of handles) await db.close();
     await turns(4);
     for (const check of reads) check();
     expect(problems, `${label}: calls (${end})`).toEqual([]);
 
-    for (const [i, { db, events }] of handles.entries()) {
+    for (const [i, { events }] of handles.entries()) {
       const reason = end === "destroyDb" ? "destroyed" : "close";
       expect(events.filter((e) => e.kind === "closed"), `${label}: handle ${i} hears closed once (${end})`).toEqual([{ kind: "closed", reason }]);
       expect(events.at(-1), `${label}: closed is the last event of handle ${i}`).toEqual({ kind: "closed", reason });
-      expect(closed.has(db) || end !== "destroyDb", `${label}: destroyDb closes every handle`).toBe(true);
     }
 
     const again = await open();

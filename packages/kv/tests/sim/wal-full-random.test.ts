@@ -10,7 +10,8 @@
  *   `ClosedError` on a handle whose `close()` was called;
  * - the rows read afterwards, from both handles and from a reopen, are the
  *   fold of the acked writes in seq order, a refused write leaves nothing,
- *   and a write that failed with `ClosedError` lands whole or not at all;
+ *   and a write that failed with `ClosedError` lands whole or not at all,
+ *   never over an acked write issued after it settled;
  * - the updates of a counter lose nothing, and those of one handle commit
  *   in call order;
  * - an open handle writes again once the origin has room.
@@ -96,13 +97,13 @@ function refuseWalAppends(name: string, origin: { readonly free: number }): () =
 }
 
 /** What the runs met, so the test can say they met it. */
-const tally = { refusals: 0, full: 0, closed: 0 };
+const tally = { refusals: 0, full: 0, closed: 0, closedData: 0 };
 
 /** How a write ended: acked, refused for lack of room, or failed because its handle closed. */
 type Ending = "acked" | "full" | "closed";
 
-/** A put or a batch on the data keys. A batch also puts a witness key of its own. */
-type DataWrite = { readonly ops: OracleOp[]; readonly witness?: string; ending?: Ending; seq?: number | undefined };
+/** A put or a batch on the data keys, issued in `step`. A batch also puts a witness key of its own. */
+type DataWrite = { readonly ops: OracleOp[]; readonly step: number; readonly witness?: string; ending?: Ending; seq?: number | undefined };
 
 /** An update that appends its id to a counter. */
 type CounterWrite = { readonly id: number; readonly db: Db; readonly counter: string; ending?: Ending };
@@ -155,12 +156,12 @@ async function run(seed: number): Promise<void> {
 
   const value = (n: number) => `v${n}.${".".repeat(Math.floor(random() * 400))}`;
 
-  const write = (db: Db): Promise<void> => {
+  const write = (db: Db, step: number): Promise<void> => {
     const n = ++id;
     const roll = random();
     if (roll < 0.3) {
       const op: OracleOp = { type: "put", key: utf(pick(DATA)), value: utf(value(n)) };
-      const w: DataWrite = { ops: [op] };
+      const w: DataWrite = { ops: [op], step };
       data.push(w);
       return track(db, `put ${n}`, db.put(op.key, (op as { value: Uint8Array }).value), (ending, seq) => {
         w.ending = ending;
@@ -174,7 +175,7 @@ async function run(seed: number): Promise<void> {
         ops.push(random() < 0.75 ? { type: "put", key: utf(pick(DATA)), value: utf(value(n)) } : { type: "del", key: utf(pick(DATA)) });
       }
       ops.push({ type: "put", key: utf(witness), value: utf("1") });
-      const w: DataWrite = { ops, witness };
+      const w: DataWrite = { ops, step, witness };
       data.push(w);
       return track(
         db,
@@ -218,13 +219,13 @@ async function run(seed: number): Promise<void> {
   const lift = () => (budget.limit = budget.used + RESERVE * 4 + Math.floor(random() * 64 * KiB));
 
   const slots: Db[] = [await open(), await open()];
-  await write(slots[0]!);
+  await write(slots[0]!, -1);
   await ingest(slots[0]!);
 
   for (let step = 0; step < STEPS; step++) {
     if (random() < 0.4) (random() < 0.5 ? tighten : lift)();
     const calls: Promise<void>[] = [];
-    for (let i = 1 + Math.floor(random() * 4); i > 0; i--) calls.push(write(pick(slots)));
+    for (let i = 1 + Math.floor(random() * 4); i > 0; i--) calls.push(write(pick(slots), step));
     const closing = random() < 0.15 ? Math.floor(random() * slots.length) : -1;
     await turns(Math.floor(random() * 5));
     if (random() < 0.3) (random() < 0.6 ? tighten : lift)();
@@ -232,6 +233,7 @@ async function run(seed: number): Promise<void> {
       const db = slots[closing]!;
       asked.add(db);
       calls.push(track(db, "close", db.close(), () => undefined));
+      if (random() < 0.5) calls.push(write(db, step));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const hung = new Promise<string>((resolve) => (timer = setTimeout(resolve, HANG_MS, "hung")));
@@ -247,9 +249,10 @@ async function run(seed: number): Promise<void> {
     const op: OracleOp = { type: "put", key: utf(DATA[i]!), value: utf(`room ${i}`) };
     const seq = await db.put(op.key, utf(`room ${i}`)).catch((err: unknown) => `${err}`);
     expect(seq, `seed ${seed}: handle ${i} writes again once the origin has room`).toBeTypeOf("number");
-    data.push({ ops: [op], ending: "acked", seq: seq as number });
+    data.push({ ops: [op], step: STEPS, ending: "acked", seq: seq as number });
   }
 
+  tally.closedData += data.filter((w) => w.ending === "closed").length;
   const expected = expectation(data, counters);
   for (const db of slots) await db.sync();
   for (const [i, db] of slots.entries()) expected.check(await rowsOf(db), `seed ${seed}: handle ${i}`);
@@ -269,9 +272,13 @@ async function rowsOf(db: Db): Promise<Map<string, string>> {
 }
 
 /**
- * What the rows may be: the fold of the acked data writes in seq order, a
- * key touched by a write that failed with ClosedError also holding what that
- * write left, and each counter the ids of its acked updates.
+ * What the rows may be. A data key holds the value of its last acked write
+ * in seq order, or that of a write that failed with ClosedError and can have
+ * landed after it: one issued in the same step or later. A batch that failed
+ * with ClosedError lands whole or not at all, as its witness says: when it
+ * landed, each key it wrote holds its value or that of a write that can have
+ * landed after it, and when it did not, no key holds its value. Each counter
+ * holds the ids of its acked updates.
  */
 function expectation(data: readonly DataWrite[], counters: readonly CounterWrite[]) {
   const acked = data.filter((w) => w.ending === "acked").sort((a, b) => a.seq! - b.seq!);
@@ -281,30 +288,47 @@ function expectation(data: readonly DataWrite[], counters: readonly CounterWrite
     expect(oracle.head, `two acked writes share seq ${w.seq}`).toBe(w.seq! - 1);
     oracle.appendRow(w.ops);
   }
-  const allowed = new Map<string, Set<string | undefined>>();
-  for (const key of DATA) {
-    const v = oracle.valueAt(utf(key));
-    allowed.set(key, new Set([v && text(v)]));
-  }
+  /** The value each key holds after `w`, undefined for a delete. */
+  const effects = new Map<DataWrite, Map<string, string | undefined>>();
   for (const w of data) {
-    if (w.ending !== "closed") continue;
-    for (const op of w.ops) {
-      if (op.type === "put" || op.type === "del") allowed.get(text(op.key))?.add(op.type === "put" ? text(op.value) : undefined);
-    }
+    const after = new Map<string, string | undefined>();
+    for (const op of w.ops) if (op.type === "put" || op.type === "del") after.set(text(op.key), op.type === "put" ? text(op.value) : undefined);
+    effects.set(w, after);
   }
+  const lastAcked = new Map<string, DataWrite>();
+  for (const w of acked) for (const key of effects.get(w)!.keys()) lastAcked.set(key, w);
+  const closed = data.filter((w) => w.ending === "closed");
   const witnesses = new Map(data.filter((w) => w.witness).map((w) => [w.witness!, w.ending]));
+  const show = (v: string | undefined) => (v === undefined ? "no row" : v.slice(0, 12));
 
   return {
     check(rows: Map<string, string>, label: string): void {
+      /** A put that failed with ClosedError may have landed; a batch did when its witness is there. */
+      const landed = (w: DataWrite) => w.witness === undefined || rows.has(w.witness);
       for (const key of DATA) {
         const got = rows.get(key);
-        const want = allowed.get(key)!;
-        const show = (v: string | undefined) => (v === undefined ? "no row" : v.slice(0, 12));
-        expect(want.has(got), `${label}: ${key} reads ${show(got)}, the writes allow ${[...want].map(show).join(" or ")}`).toBe(true);
+        const last = lastAcked.get(key);
+        const v = oracle.valueAt(utf(key));
+        const allowed = [v && text(v)];
+        for (const w of closed) {
+          if (effects.get(w)!.has(key) && landed(w) && w.step >= (last?.step ?? -1)) allowed.push(effects.get(w)!.get(key));
+        }
+        const want = `${last ? `the acked write at seq ${last.seq}` : "no acked write"} allows ${allowed.map(show).join(" or ")}`;
+        expect(allowed.includes(got), `${label}: ${key} reads ${show(got)}; ${want}`).toBe(true);
       }
       for (const [key, ending] of witnesses) {
         if (ending === "closed") continue;
         expect(rows.has(key), `${label}: the batch of ${key} ended ${ending}`).toBe(ending === "acked");
+      }
+      for (const w of closed) {
+        if (w.witness === undefined || !rows.has(w.witness)) continue;
+        for (const [key, value] of effects.get(w)!) {
+          if (key === w.witness) continue;
+          const got = rows.get(key);
+          const later = data.filter((x) => x !== w && x.step >= w.step && effects.get(x)!.has(key) && (x.ending === "acked" || (x.ending === "closed" && landed(x))));
+          const ok = got === value || later.some((x) => effects.get(x)!.get(key) === got);
+          expect(ok, `${label}: the batch of ${w.witness} failed with ClosedError and landed, yet ${key} reads ${show(got)}, neither its ${show(value)} nor a later write's`).toBe(true);
+        }
       }
       for (const counter of COUNTERS) {
         const ids = (rows.get(counter) ?? "").split(",").filter(Boolean).map(Number);
@@ -332,5 +356,6 @@ describe("WAL appends refused at random", () => {
     expect(tally.refusals, "the runs met refused appends").toBeGreaterThan(0);
     expect(tally.full, "the runs met StorageFullError").toBeGreaterThan(0);
     expect(tally.closed, "the runs met ClosedError").toBeGreaterThan(0);
+    expect(tally.closedData, "the runs met puts and batches that failed with ClosedError").toBeGreaterThan(0);
   }, 900_000);
 });
