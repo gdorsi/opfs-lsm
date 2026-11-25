@@ -11,6 +11,7 @@ import type {
   SyncConfig,
   UtilsRecord,
 } from "@tanstack/db";
+import { memoryParts } from "./memory.js";
 import { conjuncts, ownPath, planLoad, type Plan } from "./plan.js";
 import { atOrBefore, boundaryOf, read, type Boundary, type Snapshot } from "./read.js";
 
@@ -24,8 +25,15 @@ export interface DocstoreCollectionConfig<T extends JsonDoc, Ix>
     BaseCollectionConfig<T, string, never>,
     "getKey" | "onInsert" | "onUpdate" | "onDelete" | "syncMode" | "utils" | "schema"
   > {
-  /** A docstore collection. The caller owns its kv handle and DocStore, and many TanStack collections can share them. */
-  collection: Collection<T, Ix>;
+  /**
+   * A docstore collection. The caller owns its kv handle and DocStore, and
+   * many TanStack collections can share them. `undefined` where the browser
+   * cannot store (`openDb(...).catch(noStorage)`): the rows then live in
+   * this page's memory, shared by every collection created from these
+   * options, until the page goes away. Two `docstoreCollectionOptions` calls
+   * do not share rows, even under one `id`, which is then required.
+   */
+  collection: Collection<T, Ix> | undefined;
   /**
    * `"eager"` (the default) loads every document on start. `"on-demand"`
    * loads only what live queries ask for, read through the collection's
@@ -68,16 +76,58 @@ type Options<T extends JsonDoc> = CollectionConfig<T, string, never, DocstoreCol
   schema?: never;
 };
 
+type Parts<T extends JsonDoc> = {
+  sync: SyncConfig<T, string>["sync"];
+  persist(mutations: ReadonlyArray<PendingMutation<any>>): Promise<void>;
+  transact: DocstoreCollectionUtils<T>["transact"];
+};
+
+export function docstoreCollectionOptions<T extends JsonDoc, Ix>(
+  config: DocstoreCollectionConfig<T, Ix> & { collection: Collection<T, Ix> },
+): Options<T>;
+export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: DocstoreCollectionConfig<T, Ix> & { id: string }): Options<T>;
 export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: DocstoreCollectionConfig<T, Ix>): Options<T> {
   const { collection, syncMode = "eager", ...base } = config;
-  const docs = collection as unknown as Collection<JsonDoc, unknown>;
-  const id = base.id ?? `opfs-lsm:${collection.name}`;
+  const id = base.id ?? (collection && `opfs-lsm:${collection.name}`);
+  if (!id) throw new TypeError("docstoreCollectionOptions needs an id when it has no collection");
+  const parts: Parts<T> = collection ? docstoreParts(collection, syncMode) : memoryParts<T>();
   // Every collection created from these options shares their handlers and utils.
   const owners = new Set<unknown>();
+
+  const persist = async (mutations: ReadonlyArray<PendingMutation<any>>): Promise<void> => {
+    const own = mutations.filter((m) => owners.has(m.collection));
+    if (own.length > 0) await parts.persist(own);
+  };
+
+  const handler = ({ transaction }: { transaction: { mutations: ReadonlyArray<PendingMutation<any>> } }) =>
+    persist(transaction.mutations);
+
+  const options: Options<T> = {
+    ...base,
+    id,
+    getKey: (doc) => doc.id,
+    syncMode,
+    sync: {
+      sync: (params) => {
+        owners.add(params.collection);
+        return parts.sync(params);
+      },
+      rowUpdateMode: "full",
+    },
+    onInsert: handler,
+    onUpdate: handler,
+    onDelete: handler,
+    utils: { acceptMutations: (transaction) => persist(transaction.mutations), transact: parts.transact },
+  };
+  // Each DbClient materializes its own options.
+  return withCollectionConfigFactory(options, () => docstoreCollectionOptions({ ...config, id }));
+}
+
+function docstoreParts<T extends JsonDoc, Ix>(collection: Collection<T, Ix>, syncMode: "eager" | "on-demand"): Parts<T> {
+  const docs = collection as unknown as Collection<JsonDoc, unknown>;
   const runs = new Set<Run | DemandRun>();
 
   const sync: SyncConfig<JsonDoc, string>["sync"] = (params) => {
-    owners.add(params.collection);
     const run = syncMode === "on-demand" ? new DemandRun(docs, params) : new Run(docs, params);
     runs.add(run);
     run.start();
@@ -93,8 +143,7 @@ export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: Docstor
 
   const persist = async (mutations: ReadonlyArray<PendingMutation<any>>): Promise<void> => {
     const last = new Map<string, PendingMutation<any>>();
-    for (const m of mutations) if (owners.has(m.collection)) last.set(String(m.key), m);
-    if (last.size === 0) return;
+    for (const m of mutations) last.set(String(m.key), m);
     const writes = [...last.values()];
     const deletes = writes.filter((m) => m.type === "delete");
     if (deletes.length === 0) await docs.putMany(writes.map((m) => m.modified as JsonDoc));
@@ -111,22 +160,7 @@ export function docstoreCollectionOptions<T extends JsonDoc, Ix>(config: Docstor
     await settled();
   };
 
-  const handler = ({ transaction }: { transaction: { mutations: ReadonlyArray<PendingMutation<any>> } }) =>
-    persist(transaction.mutations);
-
-  const options: Options<T> = {
-    ...base,
-    id,
-    getKey: (doc) => doc.id,
-    syncMode,
-    sync: { sync: sync as unknown as SyncConfig<T, string>["sync"], rowUpdateMode: "full" },
-    onInsert: handler,
-    onUpdate: handler,
-    onDelete: handler,
-    utils: { acceptMutations: (transaction) => persist(transaction.mutations), transact },
-  };
-  // Each DbClient materializes its own options.
-  return withCollectionConfigFactory(options, () => docstoreCollectionOptions({ ...config, id }));
+  return { sync: sync as unknown as SyncConfig<T, string>["sync"], persist, transact };
 }
 
 type Docs = Collection<JsonDoc, unknown>;

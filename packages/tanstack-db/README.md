@@ -82,23 +82,25 @@ todos.get("1"); // => { id: "1", title: "Buy milk", done: true }
 
 ## Without storage
 
-docstore needs a db. Where the browser cannot store ([Browsers without storage](../kv/README.md#browsers-without-storage)), TanStack DB's `localOnlyCollectionOptions` keeps the collection in memory instead, until the page goes away.
+Where the browser cannot store ([Browsers without storage](../kv/README.md#browsers-without-storage)), `collection` is `undefined` and `id` is required.
 
 ```ts
-import { noStorage } from "@opfs-lsm/kv";
-import { localOnlyCollectionOptions } from "@tanstack/db";
+import { noStorage, openDb } from "@opfs-lsm/kv";
 
 const kv = await openDb({ name: "app" }).catch(noStorage);
-const todoList = kv
-	? createCollection(
-			docstoreCollectionOptions({
-				collection: (await openDocStore(kv, schema)).collection("todos"),
-			}),
-		)
-	: createCollection(
-			localOnlyCollectionOptions<Todo, string>({ id: "todos", getKey: (t) => t.id }),
-		);
+const store = kv && (await openDocStore(kv, schema));
+const todoList = createCollection(
+	docstoreCollectionOptions({
+		id: "todos",
+		collection: store?.collection("todos"),
+	}),
+);
+
+todoList.insert({ id: "1", title: "Buy milk", done: false });
+await todoList.utils.transact(["1"], ([todo]) => [todo && { ...todo, done: true }]);
 ```
+
+The rows then live in the page's memory, shared by every collection created from those options. Two calls of `docstoreCollectionOptions` do not share rows, even under one `id`. Writes, `utils.transact` and `utils.acceptMutations` work as with a store, and a reload starts empty. Reading docstore directly, beside the adapter, still needs a db.
 
 ## Closing
 
