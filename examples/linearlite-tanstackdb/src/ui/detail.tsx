@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useIssue, useIssueDetail } from "../app/hooks.ts";
+import { useIssue, useIssueThread } from "../app/hooks.ts";
 import { model } from "../app/open.ts";
 import type { Comment, Issue } from "../domain/model.ts";
+import type { Thread } from "../model/thread.ts";
 import { useAutosize } from "./autosize.ts";
 import { formatDateTime, initial, shortId } from "./format.ts";
 import { PriorityPicker, StatusPicker } from "./pickers.tsx";
@@ -36,6 +37,7 @@ function NotFound({ id, onBack }: { id: string; onBack(): void }) {
 
 function Detail({ issue, onBack, onDeleted }: { issue: Issue; onBack(): void; onDeleted(): void }) {
   const [confirming, setConfirming] = useState(false);
+  const thread = useIssueThread(issue.id);
   return (
     <>
       <div className="topbar">
@@ -70,8 +72,8 @@ function Detail({ issue, onBack, onDeleted }: { issue: Issue; onBack(): void; on
         <div className="detail-grid">
           <div>
             <TitleField issue={issue} />
-            <Description id={issue.id} />
-            <Comments issueId={issue.id} />
+            <Description id={issue.id} thread={thread} />
+            <Comments issueId={issue.id} thread={thread} />
           </div>
           <Properties issue={issue} />
         </div>
@@ -115,10 +117,9 @@ function TitleField({ issue }: { issue: Issue }) {
   );
 }
 
-function Description({ id }: { id: string }) {
-  const detail = useIssueDetail(id);
-  if (detail.kind === "loading") return <div className="loading">Loading description…</div>;
-  return <DescriptionField id={id} saved={detail.kind === "ready" ? detail.body.description : ""} />;
+function Description({ id, thread }: { id: string; thread: Thread }) {
+  if (thread.kind === "loading") return <div className="loading">Loading description…</div>;
+  return <DescriptionField id={id} saved={thread.kind === "ready" ? thread.body.description : ""} />;
 }
 
 function DescriptionField({ id, saved }: { id: string; saved: string }) {
@@ -164,13 +165,12 @@ function DescriptionField({ id, saved }: { id: string; saved: string }) {
   );
 }
 
-function Comments({ issueId }: { issueId: string }) {
-  const detail = useIssueDetail(issueId);
-  const comments = detail.kind === "loading" ? [] : detail.comments;
+function Comments({ issueId, thread }: { issueId: string; thread: Thread }) {
+  const comments = thread.kind === "loading" ? [] : thread.comments;
   return (
     <section>
       <h3 className="section-h">{comments.length === 0 ? "Comments" : `Comments · ${comments.length}`}</h3>
-      {detail.kind === "loading" && <div className="loading">Loading comments…</div>}
+      {thread.kind === "loading" && <div className="loading">Loading comments…</div>}
       <div id="comments">
         {comments.map((c) => (
           <CommentItem key={c.key} comment={c} />

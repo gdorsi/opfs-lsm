@@ -2,8 +2,7 @@ import { mergeIncoming, mergePulled, restore } from "../domain/merge.ts";
 import type { Clocks, Rows, ServerRow, SyncState } from "../domain/model.ts";
 import { STORES, STREAMS, type Stream } from "../domain/stores.ts";
 import { MAX_DETAIL_IDS, MAX_OPS, type DetailResponse, type PullResponse, type PushOp, type PushResponse } from "../domain/wire.ts";
-import type { Backend, StoreRows } from "./backend.ts";
-import { fromSnapshots, observe, type Live, type Snapshot, type Unsubscribe } from "./live.ts";
+import type { Backend, StoreRows, Unsubscribe } from "./backend.ts";
 import { backoffMs, Pager, pushOp } from "./ops.ts";
 import { unsent } from "./query.ts";
 import { TransportError, type Transport } from "./transport.ts";
@@ -36,8 +35,13 @@ export interface Sync {
   settled(): Promise<void>;
   /** Loads the threads of `ids` this replica lacks, once `ids` held still for 200 ms; an abort of `signal` before that cancels it. */
   preload(ids: readonly string[], signal?: AbortSignal): Promise<void>;
-  readonly status: Live<SyncStatus>;
-  readonly pressure: Live<Pressure>;
+  /**
+   * Fetches the thread of `id` from the server until it answers, with backoff and again when the network comes back,
+   * then calls `answered`. Returns stop.
+   */
+  loadThread(id: string, answered: () => void): Unsubscribe;
+  /** The rows with unsent edits, per stream: what the leader pushes, and what the status counts. */
+  readonly outbox: Outbox;
   /** Agrees, from any tab, to clear the cached bodies and comments that storage pressure asked for. */
   confirmEviction(): Promise<void>;
 }
@@ -371,7 +375,7 @@ class Leader {
 }
 
 /** Threads fetched whole from the server. Rows join the replica here, unlike a pull's. */
-export function threadFetcher(backend: Backend, transport: Transport) {
+function threadFetcher(backend: Backend, transport: Transport) {
   /** Ids asked for and not answered with a body: in flight, or the server has none. Not asked again by `preload`. */
   const asked = new Set<string>();
 
@@ -402,7 +406,39 @@ export function threadFetcher(backend: Backend, transport: Transport) {
     }
   }
 
-  return { fetch, preload };
+  function fetchUntilAnswered(id: string, answered: () => void): Unsubscribe {
+    let live = true;
+    let failures = 0;
+    let inFlight = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      if (!live || inFlight) return;
+      clearTimeout(timer);
+      inFlight = true;
+      fetch([id]).then(
+        () => {
+          inFlight = false;
+          if (live) answered();
+        },
+        (err: unknown) => {
+          inFlight = false;
+          if (!live) return;
+          failures++;
+          console.warn(`linearlite could not fetch issue ${id}, retrying in ${backoffMs(failures)} ms`, err);
+          timer = setTimeout(attempt, backoffMs(failures));
+        },
+      );
+    };
+    const off = transport.online(attempt);
+    attempt();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      off();
+    };
+  }
+
+  return { preload, fetchUntilAnswered };
 }
 
 /** Resolves true after `ms`, or false as soon as `signal` aborts. */
@@ -420,16 +456,24 @@ const stillAfter = (ms: number, signal: AbortSignal | undefined) =>
     signal?.addEventListener("abort", aborted, { once: true });
   });
 
-const rowsOf = (s: Snapshot) => s.data as readonly unknown[];
-const syncRow = (s: Snapshot) => s.state?.get("sync") as SyncState | undefined;
+/** What the status bar shows, from the sync row (undefined before the leader wrote it) and the rows in the outbox. */
+export function syncStatus(state: SyncState | undefined, unsynced: number): SyncStatus {
+  if (!state) return { kind: "starting", unsynced };
+  if (!state.online) return { kind: "offline", unsynced };
+  const behind = STREAMS.find((s) => !state.caughtUp[s]);
+  if (behind) return { kind: "syncing", stream: behind, cursor: state.cursors[behind], head: state.head, unsynced };
+  return { kind: "idle", unsynced };
+}
 
-export function openSync(backend: Backend, transport: Transport, threads: ReturnType<typeof threadFetcher>): Sync {
+/** Storage pressure, from the sync row and the bodies and comments in the outbox. */
+export function pressureOf(state: SyncState | undefined, unsent: number): Pressure {
+  return { pending: state?.evict === "asked" || state?.evict === "confirmed", unsent };
+}
+
+export function openSync(backend: Backend, transport: Transport): Sync {
   let leader: Leader | undefined;
   const outbox = outboxOf(backend);
-  const row = observe(backend.collection("sync"));
-  const issues = observe(outbox.issues);
-  const bodies = observe(outbox.bodies);
-  const comments = observe(outbox.comments);
+  const threads = threadFetcher(backend, transport);
   return {
     async lead(signal) {
       if (leader) throw new Error("this model already leads sync");
@@ -447,19 +491,8 @@ export function openSync(backend: Backend, transport: Transport, threads: Return
     async preload(ids, signal) {
       if (ids.length > 0 && (await stillAfter(PRELOAD_DELAY_MS, signal))) await threads.preload(ids);
     },
-    status: fromSnapshots([row, issues, bodies, comments], (sync, issues, bodies, comments): SyncStatus => {
-      const state = syncRow(sync);
-      const unsynced = rowsOf(issues).length + rowsOf(bodies).length + rowsOf(comments).length;
-      if (!state) return { kind: "starting", unsynced };
-      if (!state.online) return { kind: "offline", unsynced };
-      const behind = STREAMS.find((s) => !state.caughtUp[s]);
-      if (behind) return { kind: "syncing", stream: behind, cursor: state.cursors[behind], head: state.head, unsynced };
-      return { kind: "idle", unsynced };
-    }),
-    pressure: fromSnapshots([row, bodies, comments], (sync, bodies, comments) => {
-      const evict = syncRow(sync)?.evict;
-      return { pending: evict === "asked" || evict === "confirmed", unsent: rowsOf(bodies).length + rowsOf(comments).length };
-    }),
+    loadThread: threads.fetchUntilAnswered,
+    outbox,
     confirmEviction: () => backend.transact("sync", [{ id: "sync" }], (row) => (row?.evict === "asked" ? { ...row, evict: "confirmed" } : undefined)),
   };
 }

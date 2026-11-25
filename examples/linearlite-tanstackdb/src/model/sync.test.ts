@@ -7,7 +7,7 @@ import { openKvBackend, type KvBackend } from "../backends/kv.ts";
 import type { StatusCode } from "../domain/model.ts";
 import { memoryServer, memoryTransport, type MemoryServer } from "../server/memory.ts";
 import { openLinearlite, type Linearlite } from "./index.ts";
-import { hold } from "./live.ts";
+import { syncView, until } from "./testing.ts";
 
 type Replica = { readonly db: Db; readonly backend: KvBackend; readonly model: Linearlite };
 
@@ -66,17 +66,17 @@ describe("sync through memoryTransport", () => {
   });
 
   it("shows offline with the unsent edit, then idle once the server is back and has it", async () => {
-    const status = hold(r.model.sync.status);
-    await status.until((s) => s.kind === "idle" && s.unsynced === 0);
+    const view = syncView(r.model);
+    await until(view.status, (s) => s.kind === "idle" && s.unsynced === 0);
     const issue = serverIssues()[1]!;
     server.online = false;
     await r.model.commands.setStatus(issue.id, next(issue.status));
-    await status.until((s) => s.kind === "offline" && s.unsynced === 1);
+    await until(view.status, (s) => s.kind === "offline" && s.unsynced === 1);
     assert.equal(server.rows().issues.get(issue.id)!.status, issue.status);
     server.online = true;
     await r.model.sync.settled();
-    await status.until((s) => s.kind === "idle" && s.unsynced === 0);
-    status.release();
+    await until(view.status, (s) => s.kind === "idle" && s.unsynced === 0);
+    view.release();
     assert.equal(server.rows().issues.get(issue.id)!.status, next(issue.status));
     assert.deepEqual(await replicaIssues(), serverIssues());
   });
@@ -138,16 +138,16 @@ describe("eviction when the storage is full", () => {
     await a.model.sync.preload(ids);
     assert.equal(await cachedBodies(), 150);
 
-    const pressure = hold(b.model.sync.pressure);
+    const view = syncView(b.model);
     // The flush is refused once, lands on the reserve kv releases, and kv asks the leader for space.
     refuse();
     await ingest(a.db);
-    await pressure.until((p) => p.pending);
+    await until(view.pressure, (p) => p.pending);
     assert.equal(await syncRow(b), "asked");
 
     await b.model.sync.confirmEviction();
-    await pressure.until((p) => !p.pending);
-    pressure.release();
+    await until(view.pressure, (p) => !p.pending);
+    view.release();
     assert.equal(await syncRow(a), "idle");
     assert.equal(await cachedBodies(), 0);
     assert.equal((await a.backend.docs.collection("issues").queryIds({})).ids.length, 300, "issues stay");
