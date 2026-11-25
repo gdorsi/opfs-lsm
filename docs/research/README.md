@@ -17,7 +17,7 @@ A note's `Status:` line starts with one of four words:
 |---|---|---|
 | [kv-wal-optimization.md](kv-wal-optimization.md) | shipped, 2026-11-08 | Reading the WAL costs per row, not per byte. One `ArrayBuffer` per batch and ranged `getAll` took a 250,000-row open from 847 to 351 ms. `getAllRecords()` gained nothing. `maxWalBytes` went to 1 MiB. |
 | [conditional-write-round-trips.md](conditional-write-round-trips.md) | shipped, 2026-11-13 | Calling `commit()` early saves about 40 µs a write. Posting rows in 4 ms windows lifted kv `fillsync` from 0.69 to 0.78 of tuned IndexedDB to 0.82 to 0.94. |
-| [open-path-round-trips.md](open-path-round-trips.md) | shipped, 2026-11-22 | A cold open is a chain of 0.3 to 0.9 ms browser calls. Overlapping its steps took a fresh-tab open from 4.99 to 3.78 ms. Not done: run layouts read at open, fewer folder levels, stored file handles. |
+| [open-path-round-trips.md](open-path-round-trips.md) | shipped, 2026-11-22 | A cold open is a chain of 0.3 to 0.9 ms browser calls. Overlapping its steps took a fresh-tab open from 4.99 to 3.78 ms. Not done: fewer folder levels, stored file handles. |
 | [batch-size-caps-prior-art.md](batch-size-caps-prior-art.md) | shipped, 2026-11-11 | Embedded engines cap one write by bytes or memory, never by op count. kv dropped its 10,000-op cap and counts 256 bytes per op in a fixed 8 MiB batch limit. |
 | [hot-path-profile-pass.md](hot-path-profile-pass.md) | rejected, 2026-11-24 | The memtable insert is the only hot spot left on kv writes. A keys array saved about 2% of a write for 135 gzip bytes, so it was rejected. The `sync` write tail at 200,000 issues went to compaction-file-waits.md. |
 
@@ -26,6 +26,7 @@ A note's `Status:` line starts with one of four words:
 | Note | Status | Learning |
 |---|---|---|
 | [coalesced-page-reads.md](coalesced-page-reads.md) | shipped, 2026-11-11 | One read per span of neighbouring pages took a cold `getMany` of 3,000 random ids from 38.8 to 40.7 ms down to 12.6 to 14.6 ms. A read costs about as much as 128 to 256 KiB of extra bytes. |
+| [cold-read-run-metadata.md](cold-read-run-metadata.md) | shipped, 2026-11-25 | A fresh tab's first query waited for each run's 128 KiB tail before it could locate a page. Reading the tails at open only moved the wait. Blocks of 32 KiB and the block indexes in the manifest file made cold goals 11 to 33% faster at 200,000 issues with open unchanged. In the IndexedDB manifest copy the indexes cost 3 ms of open at 200,000 issues. Dexie stays ahead on a cold key lookup, 2.0 against 4.5 ms. |
 | [scan-read-ahead.md](scan-read-ahead.md) | shipped, 2026-11-16 | A cold scan reads ahead in a window that doubles up to 32 pages. The read before the board opened went from 32.6 to 15.6 ms at size `large`. |
 | [page-cache-size.md](page-cache-size.md) | rejected, 2026-11-23 | A 64 MiB cache made random reads at size `large` 2 to 83 times slower, for 15 to 26% less memory at peak. `cacheBytes` stays 256 MiB. |
 | [worker-read-only-handles.md](worker-read-only-handles.md) | rejected, 2026-11-15 | A dedicated WebWorker with read-only sync access handles cut a page read from 160 µs to 20 µs. Only Chromium has those handles, and an open of a database with data got 2.4 to 4.8 ms slower. |
