@@ -268,6 +268,8 @@ export type KvOptions = {
   readonly compactionMemoryBytes?: number;
   /** `--cache-bytes`. */
   readonly cacheBytes?: number;
+  /** `--sync-reads`. */
+  readonly syncReads?: true;
 };
 
 /** One line of `bench/results/<stamp>.jsonl`. One run = one fresh Chrome profile. */
