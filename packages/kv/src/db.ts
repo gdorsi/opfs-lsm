@@ -264,12 +264,12 @@ export interface Db {
   dangerousDestroy(): Promise<void>;
 }
 
+/** Safari 16 to 25 has SharedWorker and OPFS but not `createWritable()`. */
 export function canUseBrowserOpfs(): boolean {
   return (
     typeof SharedWorker !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    !!navigator.storage &&
-    typeof navigator.storage.getDirectory === "function"
+    typeof FileSystemFileHandle !== "undefined" &&
+    !!FileSystemFileHandle.prototype.createWritable
   );
 }
 
@@ -314,7 +314,7 @@ export async function openDb(options: OpenOptions): Promise<Db> {
   });
 }
 
-export const NEEDS_BROWSER = "openDb needs SharedWorker and navigator.storage.getDirectory";
+export const NEEDS_BROWSER = "SharedWorker or createWritable missing";
 
 /** A client of the package SharedWorker for `name`. The handle that takes it closes it. */
 export function workerIngest(name: DbName): IngestClient {

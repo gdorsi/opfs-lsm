@@ -9,21 +9,20 @@ const NAME = "open-policy";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-type Snap = {
-  document: unknown;
-  SharedWorker: unknown;
-  navigator: Navigator;
-};
+const GLOBALS = ["document", "SharedWorker", "FileSystemFileHandle", "navigator"] as const;
+type Global = (typeof GLOBALS)[number];
+type Snap = Record<Global, unknown>;
 
 function snap(): Snap {
   return {
     document: globalThis.document,
     SharedWorker: globalThis.SharedWorker,
+    FileSystemFileHandle: globalThis.FileSystemFileHandle,
     navigator: globalThis.navigator,
   };
 }
 
-function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknown): void {
+function putGlobal(key: Global, value: unknown): void {
   Object.defineProperty(globalThis, key, {
     value,
     configurable: true,
@@ -32,7 +31,7 @@ function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknow
 }
 
 function restore(prev: Snap): void {
-  for (const key of ["document", "SharedWorker", "navigator"] as const) {
+  for (const key of GLOBALS) {
     const value = prev[key];
     if (value === undefined) {
       Reflect.deleteProperty(globalThis, key);
@@ -47,6 +46,10 @@ function installDocument(): void {
   putGlobal("document", Object.assign(new EventTarget(), { nodeType: 9, visibilityState: "visible" }));
 }
 
+function installFileHandle(): void {
+  putGlobal("FileSystemFileHandle", class FileSystemFileHandle { createWritable() {} });
+}
+
 function installCaps(getDirectory: () => Promise<never>): void {
   // An open starts the worker while it looks the folder up, so the stand-in has a port.
   putGlobal(
@@ -55,6 +58,7 @@ function installCaps(getDirectory: () => Promise<never>): void {
       port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
     },
   );
+  installFileHandle();
   putGlobal("navigator", {
     storage: { getDirectory },
   });
@@ -97,6 +101,27 @@ describe("openDb storage policy", () => {
       name: "StorageUnavailableError",
       code: "unavailable",
     });
+  });
+
+  it("rejects and starts no SharedWorker where OPFS files have no createWritable, as in Safari 16 to 25", async () => {
+    installDocument();
+    installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
+    let started = 0;
+    putGlobal(
+      "SharedWorker",
+      class {
+        port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
+        constructor() {
+          started++;
+        }
+      },
+    );
+    await expect(openDb({ name: NAME })).rejects.toThrow("opfs-getDirectory");
+    expect(started).toBe(1);
+
+    putGlobal("FileSystemFileHandle", class FileSystemFileHandle {});
+    await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
+    expect(started).toBe(1);
   });
 
   it("a harness open that names no fs does not get memory either", async () => {
@@ -163,6 +188,7 @@ describe("openDb where an API it needs is there and fails", () => {
         }
       },
     );
+    installFileHandle();
     const folder = { getDirectoryHandle: async () => folder };
     putGlobal("navigator", { storage: { getDirectory: async () => folder } });
 

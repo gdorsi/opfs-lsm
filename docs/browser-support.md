@@ -1,6 +1,6 @@
 # Browser support
 
-`@opfs-lsm/kv` needs SharedWorker, OPFS, IndexedDB and WebAssembly in the page. Where SharedWorker or OPFS is missing or fails to start, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
+`@opfs-lsm/kv` needs SharedWorker, OPFS with `createWritable()`, IndexedDB and WebAssembly in the page. Where SharedWorker or `createWritable()` is missing, SharedWorker or OPFS fails to start, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
 Three APIs set the minimum version in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
@@ -13,7 +13,7 @@ Three APIs set the minimum version in every browser. Everything else kv uses shi
 
 kv is Baseline 2026. [Baseline](https://web.dev/baseline) names the year a feature works in every core browser: Chrome, Edge, Firefox, and Safari, on desktop and on mobile. The last minimum in the table, Chrome 148 on Android, shipped on May 5, 2026.
 
-- Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26.
+- Safari had OPFS from 15.2, but it could only write a file through `createSyncAccessHandle()`, which exists only in a dedicated WebWorker. kv writes SST files from its SharedWorker, so it needs `createWritable()`, added in Safari 26. On Safari 16 to 25, `openDb` rejects with `StorageUnavailableError`.
 - Chrome on Android had no SharedWorker until 148. Samsung Internet has none, so kv does not run there.
 - Android WebView is not supported. MDN lists SharedWorker there from 148, but WebView 154, the version tested, has none, so `openDb` rejects with `StorageUnavailableError` in apps and browsers built on it.
 - `@opfs-lsm/tanstack-db` also calls `Promise.withResolvers()`, which raises its minimum to Chrome and Edge 119, Firefox and Firefox Android 121.
