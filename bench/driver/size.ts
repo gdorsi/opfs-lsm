@@ -6,6 +6,8 @@
  * - after open: plus every emitted file those reference by name (dynamic
  *   imports, the SharedWorker chunk, its imports, `.wasm` assets),
  *   followed transitively. Hashed file names make a name reference exact.
+ * - a row with `over` leaves out the files of that row: what its import adds
+ *   to an app that already has the other.
  *
  * Each file is compressed on its own, as a server sends it.
  */
@@ -45,9 +47,10 @@ export function measureSizes(build: BuildOutput): SizeResult[] {
     return s;
   };
 
-  return SIZE_ROWS.map((row) => {
-    const entry = build.rowEntries.get(row.id);
-    if (!entry) throw new Error(`size row ${row.id}: no entry chunk emitted`);
+  /** The file names a row reaches: at import, and with everything those load later. */
+  const reached = (id: string): { atImport: Set<string>; all: Set<string> } => {
+    const entry = build.rowEntries.get(id);
+    if (!entry) throw new Error(`size row ${id}: no entry chunk emitted`);
     const atImport = new Set<string>();
     const visitStatic = (file: string) => {
       if (atImport.has(file)) return;
@@ -66,18 +69,24 @@ export function measureSizes(build: BuildOutput): SizeResult[] {
       for (const other of names) if (other !== base && text.includes(other)) visitRefs(other);
     };
     for (const f of atImport) visitRefs(f);
+    return { atImport: new Set([...atImport].map((f) => path.basename(f))), all };
+  };
+  const sum = (files: Iterable<string>): Bytes3 => {
+    const t = { raw: 0, gzip: 0, brotli: 0 };
+    for (const f of files) {
+      const s = sizeOf(f);
+      t.raw += s.raw;
+      t.gzip += s.gzip;
+      t.brotli += s.brotli;
+    }
+    return t;
+  };
 
-    const atImportBases = new Set([...atImport].map((f) => path.basename(f)));
-    const sum = (files: Iterable<string>): Bytes3 => {
-      const t = { raw: 0, gzip: 0, brotli: 0 };
-      for (const f of files) {
-        const s = sizeOf(f);
-        t.raw += s.raw;
-        t.gzip += s.gzip;
-        t.brotli += s.brotli;
-      }
-      return t;
-    };
+  return SIZE_ROWS.map((row) => {
+    const own = reached(row.id);
+    const had = row.over ? reached(row.over).all : new Set<string>();
+    const atImport = new Set([...own.atImport].filter((f) => !had.has(f)));
+    const all = new Set([...own.all].filter((f) => !had.has(f)));
     if (row.kv) {
       const wasm = [...all].filter((f) => f.endsWith(".wasm"));
       const worker = [...all].filter((f) => f.startsWith("shared-worker"));
@@ -90,11 +99,11 @@ export function measureSizes(build: BuildOutput): SizeResult[] {
       note: row.note,
       ...(row.budget !== undefined ? { budget: row.budget } : {}),
       ...(row.importBudget !== undefined ? { importBudget: row.importBudget } : {}),
-      atImport: sum(atImportBases),
+      atImport: sum(atImport),
       afterOpen: sum(all),
       files: [...all].sort().map((name) => ({
         name,
-        deferred: !atImportBases.has(name),
+        deferred: !atImport.has(name),
         raw: sizeOf(name).raw,
         brotli: sizeOf(name).brotli,
       })),

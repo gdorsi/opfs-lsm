@@ -75,6 +75,15 @@ describe("public API", () => {
     expect(exportFile("@opfs-lsm/kv/tuple").endsWith("/dist/tuple.js")).toBe(true);
   });
 
+  it("resolves the sync-reads entry, whose value openDb takes as syncReads", async () => {
+    const entry = exportFile("@opfs-lsm/kv/sync-reads");
+    expect(entry.endsWith("/dist/opfs/sync-reads.js")).toBe(true);
+    const { syncReads } = (await import(entry)) as typeof import("@opfs-lsm/kv/sync-reads");
+    const options: import("@opfs-lsm/kv").OpenOptions = { name: NAME, syncReads };
+    // No OPFS here, so the open fails as it does without the option.
+    await expect(api.openDb(options)).rejects.toThrow("openDb needs SharedWorker");
+  });
+
   it("runs put, get, batch, update, view, changes, ingest, and close", async () => {
     const fs = new testing.MemoryFs();
     const db = await testing.openHarnessDb({

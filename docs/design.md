@@ -14,8 +14,7 @@ SharedWorker, the host, turns the log into SST files and compacts them.
 The design ranks its goals in this order:
 1. Read and write latency.
 2. Consistency. Every read sees the state after one prefix of the log.
-3. Persistence. An acked write should survive, but the engine trades this away before the first
-   two.
+3. Persistence. An acked write should survive, but the engine gives this up before the first two.
 
 This document covers the kv engine only. The packages built on it are not described here.
 
@@ -193,7 +192,8 @@ block it enters, it doubles the window, from 1 block to 32, and asks for every b
 past it. One cache per tab holds them, capped by `openDb({ cacheBytes })`, 256 MiB by default.
 
 A read is synchronous while its bytes are cached. Otherwise the caller awaits the load and reads
-again, keeping what it read outside the cap. A value over the cap is never cached. A point get:
+again, keeping what it read outside the cap. A value over the cap is never cached. With
+`openDb({ syncReads })` a load does not wait either ([sync-reads.md](sync-reads.md)). A point get:
 
 1. Rejects the key if it falls outside the first and last keys of the run.
 2. Rejects it if the bloom filter is cached and says no.
@@ -424,8 +424,7 @@ drops tombstones.
 ### Merging
 
 A step reads its inputs as sources, newest first. Each L0 run is one source. The overlapped runs
-of the next level, which are disjoint, are one source together. A step has at most `maxSources`
-sources.
+of the next level, which are disjoint, are one source together. `maxSources` caps the sources.
 
 The merge is a session that the host pumps. The session owns every offset. Each pump stops
 between two keys and asks the host for one thing:
@@ -677,6 +676,7 @@ of OPFS, independently.
 | Filter a scan inside a block | Tab main thread | wasm |
 | Fold the WAL into L0, encode SSTs | SharedWorker | TypeScript applies range deletes, wasm sorts and encodes |
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
+| Read a run file, with `syncReads` | Dedicated worker of the page | TypeScript |
 
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
 `openDb` rejects with `StorageUnavailableError` when it does not load.

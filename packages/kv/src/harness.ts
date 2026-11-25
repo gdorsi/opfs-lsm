@@ -61,7 +61,7 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
     parent?.catch(() => undefined);
     return (name) => {
       if (!options.fs && !parent) throw new StorageUnavailableError(NEEDS_BROWSER);
-      const fs = options.fs ?? openBrowserReadFs(name, parent!);
+      const fs = options.fs ?? options.syncReads?.readFs(name, parent!) ?? openBrowserReadFs(name, parent!);
       return {
         fs: options.wrapFs?.(fs) ?? fs,
         ingest: options.ingest ?? workerIngest(name),

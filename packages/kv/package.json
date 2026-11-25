@@ -25,6 +25,7 @@
   "type": "module",
   "sideEffects": [
     "./dist/host/shared-worker.js",
+    "./dist/opfs/sync-read-worker.js",
     "./dist/testing.js"
   ],
   "exports": {
@@ -47,6 +48,11 @@
       "opfs-lsm-source": "./src/host/shared-worker.ts",
       "types": "./dist/host/shared-worker.d.ts",
       "import": "./dist/host/shared-worker.js"
+    },
+    "./sync-reads": {
+      "opfs-lsm-source": "./src/opfs/sync-reads.ts",
+      "types": "./dist/opfs/sync-reads.d.ts",
+      "import": "./dist/opfs/sync-reads.js"
     }
   },
   "files": [

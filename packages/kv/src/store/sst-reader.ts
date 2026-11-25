@@ -28,6 +28,10 @@ type RunFile = {
   readonly size: number;
   /** Exactly `length` bytes at `offset`. */
   read(offset: number, length: number): Promise<Uint8Array>;
+  /** As `OpenFile.readSync`. */
+  readSync?(offset: number, length: number): Uint8Array | undefined;
+  /** As `OpenFile.syncReady`. */
+  syncReady?(): boolean;
 };
 
 /** A run file whose bytes are already in memory, for tests and benches. */
@@ -40,8 +44,8 @@ export function bytesFile(buf: Uint8Array): RunFile {
  * manifest entry records, so no read waits for anything but the block it
  * needs. It holds no bytes of the file itself: its blocks and its Bloom
  * filter are entries in `cache`, looked up per call, so the cache's budget
- * covers them. Every read is sync while its bytes are resident and returns
- * a `Miss` otherwise.
+ * covers them. Every read is sync while its bytes are resident, or while
+ * the file answers `readSync`, and returns a `Miss` otherwise.
  */
 export class SstReader {
   private readonly runId: number;
@@ -180,7 +184,8 @@ export class SstReader {
           return cur;
         }
         // Not on the first block, so a scan that ends there reads no further.
-        if (entered) {
+        // Not on a file that answers with no wait: there is no wait to save.
+        if (entered && !this.file.syncReady?.()) {
           ahead ??= readAhead((q) => this.block(q, "probation"), lastBlock(index, bounds, reverse), step);
           ahead.extend(b);
         }
@@ -217,14 +222,15 @@ export class SstReader {
   private bloom(): BloomFilter | undefined {
     // One read of the rest of the file past the blocks: the filter, the index and the footer.
     // Skips the CRC, which would cost a pass over the whole file: compaction checks it.
-    const bloom = this.cache.lookup(metaKey(this.runId), "meta", async (): Promise<Sized<BloomFilter>> => {
+    const bloom = this.cache.lookup(metaKey(this.runId), "meta", () => {
       const { size } = this.file;
       const from = this.index.blockStart[this.index.sepEnd.length]!;
-      const tail = await this.read(from, size - from);
-      const { dataLen, indexStart, bloomHashCount: hashCount } = readFooter(tail, size);
-      if (dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
-      const bits = tail.slice(0, indexStart - from);
-      return { value: { bits, hashCount }, bytes: bits.byteLength };
+      return this.load(from, size - from, (tail): Sized<BloomFilter> => {
+        const { dataLen, indexStart, bloomHashCount: hashCount } = readFooter(tail, size);
+        if (dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
+        const bits = tail.slice(0, indexStart - from);
+        return { value: { bits, hashCount }, bytes: bits.byteLength };
+      });
     });
     if (!(bloom instanceof Miss)) return bloom;
     bloom.ready.catch(() => undefined);
@@ -232,13 +238,30 @@ export class SstReader {
   }
 
   private block(b: number, admit: Admit): Maybe<BlockBytes> {
-    return this.cache.lookup(pageKey(this.runId, b), admit, async (): Promise<Sized<BlockBytes>> => {
+    return this.cache.lookup(pageKey(this.runId, b), admit, () => {
       const { blockStart } = this.index;
       const from = blockStart[b]!;
       const bytes = blockStart[b + 1]! - from;
-      const buf = await this.read(from, bytes);
-      return { value: blockBytes(buf, new DataView(buf.buffer, buf.byteOffset, buf.byteLength), 0, bytes), bytes };
+      return this.load(from, bytes, (buf): Sized<BlockBytes> => ({
+        value: blockBytes(buf, new DataView(buf.buffer, buf.byteOffset, buf.byteLength), 0, bytes),
+        bytes,
+      }));
     });
+  }
+
+  /**
+   * What `decode` makes of `length` bytes at `offset`: at once when the file
+   * answers with no wait, and once they are read otherwise. A failure
+   * rejects either way, so a load fails the same whichever way its bytes came.
+   */
+  private load<T>(offset: number, length: number, decode: (bytes: Uint8Array) => T): T | Promise<T> {
+    const now = this.sized ? this.file.readSync?.(offset, length) : undefined;
+    if (!now) return (async () => decode(await this.read(offset, length)))();
+    try {
+      return decode(now);
+    } catch (err) {
+      return Promise.reject(err);
+    }
   }
 
   /**

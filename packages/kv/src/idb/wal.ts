@@ -233,14 +233,24 @@ export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
   return rowValid(validAt, seq) ? ops : [];
 }
 
+/** What a connection does when another context's upgrade or delete asks it to close, or the browser closes it. */
+type AskedToClose = {
+  /**
+   * Runs first. The connection closes once what it returns settles, either
+   * way, so the upgrade or delete waits for it. With no hook, or one that
+   * returns undefined, the connection closes inside the event.
+   */
+  readonly beforeClose?: () => Promise<void> | undefined;
+  /** Runs once the connection closed. */
+  readonly onAskedToClose?: () => void;
+};
+
 /** How an open treats a database that does not exist. */
-type OpenHow = {
+type OpenHow = AskedToClose & {
   /** Makes the stores of a database the open creates. Without it, such an open aborts its upgrade and resolves undefined. */
   readonly create?: (db: IDBDatabase) => void;
   /** Asks for an upgrade to this version (`destroyDb`'s fence). Every other open is version-less. */
   readonly version?: number;
-  /** Runs once another context's upgrade or delete, or the browser, closed the connection. */
-  readonly onAskedToClose?: () => void;
 };
 
 /**
@@ -248,7 +258,8 @@ type OpenHow = {
  * whatever version a fence left it. An open without `create` that would
  * create the database aborts its upgrade, so the browser drops it, and
  * resolves undefined. The connection closes on `versionchange`, so it never
- * blocks another context's upgrade or delete.
+ * blocks another context's upgrade or delete for longer than `beforeClose`
+ * takes.
  */
 export function openDatabase(name: string, how: OpenHow): Promise<IDBDatabase | undefined> {
   return new Promise((resolve, reject) => {
@@ -264,8 +275,13 @@ export function openDatabase(name: string, how: OpenHow): Promise<IDBDatabase | 
       const db = req.result;
       // `close` fires only when the browser closed the connection by force, as clearing site data does.
       db.onversionchange = db.onclose = () => {
-        db.close();
-        how.onAskedToClose?.();
+        const close = () => {
+          db.close();
+          how.onAskedToClose?.();
+        };
+        const before = how.beforeClose?.();
+        if (before) void before.then(close, close);
+        else close();
       };
       resolve(db);
     };
@@ -551,12 +567,12 @@ export type TabWal = IdBWal & {
 /**
  * The tab's open, the one open that creates the database. The connection
  * closes when another context upgrades or deletes the database
- * (`destroyDb`), then `onAskedToClose` runs, so the handle closes itself.
- * `makeRoom` has the host release the reserve. With it, an append the
- * browser refuses for lack of space runs once more.
+ * (`destroyDb`), as `asked` says, and its `onAskedToClose` has the handle
+ * close itself. `makeRoom` has the host release the reserve. With it, an
+ * append the browser refuses for lack of space runs once more.
  */
-async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?: () => Promise<void>): Promise<TabWal> {
-  let connection = (await openDatabase(idbName(dbName), { create: createWalStores, ...(onAskedToClose ? { onAskedToClose } : {}) }))!;
+async function openTabWal(dbName: DbName, asked: AskedToClose = {}, makeRoom?: () => Promise<void>): Promise<TabWal> {
+  let connection = (await openDatabase(idbName(dbName), { create: createWalStores, ...asked }))!;
   /** The group whose transaction is open, from its creation to its end. */
   let open: Group | undefined;
   /** Appends that arrived after `open` went inactive: the next group. */
@@ -595,7 +611,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   }
 
   async function reconnect(): Promise<void> {
-    const fresh = await openDatabase(idbName(dbName), onAskedToClose ? { onAskedToClose } : {});
+    const fresh = await openDatabase(idbName(dbName), asked);
     if (!fresh) throw new ClosedError("database was destroyed");
     const spent = connection;
     connection = fresh;

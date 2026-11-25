@@ -73,6 +73,26 @@ describe("page cache", () => {
     expect(cacheUsage(cache).resident).toBeLessThanOrEqual(32_000);
   });
 
+  it("a load that answers with no wait makes its value resident, and the lookup does not miss", () => {
+    const cache = new PageCache(100_000);
+    expect(cache.lookup(pageKey(0, 7), "main", () => ({ value: "no wait", bytes: 1_000 }))).toBe("no wait");
+    expect(cacheUsage(cache)).toMatchObject({ resident: 1_000, inFlight: 0 });
+    // Resident now, so no load runs for it.
+    expect(cache.lookup(pageKey(0, 7), "main", () => ({ value: "read again", bytes: 1_000 }))).toBe("no wait");
+    expect(cacheUsage(cache).resident).toBe(1_000);
+  });
+
+  it("a load that waits is a miss, and a lookup while it is out shares it", async () => {
+    const cache = new PageCache(100_000);
+    const miss = cache.lookup(pageKey(0, 7), "main", async () => ({ value: "waited", bytes: 1_000 }));
+    expect(miss).toBeInstanceOf(Miss);
+    // No second load for the key, not even one that would answer with no wait.
+    expect(cache.lookup(pageKey(0, 7), "main", () => ({ value: "no wait", bytes: 1_000 }))).toBeInstanceOf(Miss);
+    expect(await (miss as Miss).ready).toEqual([[pageKey(0, 7), "waited"]]);
+    expect(cache.lookup(pageKey(0, 7), "main", () => ({ value: "read again", bytes: 1_000 }))).toBe("waited");
+    expect(cacheUsage(cache).resident).toBe(1_000);
+  });
+
   it("drops a run's entries, and a load that lands after the drop", async () => {
     const { cache, fetch, isResident } = harness(100_000);
     await fetch(pageKey(3, 0), "main", 1_000);
