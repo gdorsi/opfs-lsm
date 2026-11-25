@@ -502,7 +502,8 @@ class DemandRun {
   private readonly settle = (): void => {
     if (--this.unsettled > 0) return;
     // TanStack takes each load's result in callbacks that run after this one, so the eviction waits a macrotask.
-    if (this.evictOwed) setTimeout(() => this.evict());
+    // Loads that settle in one task each queue a timer, and the first to run leaves nothing for the rest.
+    if (this.evictOwed) setTimeout(() => this.evictOwed && this.evict());
     if (!this.changedMidLoad) return;
     this.changedMidLoad = false;
     if (this.phase.kind === "live") this.p.invalidateLoadedSubsets();
