@@ -3,11 +3,13 @@
  * (incl. tombstones), and an SST version a range delete covers reads as
  * absent. Runs against the real pointGet over a one-run level.
  *
- * Then every pair of levels, each run cold, with only its layout loaded, or
- * with its page loaded: a cold get walks past a level that misses its
- * layout, and the newer level still answers before the older one.
+ * Then every pair of levels, each run cold, with only its Bloom filter
+ * loaded, with only its block loaded (a filter that never loads), or with
+ * both: a get walks past a level it reads without its filter, and the newer
+ * level still answers before the older one.
  */
-import { encodeSstRef, sstKeyRange } from "../../tests/oracle/sst-ref.js";
+import { encodeSstRef, sstBlockIndex, sstRunEnd } from "../../tests/oracle/sst-ref.js";
+import { cacheUsage, loadsDone } from "../../tests/runs.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
 import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
@@ -49,7 +51,7 @@ function readers(kind: Kind): RunLevel[] {
           seq: SST_SEQ,
         };
   const body = encodeSstRef([entry]);
-  return runLevels(["l0/1-1.sst"], [new SstReader(bytesFile(body), new PageCache(), sstKeyRange(body))]);
+  return runLevels(["l0/1-1.sst"], [new SstReader(bytesFile(body), new PageCache(), sstRunEnd(body))]);
 }
 
 function marks(mark: Mark): Marks {
@@ -101,21 +103,37 @@ for (const mem of KINDS) {
   }
 }
 
-/** How much of a run is loaded before the get. */
-type Warmth = "cold" | "layout" | "page";
-const WARMTHS: Warmth[] = ["cold", "layout", "page"];
-/** Past every key of a run: a get of it loads the layout and no page. */
-const PAST = new Uint8Array([3]);
+/** What of a run is loaded before the get. With "block" its Bloom filter never loads: the read of its tail fails. */
+type Warmth = "cold" | "filter" | "block" | "both";
+const WARMTHS: Warmth[] = ["cold", "filter", "block", "both"];
+/** Before every key of a run: a get of it starts the load of the Bloom filter and reads no block. */
+const BEFORE = new Uint8Array(0);
 
-/** A run holding `kind` at KEY; a miss holds the keys around it, so the get reads its Bloom filter. */
+/** A run holding `kind` at KEY; a miss holds the keys around it, so the get asks its Bloom filter or reads its block. */
 async function run(seq: number, kind: Kind, warmth: Warmth): Promise<SstReader> {
   const entries =
     kind === "miss"
       ? [0, 2].map((k) => ({ kind: "put" as const, key: new Uint8Array([k]), value: A, seq }))
       : [kind === "tomb" ? { kind: "del" as const, key: KEY, seq } : { kind: "put" as const, key: KEY, value: kind === "valueA" ? A : B, seq }];
   const body = encodeSstRef(entries);
-  const reader = new SstReader(bytesFile(body), new PageCache(), sstKeyRange(body));
-  if (warmth !== "cold") await untilHit(() => reader.get(warmth === "layout" ? PAST : KEY));
+  const end = sstRunEnd(body);
+  const index = sstBlockIndex(body);
+  const blocksEnd = index.blockStart[index.sepEnd.length]!;
+  const file = bytesFile(body);
+  const read = (offset: number, length: number) =>
+    warmth === "block" && offset >= blocksEnd ? Promise.reject(new Error("tail unreadable")) : file.read(offset, length);
+  const cache = new PageCache();
+  const reader = new SstReader({ size: file.size, read }, cache, end);
+  if (warmth !== "cold") await untilHit(() => reader.get(warmth === "filter" ? BEFORE : KEY));
+  // A get does not wait for the filter it started loading.
+  await loadsDone(cache);
+  const { resident, metadata } = cacheUsage(cache);
+  const filter = metadata > 0;
+  const block = resident > metadata;
+  if (filter !== (warmth === "filter" || warmth === "both") || block !== (warmth === "block" || warmth === "both")) {
+    console.error(`FAIL setup: a ${warmth} run has filter=${filter} block=${block}`);
+    process.exit(1);
+  }
   return reader;
 }
 
@@ -139,4 +157,4 @@ for (const newer of KINDS) {
     }
   }
 }
-console.log(`PASS WalOverSst — ${n} triples and ${pairs} two-level cold gets on real pointGet`);
+console.log(`PASS WalOverSst — ${n} triples and ${pairs} two-level gets on real pointGet`);

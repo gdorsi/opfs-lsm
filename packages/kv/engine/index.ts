@@ -110,7 +110,8 @@ export function merge_open(
 /**
  * Run the session to its next stop. The result holds the stop's bytes:
  * demand records for NEED, output bytes for WRITE (in the session's own
- * buffer), a run head and keys for RUN_END, nothing for YIELD and DONE.
+ * buffer), a run head, keys and index rows for RUN_END, nothing for YIELD
+ * and DONE.
  */
 export function merge_pump(): i32 {
   show(0, 0);
@@ -126,7 +127,7 @@ export function merge_pump(): i32 {
     result.reserve(16);
     result.len = 16;
     s.ended.storeHead(result.ptr);
-    s.ended.appendKeys(result);
+    s.ended.appendRest(result);
     show(result.ptr, result.len);
   }
   return stop;

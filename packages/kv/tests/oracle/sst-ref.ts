@@ -8,8 +8,10 @@ import {
   RecordWalker,
   SST_FOOTER_BYTES,
   type BlockBytes,
+  type BlockIndex,
   type EncodedRun,
   type KeyRange,
+  type RunEnd,
   type SstEntry,
   type SstFooter,
 } from "../../src/store/sst.js";
@@ -28,7 +30,7 @@ const TAG_DEL = 2;
 const OFFSET_STRIDE = 4;
 
 /** Target encoded size of one data block. */
-export const SST_BLOCK_TARGET = 4 * 1024;
+export const SST_BLOCK_TARGET = 32 * 1024;
 
 function offsetTableBytes(count: number): number {
   return count > 1 ? 2 * Math.floor((count - 1) / OFFSET_STRIDE) : 0;
@@ -40,6 +42,40 @@ type BlockIndexEntry = {
   offset: number;
   length: number;
 };
+
+/** What a reader keeps of the index: each block's start, and the shortest prefix of its first key above the last key before it. */
+function blockIndexOf(index: readonly BlockIndexEntry[]): BlockIndex {
+  const seps = index.map((ix, i) => (i === 0 ? ix.firstKey : ix.firstKey.subarray(0, commonPrefix(index[i - 1]!.lastKey, ix.firstKey) + 1)));
+  const sepEnd = new Uint32Array(index.length);
+  let total = 0;
+  seps.forEach((sep, i) => (sepEnd[i] = total += sep.byteLength));
+  const sepBytes = new Uint8Array(total);
+  seps.forEach((sep, i) => sepBytes.set(sep, sepEnd[i]! - sep.byteLength));
+  const last = index[index.length - 1];
+  return { sepBytes, sepEnd, blockStart: Uint32Array.from([...index.map((ix) => ix.offset), last ? last.offset + last.length : 0]) };
+}
+
+/**
+ * `index` as a manifest records it: u32 blocks, each block's separator length
+ * and byte length as varints, the separators, then a CRC-32. Written from the decoded
+ * index, so a test checks `encodeIndex` and `decodeIndex` against it.
+ */
+export function indexBlob(index: BlockIndex): Uint8Array {
+  const { sepBytes, sepEnd, blockStart } = index;
+  const head = [...new Uint8Array(Uint32Array.of(sepEnd.length).buffer)];
+  sepEnd.forEach((end, b) => {
+    for (let v of [end - (sepEnd[b - 1] ?? 0), blockStart[b + 1]! - blockStart[b]!]) {
+      for (; v >= 0x80; v = Math.floor(v / 0x80)) head.push((v & 0x7f) | 0x80);
+      head.push(v);
+    }
+  });
+  const end = head.length + sepBytes.byteLength;
+  const out = new Uint8Array(end + 4);
+  out.set(head);
+  out.set(sepBytes, head.length);
+  new DataView(out.buffer).setUint32(end, crc32(out.subarray(0, end)), true);
+  return out;
+}
 
 /**
  * Upper bound on an encoded record: tag, seq, and u32 lengths. On-disk
@@ -256,6 +292,7 @@ export function encodeRunRef(
     end: {
       bytes: out.byteLength,
       ...(first && last && { range: { smallest: first.key.slice(), largest: last.key.slice() } }),
+      index: indexBlob(blockIndexOf(index)),
     },
   };
 }
@@ -263,6 +300,22 @@ export function encodeRunRef(
 /** `encodeRunRef`'s bytes. */
 export function encodeSstRef(entries: readonly SstEntry[], blockTarget = SST_BLOCK_TARGET): Uint8Array {
   return encodeRunRef(entries, blockTarget).body;
+}
+
+/** A run's footer as `readFooter` checks it, with the fields only this reference reads. */
+export type FooterRef = SstFooter & {
+  entryCount: number;
+  blockCount: number;
+  /** Where the footer starts, which is also where the index ends. */
+  indexEnd: number;
+};
+
+/** `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run, as for `readFooter`. */
+export function footerRef(tail: Uint8Array, fileSize: number): FooterRef {
+  const f = readFooter(tail, fileSize);
+  const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  const at = tail.byteLength - SST_FOOTER_BYTES;
+  return { ...f, entryCount: view.getUint32(at, true), blockCount: view.getUint32(at + 4, true), indexEnd: fileSize - SST_FOOTER_BYTES };
 }
 
 type BlockLayout = {
@@ -279,7 +332,7 @@ type BlockLayout = {
 };
 
 function parseFooter(buf: Uint8Array): BlockLayout {
-  const f = readFooter(buf, buf.byteLength);
+  const f = footerRef(buf, buf.byteLength);
   return {
     view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
     crcOff: f.indexEnd + 28,
@@ -329,7 +382,7 @@ function readBlockIndex(
  * bytes from `footer.dataLen` to its end. Encoders write blocks back to back
  * from offset 0 and a merge reads them that way, so the index must agree.
  */
-export function blockLengths(meta: Uint8Array, footer: SstFooter): number[] {
+export function blockLengths(meta: Uint8Array, footer: FooterRef): number[] {
   const view = new DataView(meta.buffer, meta.byteOffset, meta.byteLength);
   const index = readBlockIndex(meta, view, footer.indexStart - footer.dataLen, footer.indexEnd - footer.dataLen, footer.blockCount);
   let next = 0;
@@ -384,6 +437,12 @@ export function decodeSst(buf: Uint8Array): SstEntry[] {
   return out;
 }
 
+/** The block index of a whole run file, read from its tail. Encoders report the same index, encoded as `indexBlob` does, in `RunEnd`. */
+export function sstBlockIndex(buf: Uint8Array): BlockIndex {
+  const meta = parseFooter(buf);
+  return blockIndexOf(readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount));
+}
+
 /**
  * The smallest and largest key of a whole run file, read from its index, or
  * undefined for an empty run. Encoders report the same range in `RunEnd`.
@@ -395,6 +454,15 @@ export function sstKeyRange(buf: Uint8Array): KeyRange | undefined {
   const first = index[0];
   const last = index[index.length - 1];
   return first && last ? { smallest: first.firstKey, largest: last.lastKey } : undefined;
+}
+
+/**
+ * What an encoder reports at the end of a whole run file, read back from its
+ * tail: what the run's manifest entry records, for a reader of bare bytes.
+ */
+export function sstRunEnd(buf: Uint8Array): RunEnd {
+  const range = sstKeyRange(buf);
+  return { bytes: buf.byteLength, ...(range && { range }), index: indexBlob(sstBlockIndex(buf)) };
 }
 
 /** Point lookup in a decoded (sorted) SST. */

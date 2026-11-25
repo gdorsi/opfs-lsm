@@ -5,10 +5,10 @@ import { Miss, untilHit, type LayerCursor, type ScanBounds } from "../src/store/
 import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { scanStep } from "../src/view.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { encodeSstRef, sstKeyRange } from "./oracle/sst-ref.js";
+import { encodeSstRef, sstBlockIndex, sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { entries, ownedEntry, readerOfBytes, runGet } from "./runs.js";
+import { entries, loadsDone, ownedEntry, readerOfBytes, runGet } from "./runs.js";
 import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 const enc = new TextEncoder();
@@ -48,10 +48,17 @@ function layoutBodies() {
   return { paths: layout().paths, bodies: [...l0, ...l1, ...l2] };
 }
 
-/** A reader of `body` that calls `counted` for each file read. */
-function countedReader(body: Uint8Array, counted: () => void): SstReader {
+/** The file reads of one run: of its blocks, and of its tail, where its Bloom filter is. */
+type Reads = { blocks: number; tails: number };
+
+/** A reader of `body` that counts each file read in `reads`. */
+function countedReader(body: Uint8Array, reads: Reads, cache = new PageCache()): SstReader {
   const file = bytesFile(body);
-  return new SstReader({ size: file.size, read: (offset, length) => (counted(), file.read(offset, length)) }, new PageCache(), sstKeyRange(body));
+  const end = sstRunEnd(body);
+  const index = sstBlockIndex(body);
+  const dataEnd = index.blockStart[index.sepEnd.length]!;
+  const read = (offset: number, length: number) => (reads[offset < dataEnd ? "blocks" : "tails"]++, file.read(offset, length));
+  return new SstReader({ size: file.size, read }, cache, end);
 }
 
 function range(from: number, to: number, step: number): number[] {
@@ -112,30 +119,37 @@ describe("runLevels", () => {
     }
   });
 
-  it("a cold get starts the layout read of every level whose range holds the key at once", () => {
+  it("a cold get starts at once the read of the key's block in every level whose range holds the key", () => {
     for (let i = -2; i < 125; i++) {
       const { paths, bodies } = layoutBodies();
-      const reads = bodies.map(() => 0);
-      const readers = bodies.map((body, r) => countedReader(body, () => reads[r]!++));
+      const reads = bodies.map((): Reads => ({ blocks: 0, tails: 0 }));
+      const readers = bodies.map((body, r) => countedReader(body, reads[r]!));
       const got = latestSstEntry(runLevels(paths, readers), key(i));
       const holding = bodies.map((body) => {
-        const { smallest, largest } = sstKeyRange(body)!;
+        const { smallest, largest } = sstRunEnd(body).range!;
         return compareBytes(smallest, key(i)) <= 0 && compareBytes(key(i), largest) <= 0 ? 1 : 0;
       });
       expect(got instanceof Miss, `key ${i}`).toBe(holding.includes(1));
-      expect(reads, `key ${i}`).toEqual(holding);
+      expect(reads, `key ${i}`).toEqual(holding.map((n) => ({ blocks: n, tails: n })));
     }
   });
 
-  it("a cold get of a key the newest level holds reads no page of an older level", async () => {
-    const versions = ["new", "mid", "old"].map((tag) => encodeSstRef([{ kind: "put", key: key(1), value: enc.encode(tag), seq: 1 }], 64));
-    const reads = versions.map(() => 0);
-    const readers = versions.map((body, r) => countedReader(body, () => reads[r]!++));
+  it("with its Bloom filters resident, a get of a key the newest level holds reads no block of an older level", async () => {
+    const versions = ["new", "mid", "old"].map((tag) =>
+      encodeSstRef(range(0, 40, 1).map((i) => ({ kind: "put" as const, key: key(i), value: enc.encode(tag), seq: 1 })), 64),
+    );
+    const cache = new PageCache();
+    const reads = versions.map((): Reads => ({ blocks: 0, tails: 0 }));
+    const readers = versions.map((body, r) => countedReader(body, reads[r]!, cache));
     const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst", "l1/c1.0-0.sst"], readers);
-    const got = await untilHit(() => ownedEntry(latestSstEntry(levels, key(1)), key(1)));
+    // A get of a key in another block leaves every filter resident and the block of `key(30)` unread.
+    for (const reader of readers) await runGet(reader, key(0));
+    await loadsDone(cache);
+    expect(reads).toEqual(versions.map(() => ({ blocks: 1, tails: 1 })));
+
+    const got = await untilHit(() => ownedEntry(latestSstEntry(levels, key(30)), key(30)));
     expect(got?.kind === "put" && dec.decode(got.value)).toBe("new");
-    expect(reads[0]).toBe(2);
-    for (const older of reads.slice(1)) expect(older).toBeLessThanOrEqual(1);
+    expect(reads.map((r) => r.blocks)).toEqual([2, 1, 1]);
   });
 
   it("an older run that fails to load fails only the reads that reach it", async () => {
@@ -144,7 +158,7 @@ describe("runLevels", () => {
     const broken = new Error("unreadable run");
     const open = () => runLevels(["l0/2-2.sst", "l1/c1.0-0.sst"], [
       readerOfBytes(newer),
-      new SstReader({ size: older.byteLength, read: () => Promise.reject(broken) }, new PageCache(), sstKeyRange(older)),
+      new SstReader({ size: older.byteLength, read: () => Promise.reject(broken) }, new PageCache(), sstRunEnd(older)),
     ]);
     const levels = open();
     const got = await untilHit(() => ownedEntry(latestSstEntry(levels, key(1)), key(1)));
@@ -215,7 +229,7 @@ describe("a scan under range deletes", () => {
           ...(b.end === undefined ? {} : { endExclusive: key(b.end) }),
         };
         const cache = new PageCache();
-        const readers = runs.map((r) => new SstReader(bytesFile(r.body), cache, sstKeyRange(r.body), r.marksThrough));
+        const readers = runs.map((r) => new SstReader(bytesFile(r.body), cache, sstRunEnd(r.body), r.marksThrough));
         const levels = runLevels(runs.map((r) => r.path), readers);
         passedOver += readers.filter((r) => r.range && coversRun(marks, { range: r.range, marksThrough: r.marksThrough }, bounds)).length;
         const patterns = [enc.encode(pattern)];

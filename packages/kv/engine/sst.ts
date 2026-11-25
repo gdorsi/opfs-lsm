@@ -14,7 +14,7 @@ const VERSION: u32 = 2;
 export const FOOTER_BYTES: usize = 40;
 export const TAG_PUT: u8 = 1;
 export const TAG_DEL: u8 = 2;
-export const BLOCK_TARGET: usize = 4 << 10;
+export const BLOCK_TARGET: usize = 32 << 10;
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after the
  * first, so a get binary-searches them and walks at most
@@ -90,6 +90,8 @@ export class RunEnd {
   /** The smallest and largest key. Both are empty when the run has no entries, and also when its only key is empty, so `entries` says which. */
   firstKey: Bytes = new Bytes();
   lastKey: Bytes = new Bytes();
+  /** The block index rows, as the run stores them. */
+  index: Bytes = new Bytes();
 
   /** Write the run head (abi.md, "Wire formats") at `at`. */
   storeHead(at: usize): void {
@@ -99,14 +101,17 @@ export class RunEnd {
     store<u32>(at, <u32>this.lastKey.len, 12);
   }
 
-  appendKeys(out: Bytes): void {
+  /** Append what follows a run head: the two keys, then the index rows. */
+  appendRest(out: Bytes): void {
     out.append(this.firstKey.ptr, this.firstKey.len);
     out.append(this.lastKey.ptr, this.lastKey.len);
+    out.append(this.index.ptr, this.index.len);
   }
 
   free(): void {
     this.firstKey.free();
     this.lastKey.free();
+    this.index.free();
     heap.free(changetype<usize>(this));
   }
 }
@@ -241,6 +246,7 @@ export class Writer {
     end.size = this.sent + 12;
     end.firstKey.swap(this.firstKey);
     end.lastKey.swap(this.lastKey);
+    end.index.swap(this.index);
     this.firstKey.clear();
     this.lastKey.clear();
     this.first.clear();
@@ -435,7 +441,7 @@ export function encodeSst(input: usize, len: usize, out: Bytes): i32 {
   const end = new RunEnd();
   writer.finish(out, end);
   end.storeHead(out.ptr);
-  end.appendKeys(out);
+  end.appendRest(out);
   end.free();
   writer.free();
   order.free();

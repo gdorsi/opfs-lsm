@@ -2,23 +2,39 @@ import { describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeSstRef, sstGet, sstKeyRange } from "./oracle/sst-ref.js";
-import { PAGE_TARGET, SstReader } from "../src/store/sst-reader.js";
+import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstBlockIndex, sstGet, sstRunEnd } from "./oracle/sst-ref.js";
+import { SstReader } from "../src/store/sst-reader.js";
 import { coalesceReads } from "../src/opfs/coalesce-reads.js";
-import { bytesFile, cacheUsage, drain, runGet } from "./runs.js";
+import { bytesFile, cacheUsage, drain, loadsDone, runGet } from "./runs.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
 
 class Reads {
   count = 0;
   bytes = 0;
+  /** The reads among `count` that start past the run's blocks: its Bloom filter, index and footer. */
+  tails = 0;
 }
 
-function openRun(body: Uint8Array, cache: PageCache, reads = new Reads()): SstReader {
+/** How a read of a run's tail goes. `read` is the read itself. */
+type Tail = (read: () => Promise<Uint8Array>) => Promise<Uint8Array>;
+
+function openRun(body: Uint8Array, cache: PageCache, reads = new Reads(), tail: Tail = (read) => read()): SstReader {
   const file = bytesFile(body);
+  const end = sstRunEnd(body);
+  const index = sstBlockIndex(body);
+  const dataEnd = index.blockStart[index.sepEnd.length]!;
   return new SstReader(
-    { size: file.size, read: (offset, length) => (reads.count++, file.read(offset, length)) },
+    {
+      size: file.size,
+      read(offset, length) {
+        reads.count++;
+        if (offset < dataEnd) return file.read(offset, length);
+        reads.tails++;
+        return tail(() => file.read(offset, length));
+      },
+    },
     cache,
-    sstKeyRange(body),
+    end,
   );
 }
 
@@ -56,18 +72,47 @@ describe("lazy sst reader", () => {
     });
   }
 
-  it("reads a run whose Bloom filter and index outgrow the first tail read", async () => {
-    const n = 150_000;
-    const entries = Array.from({ length: n }, (_, i) => ({
-      kind: "put" as const,
-      key: utf(`k${String(i).padStart(8, "0")}`),
-      value: utf("v"),
-      seq: i + 1,
-    }));
-    const reader = openRun(encodeSstRef(entries), new PageCache());
-    expect((await runGet(reader, utf("k00149999")))?.seq).toBe(n);
-    expect((await runGet(reader, utf("k00000000")))?.seq).toBe(1);
-    expect(await runGet(reader, utf("k00150000"))).toBeUndefined();
+  it("a get answers the same with the Bloom filter absent, loading and resident", async () => {
+    const body = encodeSstRef(indexWorkload(2_000));
+    const all = decodeSst(body);
+    const probes = probesOf(all);
+    const absentKeys = all.filter((_, i) => i % 400 === 0).map((e) => cat(e.key, Uint8Array.of(0)));
+    const tails: Record<"absent" | "loading" | "resident", Tail> = {
+      absent: () => Promise.reject(new Error("disk")),
+      loading: () => new Promise(() => {}),
+      resident: (read) => read(),
+    };
+    const blockReads = { absent: 0, loading: 0, resident: 0 };
+    for (const state of ["absent", "loading", "resident"] as const) {
+      const reads = new Reads();
+      const cache = new PageCache();
+      const reader = openRun(body, cache, reads, tails[state]);
+      // Starts the filter's load. Only the read that loads lets it land.
+      reader.get(all[0]!.key);
+      if (state !== "loading") await loadsDone(cache);
+      expect(cacheUsage(cache).metadata > 0, `filter ${state}`).toBe(state === "resident");
+
+      reads.count = reads.tails = 0;
+      for (const k of absentKeys) expect(await runGet(reader, k), `filter ${state}`).toBeUndefined();
+      blockReads[state] = reads.count - reads.tails;
+
+      const got: string[] = [];
+      for (const k of probes) got.push(show(await runGet(reader, k)));
+      expect(got, `filter ${state}`).toEqual(probes.map((k) => show(sstGet(all, k))));
+      expect(cacheUsage(cache).metadata > 0, `filter ${state}`).toBe(state === "resident");
+    }
+    // Without its filter a run reads the block of a key it does not hold.
+    expect(blockReads.loading).toBe(blockReads.absent);
+    expect(blockReads.resident).toBeLessThan(blockReads.absent);
+  });
+
+  it("a cold get reads its block while the read of the Bloom filter is still out", async () => {
+    const reads = new Reads();
+    const body = encodeSstRef(indexWorkload(2_000));
+    const e = decodeSst(body)[5_000]!;
+    const reader = openRun(body, new PageCache(), reads, () => new Promise(() => {}));
+    expect(show(await runGet(reader, e.key))).toBe(show(e));
+    expect(reads).toMatchObject({ count: 2, tails: 1 });
   });
 
   it("with a budget larger than the database, a second pass of gets reads nothing", async () => {
@@ -82,7 +127,7 @@ describe("lazy sst reader", () => {
     expect(reads.count).toBe(0);
   });
 
-  it("with a budget smaller than one run, evicts pages and metadata and still answers every get", async () => {
+  it("with a budget of one Bloom filter and one block, evicts blocks and filters and still answers every get", async () => {
     const workload = indexWorkload(6_000);
     const half = workload.length >> 1;
     const bodies = [encodeSstRef(workload.slice(0, half)), encodeSstRef(workload.slice(half))];
@@ -90,13 +135,13 @@ describe("lazy sst reader", () => {
     const metaBytes: number[] = [];
     for (const body of bodies) {
       const cache = new PageCache();
-      const reader = openRun(body, cache);
-      await runGet(reader, utf("probe"));
+      openRun(body, cache).get(decodeSst(body)[0]!.key);
+      await loadsDone(cache);
       metaBytes.push(cacheUsage(cache).metadata);
     }
-    const budget = Math.max(...metaBytes) + 2 * PAGE_TARGET;
+    expect(Math.min(...metaBytes)).toBeGreaterThan(0);
+    const budget = Math.max(...metaBytes) + SST_BLOCK_TARGET;
     const totalMeta = metaBytes.reduce((a, b) => a + b, 0);
-    expect(budget).toBeLessThan(Math.min(...bodies.map((b) => b.byteLength)));
 
     const reads = new Reads();
     const cache = new PageCache(budget);
@@ -106,7 +151,7 @@ describe("lazy sst reader", () => {
     let minMeta = Infinity;
     for (let pass = 0; pass < 2; pass++) {
       reads.count = 0;
-      // Round-robin across runs so each run's metadata competes with the others' pages.
+      // Round-robin across runs so each run's filter competes with the other's blocks.
       const longest = Math.max(...runs.map((r) => r.all.length));
       for (let i = 0; i < longest; i += 7) {
         for (const { reader, all } of runs) {
@@ -124,7 +169,7 @@ describe("lazy sst reader", () => {
     expect(minMeta).toBeLessThan(totalMeta);
   });
 
-  it("concurrent misses on one page share one read", async () => {
+  it("concurrent misses on one block share one read", async () => {
     const body = encodeSstRef(indexWorkload(2_000));
     const all = decodeSst(body).sort((a, b) => compareBytes(a.key, b.key));
     const sameBlock = all.slice(100, 104).map((e) => e.key);
@@ -149,21 +194,31 @@ describe("lazy sst reader", () => {
       seq: i + 1,
     }));
     const body = encodeSstRef(entries);
-    const pages = Math.floor(body.byteLength / PAGE_TARGET);
+    const end = sstRunEnd(body);
+    const index = sstBlockIndex(body);
+    const blocks = index.sepEnd.length;
+    const dataEnd = index.blockStart[blocks]!;
 
     function coldRun(reads: Reads): SstReader {
-      const read = coalesceReads(async (offset, length) => (reads.count++, (reads.bytes += length), body.slice(offset, offset + length).buffer));
-      return new SstReader({ size: body.byteLength, read }, new PageCache(), sstKeyRange(body));
+      const read = coalesceReads(async (offset, length) => {
+        reads.count++;
+        reads.bytes += length;
+        if (offset + length > dataEnd) reads.tails++;
+        return body.slice(offset, offset + length).buffer;
+      });
+      return new SstReader({ size: body.byteLength, read }, new PageCache(), end);
     }
 
     for (const reverse of [false, true]) {
-      it(`reads ${reverse ? "back" : "forward"} through every page in a few reads`, async () => {
+      it(`reads ${reverse ? "back" : "forward"} through every block in a few reads, and nothing past the blocks`, async () => {
         const reads = new Reads();
         const got = await drain(coldRun(reads).cursor(undefined, reverse));
         const want = reverse ? [...entries].reverse() : entries;
         expect(got.map(show)).toEqual(want.map(show));
-        expect(pages).toBeGreaterThan(80);
-        expect(reads.count).toBeLessThan(pages / 5);
+        expect(blocks).toBeGreaterThan(80);
+        expect(reads.count).toBeLessThan(blocks / 5);
+        expect(reads.bytes).toBe(dataEnd);
+        expect(reads.tails).toBe(0);
       });
     }
 
@@ -182,18 +237,14 @@ describe("lazy sst reader", () => {
       }
     });
 
-    it("reads no page past the one a short scan ends in", async () => {
-      const bounds = { start: utf("k000010"), endExclusive: utf("k000020") };
-      const scanned = new Reads();
-      expect(await drain(coldRun(scanned).cursor(bounds))).toHaveLength(10);
-      const got = new Reads();
-      const reader = coldRun(got);
-      await runGet(reader, utf("k000015"));
-      expect(scanned.count).toBe(got.count);
+    it("reads no block past the one a short scan ends in", async () => {
+      const reads = new Reads();
+      expect(await drain(coldRun(reads).cursor({ start: utf("k000010"), endExclusive: utf("k000020") }))).toHaveLength(10);
+      expect(reads).toMatchObject({ count: 1, bytes: index.blockStart[1], tails: 0 });
     });
 
-    it("reads no page that starts at a scan's end bound", async () => {
-      // Pages start every 150 or so keys, so some of these bounds are the first key of a page.
+    it("reads no block that starts at a scan's end bound", async () => {
+      // Blocks start every 150 or so keys, so some of these bounds are the first key of a block.
       for (let i = 400; i < 700; i++) {
         const atKey = new Reads();
         const beforeKey = new Reads();

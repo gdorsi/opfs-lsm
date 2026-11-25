@@ -1,4 +1,4 @@
-import { compareBytes, sharedPrefix } from "../bytes.js";
+import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
@@ -9,23 +9,19 @@ import {
   blockBytes,
   blockEntries,
   compareAt,
+  decodeIndex,
   findInBlock,
   readFooter,
   reverseBlockEntries,
   type BlockBytes,
+  type BlockIndex,
   type KeyRange,
   type RecordWalker,
+  type RunEnd,
 } from "./sst.js";
 
-/**
- * Bytes of one cache page: whole adjacent blocks, so a block is read where
- * it sits in its page. A block larger than this gets a page of its own.
- */
-export const PAGE_TARGET = 32 * 1024;
-/** Pages a scan asks for past the one it enters, at most: 1 MiB, the longest span one read covers. */
+/** Blocks a scan asks for past the one it enters, at most: 1 MiB of full blocks, the longest span one read covers. */
 const MAX_READ_AHEAD = 32;
-/** One read covers the footer, Bloom and index of a ~4 MB run. */
-const TAIL_GUESS = 128 * 1024;
 
 /** An immutable run file of known size. `OpenFile` is one. */
 type RunFile = {
@@ -40,71 +36,58 @@ export function bytesFile(buf: Uint8Array): RunFile {
 }
 
 /**
- * A run's block index as flat arrays, with no object per block. Block i
- * holds keys in `[sep(i), sep(i + 1))`. `sep(i)` is the shortest prefix of
- * block i's first key above block i-1's last key, so a key that falls
- * between two blocks costs one block read after the Bloom filter.
- */
-type RunIndex = {
-  /** `sep(i)` is `sepBytes[sepEnd[i - 1] ?? 0, sepEnd[i])`. */
-  readonly sepBytes: Uint8Array;
-  readonly sepEnd: Uint32Array;
-  /** File offset of block i; `blockStart[blocks]` is the end of the data. */
-  readonly blockStart: Uint32Array;
-  /** First block of page p; `pageFirst[pages]` is the block count. */
-  readonly pageFirst: Uint32Array;
-  /** The run's largest key, so a key past it reads nothing. */
-  readonly last: Uint8Array;
-};
-
-type RunLayout = {
-  readonly bloom: BloomFilter;
-  readonly index: RunIndex;
-  readonly entryCount: number;
-};
-
-type Page = { readonly buf: Uint8Array; readonly view: DataView };
-
-/**
- * A run read on demand. It holds no bytes itself: its layout and pages
- * are entries in `cache`, looked up per call, so the cache's budget covers
- * everything the run costs. Every read is sync while its bytes are
- * resident and returns a `Miss` otherwise.
+ * A run read on demand. It knows where every block is from the index its
+ * manifest entry records, so no read waits for anything but the block it
+ * needs. It holds no bytes of the file itself: its blocks and its Bloom
+ * filter are entries in `cache`, looked up per call, so the cache's budget
+ * covers them. Every read is sync while its bytes are resident and returns
+ * a `Miss` otherwise.
  */
 export class SstReader {
   private readonly runId: number;
+  /** Undefined for a run with no keys. */
+  readonly range: KeyRange | undefined;
+  private decoded: BlockIndex | undefined;
+  /** Whether `file` is the size the manifest records. */
+  private readonly sized: boolean;
 
   /**
-   * `range` is undefined for a run with no keys. `marksThrough` is the one its
-   * manifest entry records: the run holds no version past it. By default it
+   * `run` is what the run's manifest entry records. `marksThrough` is the
+   * one that entry records: the run holds no version past it. By default it
    * claims nothing, so no mark lets a scan pass the run unread.
    */
   constructor(
     private readonly file: RunFile,
     private readonly cache: PageCache,
-    readonly range: KeyRange | undefined,
+    private readonly run: RunEnd,
     readonly marksThrough = asSeq(Number.POSITIVE_INFINITY),
   ) {
     this.runId = cache.nextRunId();
+    this.range = run.range;
+    this.sized = file.size === run.bytes;
+  }
+
+  /** The run's block index, checked when first needed: opening a tab reads no run's. */
+  private get index(): BlockIndex {
+    return (this.decoded ??= decodeIndex(this.run.index, this.run.bytes));
   }
 
   /**
-   * The record for `key`, where it is in its page, as `findInBlock` gives
-   * it. Misses at most twice on a cold run: layout, then the page. `hash` is
+   * The record for `key`, where it is in its block, as `findInBlock` gives
+   * it. Misses once on a cold run, on that block. The Bloom filter is asked
+   * only when it is resident, and a Miss says when it was not. `hash` is
    * `bloomHash(key)`, which a read of several runs computes once.
    */
   get(key: Uint8Array, hash = bloomHash(key)): Maybe<RecordWalker | undefined> {
-    const meta = this.meta();
-    if (meta instanceof Miss) return meta;
-    const { index } = meta;
-    if (meta.entryCount === 0 || compareBytes(key, index.last) > 0) return undefined;
-    if (!bloomMightContain(meta.bloom, hash)) return undefined;
+    const { range, index } = this;
+    if (!range || compareBytes(key, range.largest) > 0) return undefined;
+    const bloom = this.bloom();
+    if (bloom && !bloomMightContain(bloom, hash)) return undefined;
     const b = findBlock(index, key);
     if (b < 0) return undefined;
-    const p = pageOfBlock(index, b);
-    const page = this.page(meta, p, "main");
-    if (page instanceof Miss) return page;
-    return findInBlock(blockIn(index, b, p, page), key);
+    const block = this.block(b, "main");
+    if (block instanceof Miss) return bloom ? block : new Miss(block.ready, true);
+    return findInBlock(block, key);
   }
 
   /** Every entry in `bounds`, in key order, or from the largest key down with `reverse`. */
@@ -147,7 +130,7 @@ export class SstReader {
    * from the last block back. Entering a block calls `open` with its bytes,
    * and the returned function yields that block's entries. `seek` is where
    * the first block starts: `start`, or `endExclusive` going back.
-   * Scans admit pages to probation. Only entering a block can miss, and a
+   * Scans admit blocks to probation. Only entering a block can miss, and a
    * miss leaves the cursor where it was.
    */
   private blocks(
@@ -155,16 +138,19 @@ export class SstReader {
     reverse: boolean,
     open: (block: BlockBytes, seek: Uint8Array | undefined) => () => BlockEntry | undefined,
   ): LayerCursor {
+    const { range, index } = this;
+    if (!range) return { peek: () => undefined, next() {} };
+    const blockCount = index.sepEnd.length;
     const start = bounds?.start;
     const end = bounds?.endExclusive;
     const stopAt = reverse ? start : end;
     const stop = reverse ? isBelow : isAtOrAbove;
     const step = reverse ? -1 : 1;
     let seek = reverse ? end : start;
-    let b: number | undefined;
-    // The page the cursor is in. Looking it up again per block would count
-    // as reuse and promote every page a single scan passes.
-    let at: { p: number; page: Page } | undefined;
+    let b = reverse
+      ? seek ? blockBelow(index, seek) : blockCount - 1
+      : seek ? Math.max(0, findBlock(index, seek)) : 0;
+    let entered = false;
     let take: (() => BlockEntry | undefined) | undefined;
     let cur: BlockEntry | undefined | null = null;
     let ahead: ReadAhead | undefined;
@@ -185,33 +171,22 @@ export class SstReader {
           return cur;
         }
         take = undefined;
-        const meta = this.meta();
-        if (meta instanceof Miss) return meta;
-        const { index } = meta;
-        const blockCount = index.sepEnd.length;
-        b ??= reverse
-          ? seek ? blockBelow(index, seek) : blockCount - 1
-          : seek ? Math.max(0, findBlock(index, seek)) : 0;
         if (
-          meta.entryCount === 0 ||
-          (reverse
+          reverse
             ? b < 0 || (start && b + 1 < blockCount && compareSepAt(index, b + 1, start) <= 0)
-            : b >= blockCount || (end && compareSepAt(index, b, end) >= 0))
+            : b >= blockCount || (end && compareSepAt(index, b, end) >= 0)
         ) {
           cur = undefined;
           return cur;
         }
-        const p = pageOfBlock(index, b);
-        if (at?.p !== p) {
-          // Not on the first page, so a scan that ends there reads no further.
-          if (at) {
-            ahead ??= readAhead((q) => this.page(meta, q, "probation"), lastPage(index, bounds, reverse), step);
-            ahead.extend(p);
-          }
-          const page = ahead?.take(p) ?? this.page(meta, p, "probation");
-          if (page instanceof Miss) return page;
-          at = { p, page };
+        // Not on the first block, so a scan that ends there reads no further.
+        if (entered) {
+          ahead ??= readAhead((q) => this.block(q, "probation"), lastBlock(index, bounds, reverse), step);
+          ahead.extend(b);
         }
+        const block = ahead?.take(b) ?? this.block(b, "probation");
+        if (block instanceof Miss) return block;
+        entered = true;
         // Every key of block `b` is at or after its separator and before the next block's.
         mayPass =
           !!stopAt &&
@@ -219,8 +194,8 @@ export class SstReader {
             ? compareSepAt(index, b, stopAt) < 0
             : b + 1 < blockCount
               ? compareSepAt(index, b + 1, stopAt) > 0
-              : compareBytes(index.last, stopAt) >= 0);
-        take = open(blockIn(index, b, p, at.page), seek);
+              : compareBytes(range.largest, stopAt) >= 0);
+        take = open(block, seek);
         shared = -1;
         b += step;
         seek = undefined;
@@ -234,151 +209,90 @@ export class SstReader {
     };
   }
 
-  private meta(): Maybe<RunLayout> {
-    return this.cache.lookup(metaKey(this.runId), "meta", () => openMeta(this.file));
+  /**
+   * The run's Bloom filter when it is resident. When it is not, its load
+   * starts, and no read waits for it or fails with it: the next get asks
+   * again.
+   */
+  private bloom(): BloomFilter | undefined {
+    // One read of the rest of the file past the blocks: the filter, the index and the footer.
+    // Skips the CRC, which would cost a pass over the whole file: compaction checks it.
+    const bloom = this.cache.lookup(metaKey(this.runId), "meta", async (): Promise<Sized<BloomFilter>> => {
+      const { size } = this.file;
+      const from = this.index.blockStart[this.index.sepEnd.length]!;
+      const tail = await this.read(from, size - from);
+      const { dataLen, indexStart, bloomHashCount: hashCount } = readFooter(tail, size);
+      if (dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
+      const bits = tail.slice(0, indexStart - from);
+      return { value: { bits, hashCount }, bytes: bits.byteLength };
+    });
+    if (!(bloom instanceof Miss)) return bloom;
+    bloom.ready.catch(() => undefined);
+    return undefined;
   }
 
-  private page(meta: RunLayout, p: number, admit: Admit): Maybe<Page> {
-    const { blockStart, pageFirst } = meta.index;
-    return this.cache.lookup(pageKey(this.runId, p), admit, async (): Promise<Sized<Page>> => {
-      const from = blockStart[pageFirst[p]!]!;
-      const to = blockStart[pageFirst[p + 1]!]!;
-      const buf = await this.file.read(from, to - from);
-      return { value: { buf, view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength) }, bytes: to - from };
+  private block(b: number, admit: Admit): Maybe<BlockBytes> {
+    return this.cache.lookup(pageKey(this.runId, b), admit, async (): Promise<Sized<BlockBytes>> => {
+      const { blockStart } = this.index;
+      const from = blockStart[b]!;
+      const bytes = blockStart[b + 1]! - from;
+      const buf = await this.read(from, bytes);
+      return { value: blockBytes(buf, new DataView(buf.buffer, buf.byteOffset, buf.byteLength), 0, bytes), bytes };
     });
+  }
+
+  /**
+   * Every offset is the manifest's, and its blocks end inside the size it
+   * records. A file of another size is not the run it describes, and a read
+   * past its end would fail the reads that share its span.
+   */
+  private read(offset: number, length: number): Promise<Uint8Array> {
+    if (!this.sized) throw new CorruptDatabaseError("sst size");
+    return this.file.read(offset, length);
   }
 }
 
 /**
- * The pages a scan asks for before it reaches them, toward `last`. When the
- * pages already asked for run within half a window of the page the scan
- * enters, it asks for every page up to a window past that one. The window
- * is one page, then twice as many each time, up to `MAX_READ_AHEAD`. What
+ * The blocks a scan asks for before it reaches them, toward `last`. When the
+ * blocks already asked for run within half a window of the block the scan
+ * enters, it asks for every block up to a window past that one. The window
+ * is one block, then twice as many each time, up to `MAX_READ_AHEAD`. What
  * one turn asks for shares one file read.
- * The scan keeps what arrives, so entering such a page is not a cache hit
+ * The scan keeps what arrives, so entering such a block is not a cache hit
  * and one pass over the data still shows no reuse.
  */
 type ReadAhead = ReturnType<typeof readAhead>;
 
-function readAhead(load: (page: number) => Maybe<Page>, last: number, step: 1 | -1) {
-  const pages = new Map<number, Page>();
+function readAhead(load: (block: number) => Maybe<BlockBytes>, last: number, step: 1 | -1) {
+  const blocks = new Map<number, BlockBytes>();
   let windowSize = 0;
   let asked: number | undefined;
   return {
-    extend(p: number): void {
-      if (asked !== undefined && (asked - p) * step > windowSize / 2) return;
+    extend(b: number): void {
+      if (asked !== undefined && (asked - b) * step > windowSize / 2) return;
       windowSize = Math.min(windowSize * 2 || 1, MAX_READ_AHEAD);
-      const to = step > 0 ? Math.min(last, p + windowSize) : Math.max(last, p - windowSize);
-      for (let q = (asked ?? p) + step; (to - q) * step >= 0; q += step) {
-        const page = load(q);
-        // A failed read is dropped here: the scan reads that page again when it reaches it.
-        if (page instanceof Miss) page.ready.then((fills) => void pages.set(q, fills[0]![1] as Page), () => undefined);
-        else pages.set(q, page);
+      const to = step > 0 ? Math.min(last, b + windowSize) : Math.max(last, b - windowSize);
+      for (let q = (asked ?? b) + step; (to - q) * step >= 0; q += step) {
+        const block = load(q);
+        // A failed read is dropped here: the scan reads that block again when it reaches it.
+        if (block instanceof Miss) block.ready.then((fills) => void blocks.set(q, fills[0]![1] as BlockBytes), () => undefined);
+        else blocks.set(q, block);
         asked = q;
       }
     },
-    take(p: number): Page | undefined {
-      const page = pages.get(p);
-      pages.delete(p);
-      return page;
+    take(b: number): BlockBytes | undefined {
+      const block = blocks.get(b);
+      blocks.delete(b);
+      return block;
     },
   };
 }
 
-/** Block `b`, which sits in page `p` of the run, as that page holds it. */
-function blockIn(index: RunIndex, b: number, p: number, page: Page): BlockBytes {
-  const { blockStart } = index;
-  return blockBytes(page.buf, page.view, blockStart[b]! - blockStart[index.pageFirst[p]!]!, blockStart[b + 1]! - blockStart[b]!);
-}
-
-/** The last page a scan of `bounds` can reach: the highest going forward, the lowest going back. */
-function lastPage(index: RunIndex, bounds: ScanBounds | undefined, reverse: boolean): number {
+/** The last block a scan of `bounds` can reach: the highest going forward, the lowest going back. */
+function lastBlock(index: BlockIndex, bounds: ScanBounds | undefined, reverse: boolean): number {
   const bound = reverse ? bounds?.start : bounds?.endExclusive;
-  if (bound) return pageOfBlock(index, Math.max(0, reverse ? findBlock(index, bound) : blockBelow(index, bound)));
-  return reverse ? 0 : index.pageFirst.length - 2;
-}
-
-/**
- * Reads the footer, Bloom and index with one read when they fit in
- * `TAIL_GUESS`, else a second read for the rest. Skips the CRC, which
- * would cost a pass over the whole file: compaction checks it.
- */
-async function openMeta(file: RunFile): Promise<Sized<RunLayout>> {
-  const tail = await file.read(file.size - Math.min(file.size, TAIL_GUESS), Math.min(file.size, TAIL_GUESS));
-  const f = readFooter(tail, file.size);
-  const need = file.size - f.dataLen;
-  let meta = tail.subarray(tail.byteLength - Math.min(need, tail.byteLength));
-  if (need > tail.byteLength) {
-    meta = new Uint8Array(need);
-    meta.set(await file.read(f.dataLen, need - tail.byteLength));
-    meta.set(tail, need - tail.byteLength);
-  }
-  const bloomLen = f.indexStart - f.dataLen;
-  const bloom = { bits: meta.slice(0, bloomLen), hashCount: f.bloomHashCount };
-  const index = packIndex(meta.subarray(bloomLen, f.indexEnd - f.dataLen), f.blockCount, f.dataLen);
-  const bytes =
-    bloom.bits.byteLength +
-    index.sepBytes.byteLength +
-    index.last.byteLength +
-    index.sepEnd.byteLength +
-    index.blockStart.byteLength +
-    index.pageFirst.byteLength;
-  return { value: { bloom, index, entryCount: f.entryCount }, bytes };
-}
-
-/**
- * Packs the on-disk index (per block: u32 len | first key, u32 len | last
- * key, u32 offset, u32 length) in one pass, checking blocks are contiguous
- * and end at `dataLen`.
- */
-function packIndex(raw: Uint8Array, blockCount: number, dataLen: number): RunIndex {
-  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-  const sepBytes = new Uint8Array(raw.byteLength);
-  const sepEnd = new Uint32Array(blockCount);
-  const blockStart = new Uint32Array(blockCount + 1);
-  const pages: number[] = [0];
-  let sepLen = 0;
-  let o = 0;
-  let prevLast: Uint8Array | undefined;
-  let pageStart = 0;
-  const key = () => {
-    if (o + 4 > raw.byteLength) throw new CorruptDatabaseError("sst index OOB");
-    const len = view.getUint32(o, true);
-    o += 4;
-    if (o + len > raw.byteLength) throw new CorruptDatabaseError("sst index OOB");
-    o += len;
-    return raw.subarray(o - len, o);
-  };
-  for (let i = 0; i < blockCount; i++) {
-    const first = key();
-    const last = key();
-    if (o + 8 > raw.byteLength) throw new CorruptDatabaseError("sst index OOB");
-    const offset = view.getUint32(o, true);
-    const length = view.getUint32(o + 4, true);
-    o += 8;
-    if (offset !== blockStart[i]) throw new CorruptDatabaseError("sst blocks not contiguous");
-    // The shortest prefix of `first` that sorts after the previous block's last key.
-    const sep = prevLast ? first.subarray(0, Math.min(sharedPrefix(prevLast, first) + 1, first.byteLength)) : first;
-    sepBytes.set(sep, sepLen);
-    sepLen += sep.byteLength;
-    sepEnd[i] = sepLen;
-    if (i > pageStart && offset + length - blockStart[pageStart]! > PAGE_TARGET) {
-      pages.push(i);
-      pageStart = i;
-    }
-    blockStart[i + 1] = offset + length;
-    prevLast = last;
-  }
-  if (o !== raw.byteLength) throw new CorruptDatabaseError("sst index trailing");
-  if (blockStart[blockCount] !== dataLen) throw new CorruptDatabaseError("sst blocks not contiguous");
-  pages.push(blockCount);
-  return {
-    sepBytes: sepBytes.slice(0, sepLen),
-    sepEnd,
-    blockStart,
-    pageFirst: Uint32Array.from(pages),
-    last: prevLast ? prevLast.slice() : new Uint8Array(0),
-  };
+  if (bound) return Math.max(0, reverse ? findBlock(index, bound) : blockBelow(index, bound));
+  return reverse ? 0 : index.sepEnd.length - 1;
 }
 
 /** `from` is how many leading bytes of the entry's key are known to equal the bound's. */
@@ -391,7 +305,7 @@ const isAtOrAbove = (e: BlockEntry, bound: Uint8Array, from: number) => e.compar
  * bytes both bounds share with it, so a compare starts past them, as in
  * `lowerBoundKeys`.
  */
-function findBlock(index: RunIndex, key: Uint8Array): number {
+function findBlock(index: BlockIndex, key: Uint8Array): number {
   const { sepBytes, sepEnd } = index;
   let lo = 0;
   let hi = sepEnd.length;
@@ -415,24 +329,12 @@ function findBlock(index: RunIndex, key: Uint8Array): number {
   return lo - 1;
 }
 
-function blockBelow(index: RunIndex, key: Uint8Array): number {
+function blockBelow(index: BlockIndex, key: Uint8Array): number {
   const b = findBlock(index, key);
   return b >= 0 && compareSepAt(index, b, key) === 0 ? b - 1 : b;
 }
 
-function compareSepAt(index: RunIndex, block: number, key: Uint8Array): number {
+function compareSepAt(index: BlockIndex, block: number, key: Uint8Array): number {
   const from = block === 0 ? 0 : index.sepEnd[block - 1]!;
   return compareAt(index.sepBytes, from, index.sepEnd[block]! - from, key, 0);
-}
-
-function pageOfBlock(index: RunIndex, block: number): number {
-  const { pageFirst } = index;
-  let lo = 0;
-  let hi = pageFirst.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (pageFirst[mid]! <= block) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
 }

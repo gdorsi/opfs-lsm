@@ -37,7 +37,7 @@ const SCREENS = [...GOALS, ...BOARD].map(({ label, phase }) => ({ label, phase, 
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
-    file: "2026-11-22T15-56-51-apple-m2-pro",
+    file: "2026-11-25T09-30-12-apple-m5-max",
     columns: [
       { head: "Workload" },
       { head: "IndexedDB", at: "kv/idb" },
@@ -59,7 +59,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "framework-adapters",
-    file: "2026-11-21T13-51-06-apple-m2-pro",
+    file: "2026-11-25T09-42-46-apple-m5-max",
     columns: [
       { head: "Framework" },
       { head: "Workload" },
@@ -95,14 +95,13 @@ export const TABLES: readonly Table[] = [
       { label: ["Yjs", "One keystroke typed at 60 Hz, main-thread time"], workload: "yjs/trace", phase: "type", metric: "mean:key", at: FRAMEWORKS.yjs },
       { label: ["Automerge", "Cold load of 500 notes, store open and check included"], workload: "automerge/many-docs", phase: "load", metric: "wall", at: FRAMEWORKS.automerge },
       { label: ["Automerge", "Write 500 notes"], workload: "automerge/many-docs", phase: "persist", metric: "rate", unit: "notes/s", at: FRAMEWORKS.automerge },
-      // TanStack Query's rows, for the first run of this table that holds tanstack-query/cache (bench/README.md, "Publishing a run"):
-      // { label: ["TanStack Query", "Cold restore of 644 queries, open / restore"], workload: "tanstack-query/cache", phase: "restore", metric: ["mean:open", "mean:restore"], at: FRAMEWORKS["tanstack-query"] },
-      // { label: ["TanStack Query", "Refetch of 10 queries, each persisted"], workload: "tanstack-query/cache", phase: "refetch", metric: "mean:refetch", at: FRAMEWORKS["tanstack-query"] },
+      { label: ["TanStack Query", "Cold restore of 644 queries, open / restore"], workload: "tanstack-query/cache", phase: "restore", metric: ["mean:open", "mean:restore"], at: FRAMEWORKS["tanstack-query"] },
+      { label: ["TanStack Query", "Refetch of 10 queries, each persisted"], workload: "tanstack-query/cache", phase: "refetch", metric: "mean:refetch", at: FRAMEWORKS["tanstack-query"] },
     ],
   },
   {
     id: "typing-reopening",
-    file: "2026-11-21T13-51-06-apple-m2-pro",
+    file: "2026-11-25T09-42-46-apple-m5-max",
     columns: [
       { head: "" },
       { head: "y-indexeddb", at: { workload: "yjs/trace", contender: "yjs/y-indexeddb" } },
@@ -121,7 +120,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "on-demand-sqlite",
-    file: "2026-11-21T14-04-55-apple-m2-pro",
+    file: "2026-11-25T09-53-07-apple-m5-max",
     workload: "tanstack-ondemand/queries",
     columns: [
       { head: "Workload" },
@@ -138,7 +137,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-23T20-57-14-apple-m5-max",
+    file: "2026-11-25T07-52-24-apple-m5-max",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -155,7 +154,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals-large",
-    file: "2026-11-23T22-22-35-apple-m5-max",
+    file: "2026-11-25T08-47-47-apple-m5-max",
     size: "large",
     workload: "tracker/goals",
     unit: null,
@@ -187,7 +186,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-23T20-57-14-apple-m5-max",
+    file: "2026-11-25T07-52-24-apple-m5-max",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },
@@ -206,7 +205,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "live-queries",
-    file: "2026-11-21T15-13-18-apple-m2-pro",
+    file: "2026-11-25T09-58-56-apple-m5-max",
     workload: "tanstack-live/screens",
     columns: [
       { head: "" },

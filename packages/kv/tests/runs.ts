@@ -7,20 +7,28 @@ import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.j
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
-import type { EncodedRun, RecordWalker, SstEntry } from "../src/store/sst.js";
-import { sstKeyRange } from "./oracle/sst-ref.js";
+import { encodeIndex, type EncodedRun, type RecordWalker, type SstEntry } from "../src/store/sst.js";
+import { sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
 export { bytesFile };
 
-/** What a cache holds now: resident bytes, the metadata among them, and the loads in flight. */
+/** What a cache holds now: resident bytes, the Bloom filters among them, and the loads in flight. */
 export function cacheUsage(cache: PageCache) {
   return { budget: cache.budget, resident: cache["resident"], metadata: cache["queueBytes"].meta, inFlight: cache["loading"].size };
 }
 
-/** A lazy reader over a run held in memory, routed by the range its manifest entry would record. */
+/** The index of a manifest entry whose file no test reads: no blocks. */
+export const NO_BLOCKS = encodeIndex(new Uint8Array(0));
+
+/** Resolves once `cache` has no load in flight. A get starts its run's Bloom filter load and does not wait for it. */
+export async function loadsDone(cache: PageCache): Promise<void> {
+  while (cacheUsage(cache).inFlight) await new Promise((resolve) => setTimeout(resolve));
+}
+
+/** A lazy reader over a run held in memory, with the range and the index its manifest entry would record. */
 export function readerOfBytes(buf: Uint8Array, cache = new PageCache()): SstReader {
-  return new SstReader(bytesFile(buf), cache, sstKeyRange(buf));
+  return new SstReader(bytesFile(buf), cache, sstRunEnd(buf));
 }
 
 /** What a run's `get` found, as an entry that owns its value. A Miss passes through. */

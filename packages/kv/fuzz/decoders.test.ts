@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { encodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { encodeRun as encodeWasmRun } from "../src/store/engine.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { encodeSstRef } from "../tests/oracle/sst-ref.js";
+import { encodeSstRef, indexBlob, sstRunEnd } from "../tests/oracle/sst-ref.js";
 import { applyMutations, entriesArb, mutationsArb, sameBytes } from "./mutate.js";
 import {
   checkDecodeSst,
@@ -64,12 +64,10 @@ async function encodeRun(r: { entries: SstEntry[]; encoder: Encoder; blockTarget
   return r.encoder === "reference" ? encodeSstRef(r.entries, r.blockTarget) : encodeWasmRun(r.entries).then((run) => run.body);
 }
 
-/** Probe keys: every key of the run, and a few that it lacks. */
-function probeOf(entries: readonly SstEntry[], extra: readonly string[], withRange: boolean): ReadProbe {
+/** Probe keys: every key of the run, and a few that it lacks. `run` is the file its writer wrote, which the manifest entry describes. */
+function probeOf(run: Uint8Array, entries: readonly SstEntry[], extra: readonly string[]): ReadProbe {
   const keys = [...entries.map((e) => e.key), ...extra.map((k) => utf(`t/${k}`))];
-  const sorted = [...entries].sort((a, b) => Buffer.compare(a.key, b.key));
-  const range = withRange && sorted.length > 0 ? { smallest: sorted[0]!.key, largest: sorted[sorted.length - 1]!.key } : undefined;
-  return { keys, range, pattern: utf(" hot") };
+  return { keys, run: sstRunEnd(run), pattern: utf(" hot") };
 }
 
 const repairArb = fc.constantFrom<Repair>("none", "crc", "trailer");
@@ -84,7 +82,7 @@ describe("decoder properties (fast-check)", () => {
         fc.assert(
           fc.asyncProperty(runArb, extraKeys, async (r, extra) => {
             const buf = await encodeRun(r);
-            const probe = probeOf(r.entries, extra, true);
+            const probe = probeOf(buf, r.entries, extra);
             const want = expectedRead(r.entries, probe);
             expect(await checkRunRead(buf, probe)).toEqual(want);
             expect(await withoutWasm(() => checkRunRead(buf, probe))).toEqual(want);
@@ -102,10 +100,13 @@ describe("decoder properties (fast-check)", () => {
       await expect(
         fc.assert(
           fc.asyncProperty(runArb, runArb, mutationsArb, repairArb, fc.boolean(), extraKeys, async (r, o, ms, repair, wasm, extra) => {
-            const buf = applyMutations(await encodeRun(r), ms, await encodeRun(o));
+            const orig = await encodeRun(r);
+            const probe = probeOf(orig, r.entries, extra);
+            const buf = applyMutations(orig, ms, await encodeRun(o));
             repairSst(buf, repair);
-            const probe = probeOf(r.entries, extra, ms.length % 2 === 0);
-            await (wasm ? checkRunRead(buf, probe) : withoutWasm(() => checkRunRead(buf, probe)));
+            const got = await (wasm ? checkRunRead(buf, probe) : withoutWasm(() => checkRunRead(buf, probe)));
+            // A file of another size than the manifest records answers no read from its bytes.
+            if (buf.byteLength !== orig.byteLength) expect(got.scan).toEqual(r.entries.length ? "error" : []);
           }),
           params,
         ),
@@ -191,21 +192,39 @@ function marksArb(through: number): fc.Arbitrary<Marks> {
   return fc.array(mark, { maxLength: 4 });
 }
 
+/** A run's encoded block index and a size its blocks end inside. Block sizes take one to four varint bytes. */
+const indexArb: fc.Arbitrary<{ index: Uint8Array; bytes: number }> = fc
+  .record({
+    blocks: fc.array(
+      fc.record({ sep: fc.uint8Array({ maxLength: 12 }), size: fc.oneof(fc.nat(200), fc.nat(40_000), fc.nat(5_000_000)) }),
+      { maxLength: 6 },
+    ),
+    tail: fc.oneof(fc.nat(100), fc.nat(2 ** 31)),
+  })
+  .map(({ blocks, tail }) => {
+    const sepEnd = Uint32Array.from(blocks, ((n) => (b) => (n += b.sep.byteLength))(0));
+    const blockStart = Uint32Array.from([0, ...blocks.map(((n) => (b) => (n += b.size))(0))]);
+    const index = indexBlob({ sepBytes: Uint8Array.from(blocks.flatMap((b) => [...b.sep])), sepEnd, blockStart });
+    return { index, bytes: blockStart[blocks.length]! + tail };
+  });
+
 const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 ** 40 }).chain((through) =>
   fc.record({
     generation: fc.integer({ min: 0, max: 2 ** 40 }),
     through: fc.constant(through),
     marks: marksArb(through),
     runs: fc.array(
-      fc.record(
-        {
-          path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
-          bytes: fc.integer({ min: 0, max: 2 ** 32 - 1 }),
-          range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
-          marksThrough: fc.integer({ min: 0, max: through }),
-        },
-        { requiredKeys: ["path", "bytes", "marksThrough"] },
-      ),
+      fc
+        .record(
+          {
+            path: fc.constantFrom("l0/f1.sst", "l1/c7.0.sst", "l2/c9.3.sst"),
+            file: indexArb,
+            range: fc.record({ smallest: fc.uint8Array({ maxLength: 12 }), largest: fc.uint8Array({ maxLength: 12 }) }),
+            marksThrough: fc.integer({ min: 0, max: through }),
+          },
+          { requiredKeys: ["path", "file", "marksThrough"] },
+        )
+        .map(({ file, ...run }) => ({ ...run, ...file })),
       { maxLength: 6 },
     ),
   }),

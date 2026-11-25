@@ -16,7 +16,7 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../src/testing.js";
-import { publish } from "./runs.js";
+import { NO_BLOCKS, publish } from "./runs.js";
 import { checkDatabase, deleteWal, walRows, walStore } from "./sim/check-database.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
@@ -45,7 +45,7 @@ async function walWith(appends: number): Promise<TabWal> {
 /** A manifest with one (fake) non-empty run per name. */
 async function manifest(fs: MemoryFs, generation: number, through: number, runs: string[]): Promise<GenerationMeta> {
   for (const path of runs) await publish(fs, path, new Uint8Array([1]));
-  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1, marksThrough: through })), through, marks: NO_MARKS };
+  const meta = { generation, runs: runs.map((path) => ({ path, bytes: 1, marksThrough: through, index: NO_BLOCKS })), through, marks: NO_MARKS };
   await publishGeneration(fs, meta);
   return meta;
 }

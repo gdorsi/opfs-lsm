@@ -9,7 +9,7 @@ import { publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeRunRef, entryRecordSize, sstKeyRange } from "./oracle/sst-ref.js";
+import { decodeSst, encodeRunRef, entryRecordSize, indexBlob, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
 import { publish } from "./runs.js";
@@ -203,6 +203,7 @@ describe("the TypeScript and wasm merge sessions, through the compaction driver"
           for (const run of out.runs) {
             expect(run.meta.bytes).toBe(run.body.byteLength);
             expect(run.meta.range).toEqual(sstKeyRange(run.body));
+            expect(run.meta.index).toEqual(indexBlob(sstBlockIndex(run.body)));
           }
         }
         expect(w.runs.length).toBe(ts.runs.length);
@@ -500,14 +501,15 @@ describe("the compaction driver", () => {
 describe("the compaction driver's file waits", () => {
   /** The reads that started while an output write was in flight, and the reads that asked for bytes past what the session had asked for. */
   async function overlap(ahead: number): Promise<{ duringWrite: number; ahead: number; asked: number; bodies: Uint8Array[] }> {
-    // Three sources of 2,000 puts each, newest first, on interleaved keys.
+    // Three sources of 20,000 puts each, newest first, on interleaved keys: about 70 blocks a source, read two at
+    // a time, since the host's smallest chunk is two blocks.
     const runs = [2, 1, 0].map((n) =>
       encodeRunRef(
-        Array.from({ length: 2000 }, (_, i): SstEntry => ({
+        Array.from({ length: 20_000 }, (_, i): SstEntry => ({
           kind: "put",
           key: utf(`key/${String(i * 3 + n).padStart(5, "0")}`),
           value: new Uint8Array(100).fill(i & 0xff),
-          seq: n * 2000 + i + 1,
+          seq: n * 20_000 + i + 1,
         })),
       ).body,
     );
@@ -519,8 +521,8 @@ describe("the compaction driver's file waits", () => {
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 1_000_000,
-      chunkBytes: 4096,
-      tailBytes: 4096,
+      chunkBytes: 64 * 1024,
+      tailBytes: 64 * 1024,
       yieldBytes: 1_000_000,
     };
     let writes = 0;
@@ -570,7 +572,7 @@ describe("the compaction driver's file waits", () => {
 
   it("overlap for a step a flush waits for, which writes the same runs", async () => {
     const alone = await overlap(0);
-    const awaited = await overlap(4096);
+    const awaited = await overlap(64 * 1024);
     expect(awaited.duringWrite).toBeGreaterThan(0);
     expect(awaited.ahead).toBeGreaterThan(0);
     // A read ahead that the session never took would add a read to each of its own.

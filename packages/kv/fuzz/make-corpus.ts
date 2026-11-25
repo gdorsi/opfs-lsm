@@ -24,8 +24,10 @@ import {
   createLocalIngestClient,
 } from "../src/testing.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
+import { encodeGeneration } from "../src/store/generation.js";
+import { NO_MARKS } from "../src/store/marks.js";
 import type { SstEntry } from "../src/store/sst.js";
-import { encodeSstRef } from "../tests/oracle/sst-ref.js";
+import { encodeSstRef, sstRunEnd } from "../tests/oracle/sst-ref.js";
 import { mergeRuns } from "../tests/runs.js";
 import { walStore } from "../tests/sim/check-database.js";
 import { xorshift } from "./engine-drive.js";
@@ -113,7 +115,12 @@ async function main(): Promise<void> {
   const runs = [...db.runs, ...merged, ...edgeRuns].filter((r) => r.byteLength < 60_000);
 
   // Jazzer.js targets: byte 0 is the flags byte each target documents.
-  await seeds(join(tsCorpus, "sst-read"), runs.flatMap((r) => [cat([0], r), cat([4], r)]));
+  // A tab reads a run with its manifest entry, so each sst-read seed is a manifest of one run, then the run.
+  const withEntry = (run: Uint8Array) => {
+    const manifest = encodeGeneration({ generation: 1, runs: [{ path: "l0/1-1.sst", ...sstRunEnd(run), marksThrough: 0 }], through: 0, marks: NO_MARKS });
+    return cat([0, manifest.byteLength & 0xff, manifest.byteLength >> 8], manifest, run);
+  };
+  await seeds(join(tsCorpus, "sst-read"), runs.map(withEntry));
   await seeds(join(tsCorpus, "sst-decode"), runs.map((r) => cat([0], r)));
   await seeds(join(tsCorpus, "manifest"), db.manifests.map((m) => cat([0], m)));
   await seeds(join(tsCorpus, "wal-row"), db.walRows.slice(0, 8));

@@ -242,10 +242,10 @@ export type Fill = readonly [key: number, value: unknown];
  * their positions.
  */
 export class Miss {
-  /** `layout` is true when the bytes are a run's layout, so the run cannot yet say whether it may hold a key. */
+  /** `unfiltered` is true when a run reads a key's block before its Bloom filter is resident, so the run has not said whether it may hold the key. */
   constructor(
     readonly ready: Promise<readonly Fill[]>,
-    readonly layout = false,
+    readonly unfiltered = false,
   ) {}
 }
 

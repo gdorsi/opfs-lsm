@@ -6,8 +6,8 @@ import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { readFooter, SST_FOOTER_BYTES } from "../src/store/sst.js";
-import { decodeSst, encodeSstRef } from "../tests/oracle/sst-ref.js";
-import { mergeRuns, runGet } from "../tests/runs.js";
+import { decodeSst, encodeSstRef, sstRunEnd } from "../tests/oracle/sst-ref.js";
+import { loadsDone, mergeRuns, NO_BLOCKS, runGet } from "../tests/runs.js";
 import { blocksOf, bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
 import { NO_MARKS } from "../src/store/marks.js";
@@ -32,11 +32,19 @@ const entries = Array.from({ length: 40 }, (_, i) => ({
   seq: i + 1,
 }));
 const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - SST_FOOTER_BYTES, SST_FOOTER_BYTES);
-const range = { smallest: entries[0]!.key, largest: entries[entries.length - 1]!.key };
+/** What the manifest records for the run of `entries`. */
+const recorded = sstRunEnd(encodeSstRef(entries));
 
-/** A tab's get of `key` from run bytes `buf`, as `SstReader` does it. */
+/**
+ * A tab's get of `key` from run bytes `buf`, as `SstReader` does it, asked
+ * again once the load of the Bloom filter has ended: the first get does not
+ * wait for the footer, and the second asks the filter when it loaded.
+ */
 async function tabGet(buf: Uint8Array, key: Uint8Array) {
-  const reader = new SstReader(bytesFile(buf), new PageCache(), range);
+  const cache = new PageCache();
+  const reader = new SstReader(bytesFile(buf), cache, recorded);
+  await runGet(reader, key);
+  await loadsDone(cache);
   return runGet(reader, key);
 }
 
@@ -75,11 +83,12 @@ describe("decoder bugs the fuzzers found", () => {
     expect(performance.now() - t0).toBeLessThan(50);
   });
 
-  // KT2, tab path. `packIndex` allocates `sepEnd` and `blockStart`
-  // (Uint32Array) from the footer's block count before it reads the index:
-  // a count of 2^24 cost 128 MiB, and one near 2^32 asked for 32 GiB. One
-  // flipped bit in the count's high byte was enough. `readFooter` now
-  // refuses a count whose 16-byte index entries pass the index length.
+  // KT2, tab path. A tab sized `sepEnd` and `blockStart` (Uint32Array) from
+  // the footer's block count before it read the index: a count of 2^24 cost
+  // 128 MiB, and one near 2^32 asked for 32 GiB. One flipped bit in the
+  // count's high byte was enough. A tab now reads no block count from a
+  // run: it takes the index from the manifest, whose decoder refuses a
+  // count its bytes cannot hold.
   it("KT2: a corrupt block count does not size an allocation", async () => {
     const buf = encodeSstRef(entries);
     footer(buf).setUint32(4, 0x01000000, true);
@@ -105,7 +114,7 @@ describe("decoder bugs the fuzzers found", () => {
       generation: 1,
       through: 0,
       marks: NO_MARKS,
-      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0 }],
+      runs: [{ path: "l1/a.sst", bytes: 100, range: { smallest: utf("a"), largest: utf("b") }, marksThrough: 0, index: NO_BLOCKS }],
     });
     // Run count and the first path length, inflated (found by "manifests ... reject every change").
     // The run count follows the 32-byte header and the 4-byte empty marks block.

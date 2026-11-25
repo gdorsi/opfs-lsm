@@ -59,13 +59,13 @@ bench:
       - title: Opening a screen
         versus: docstore against Dexie
         stores: [docstore, Dexie]
-        setup: A task tracker at 200,000 issues, timed to the last answer. Medians of 5 runs on an Apple M5 Max
-        note: The board asks for 6 reads as it opens, all started together. Read one at a time, the 11 screens of the full table are all faster on docstore in a warm tab. In a fresh tab 4 are faster and 5 are slower, the issue most of all.
+        setup: A task tracker at 200,000 issues, timed to the last answer. Medians of 4 runs on an Apple M5 Max
+        note: The board asks for 6 reads as it opens, all started together. Read one at a time, the 11 screens of the full table are all faster on docstore in a warm tab. In a fresh tab 6 are faster and 4 are slower, the issue most of all.
         rows:
-          - { measure: "A board, 6 reads at once, in a fresh tab", ours: 8.10 ms, theirs: 15.7 ms, ratio: 1.9× }
-          - { measure: "The same board, read again", ours: 1.06 ms, theirs: 11.9 ms, ratio: 11× }
-          - { measure: "An issue with its comments, in a fresh tab", ours: 6.68 ms, theirs: 2.18 ms, ratio: 0.33× }
-          - { measure: "The same issue, read again", ours: 0.0917 ms, theirs: 0.391 ms, ratio: 4.3× }
+          - { measure: "A board, 6 reads at once, in a fresh tab", ours: 6.67 ms, theirs: 14.8 ms, ratio: 2.2× }
+          - { measure: "The same board, read again", ours: 0.997 ms, theirs: 12.8 ms, ratio: 13× }
+          - { measure: "An issue with its comments, in a fresh tab", ours: 4.58 ms, theirs: 1.96 ms, ratio: 0.43× }
+          - { measure: "The same issue, read again", ours: 0.101 ms, theirs: 0.367 ms, ratio: 3.6× }
       - title: Writing a large workspace
         versus: docstore against Dexie
         stores: [docstore, Dexie]
@@ -79,23 +79,23 @@ bench:
         versus: against each library's IndexedDB storage
         stores: [opfs-lsm, the IndexedDB option]
         setup: TanStack DB, y-indexeddb and automerge-repo's IndexedDB storage
-        note: No frames dropped while typing, on any of the four, and the runs do not separate the time of one keystroke.
+        note: No frames dropped while typing, on any of the four. A Yjs keystroke takes 0.153 ms of the main thread on kv against 0.125 ms on y-indexeddb, and the runs do not separate Automerge's two.
         rows:
-          - { measure: "TanStack DB: cold load of 91,000 rows", ours: 299 ms, theirs: 1.02 s, ratio: 3.4× }
-          - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 105k rows/s, theirs: 9.80k rows/s, ratio: 11× }
-          - { measure: "Yjs: cold load of 500 notes", ours: 71.9 ms, theirs: 276 ms, ratio: 3.8× }
-          - { measure: "Yjs: reopening right after typing", ours: 16.5 ms, theirs: 8.36 ms, ratio: 0.50× }
-          - { measure: "Automerge: cold load of 500 notes", ours: 249 ms, theirs: 377 ms, ratio: 1.5× }
-          - { measure: "Automerge: reopening right after typing", ours: 63.6 ms, theirs: 59.0 ms, ratio: 0.93× }
+          - { measure: "TanStack DB: cold load of 91,000 rows", ours: 110 ms, theirs: 594 ms, ratio: 5.4× }
+          - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 196k rows/s, theirs: 20.1k rows/s, ratio: 9.7× }
+          - { measure: "Yjs: cold load of 500 notes", ours: 73.0 ms, theirs: 146 ms, ratio: 2.0× }
+          - { measure: "Yjs: reopening right after typing", ours: 19.2 ms, theirs: 10.4 ms, ratio: 0.54× }
+          - { measure: "Automerge: cold load of 500 notes", ours: 180 ms, theirs: 249 ms, ratio: 1.4× }
+          - { measure: "Automerge: reopening right after typing", ours: 44.8 ms, theirs: 45.6 ms, ratio: 1.0× ‡ }
       - title: Your own adapter on kv
         versus: kv against IndexedDB
         stores: [kv, IndexedDB]
-        setup: Medians of 5 runs, 100,000 entries
+        setup: Medians of 4 runs, 100,000 entries
         rows:
-          - { measure: "Random writes, batches of 1,000", ours: 391k ops/s, theirs: 28.0k ops/s, ratio: 14× }
-          - { measure: "Random point reads", ours: 506k ops/s, theirs: 16.5k ops/s, ratio: 31× }
-          - { measure: "Single put, awaited one at a time", ours: 7.89k ops/s, theirs: 9.24k ops/s, ratio: 0.85× }
-          - { measure: "Opening the database in a fresh tab", ours: 5.55 ms, theirs: 0.348 ms, ratio: 0.063× }
+          - { measure: "Random writes, batches of 1,000", ours: 748k ops/s, theirs: 45.4k ops/s, ratio: 16× }
+          - { measure: "Random point reads", ours: 846k ops/s, theirs: 20.5k ops/s, ratio: 41× }
+          - { measure: "Single put, awaited one at a time", ours: 13.9k ops/s, theirs: 14.8k ops/s, ratio: 0.94× }
+          - { measure: "Opening the database in a fresh tab", ours: 9.14 ms, theirs: 24.5 ms, ratio: 2.7× }
   - title: Against SQLite on OPFS
     theirs: SQLite
     groups:
@@ -103,33 +103,33 @@ bench:
         versus: docstore against SQLite on OPFS
         stores: [docstore, SQLite on OPFS]
         setup: The same tracker at 20,000 issues, timed to the last answer. Medians of 5 runs on an Apple M5 Max
-        note: Read one at a time, docstore is faster than SQLite on 7 of the 11 screens in a warm tab and slower on 3. In a fresh tab it is faster on 4 and slower on 5, down to 0.52×.
+        note: Read one at a time, docstore is faster than SQLite on 8 of the 11 screens in a warm tab and slower on 3. In a fresh tab it is faster on 6 and slower on 3, down to 0.63×.
         rows:
-          - { measure: "A board, 6 reads at once, in a fresh tab", ours: 7.02 ms, theirs: 8.59 ms, ratio: 1.2× }
-          - { measure: "The same board, read again", ours: 0.775 ms, theirs: 1.61 ms, ratio: 2.1× }
-          - { measure: "An issue with its comments, in a fresh tab", ours: 5.90 ms, theirs: 4.29 ms, ratio: 0.73× }
-          - { measure: "The same issue, read again", ours: 0.0823 ms, theirs: 0.210 ms, ratio: 2.6× }
+          - { measure: "A board, 6 reads at once, in a fresh tab", ours: 6.03 ms, theirs: 8.98 ms, ratio: 1.5× }
+          - { measure: "The same board, read again", ours: 0.761 ms, theirs: 1.57 ms, ratio: 2.1× }
+          - { measure: "An issue with its comments, in a fresh tab", ours: 4.49 ms, theirs: 4.61 ms, ratio: 1.0× ‡ }
+          - { measure: "The same issue, read again", ours: 0.0870 ms, theirs: 0.207 ms, ratio: 2.4× }
       - title: Edits and sync
         versus: docstore against SQLite on OPFS
         stores: [docstore, SQLite on OPFS]
         setup: 20,000 issues, 42,000 comments, 120 people. Medians of 5 runs on an Apple M5 Max
         note: SQLite waits for each commit to be crash-safe before returning, its default. docstore returns sooner, with Chrome's relaxed durability.
         rows:
-          - { measure: "Opening the store in a fresh tab", ours: 16.9 ms, theirs: 20.3 ms, ratio: 1.2× }
-          - { measure: "One edit", ours: 0.222 ms, theirs: 3.40 ms, ratio: 15× }
-          - { measure: "Sync, mean of 851 batches of about 50 changes", ours: 2.05 ms, theirs: 10.5 ms, ratio: 5.1× }
-          - { measure: "Import, mean of 47 batches of up to 1,000 rows", ours: 10.5 ms, theirs: 17.6 ms, ratio: 1.7× }
-          - { measure: "Re-reading the 50 latest issues during the sync", ours: 0.427 ms, theirs: 0.404 ms, ratio: 0.94× }
+          - { measure: "Opening the store in a fresh tab", ours: 18.3 ms, theirs: 24.3 ms, ratio: 1.3× }
+          - { measure: "One edit", ours: 0.213 ms, theirs: 3.61 ms, ratio: 17× }
+          - { measure: "Sync, mean of 851 batches of about 50 changes", ours: 1.71 ms, theirs: 10.8 ms, ratio: 6.3× }
+          - { measure: "Import, mean of 47 batches of up to 1,000 rows", ours: 9.16 ms, theirs: 16.5 ms, ratio: 1.8× }
+          - { measure: "Re-reading the 50 latest issues during the sync", ours: 0.411 ms, theirs: 0.395 ms, ratio: 0.96× ‡ }
       - title: Sync under open screens
         versus: TanStack DB live queries, docstore against SQLite
         stores: [docstore, SQLite]
         setup: The tracker through TanStack DB, both on demand, with four screens open as live queries while the sync batches land
-        note: "Frames dropped over 426 batches with the screens open: 31 on docstore, 288 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
+        note: "Median frames dropped over 426 batches with the screens open: 8.5 on docstore, 70 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
         rows:
-          - { measure: "Opening the collections in a fresh tab", ours: 11.1 ms, theirs: 71.7 ms, ratio: 6.5× }
-          - { measure: "First answer: a project's todo column", ours: 24.8 ms, theirs: 42.8 ms, ratio: 1.7× }
-          - { measure: "First answer: the 50 latest issues", ours: 9.85 ms, theirs: 10.4 ms, ratio: 1.1× ‡ }
-          - { measure: "A sync batch, four screens open", ours: 6.80 ms, theirs: 128 ms, ratio: 19× }
+          - { measure: "Opening the collections in a fresh tab", ours: 8.99 ms, theirs: 54.6 ms, ratio: 6.1× }
+          - { measure: "First answer: a project's todo column", ours: 17.1 ms, theirs: 27.8 ms, ratio: 1.6× }
+          - { measure: "First answer: the 50 latest issues", ours: 6.50 ms, theirs: 7.36 ms, ratio: 1.1× }
+          - { measure: "A sync batch, four screens open", ours: 3.74 ms, theirs: 76.4 ms, ratio: 20× }
 demo:
   count: 100,000
 ---
@@ -222,7 +222,7 @@ for await (const { key, value } of db.range({ limit: 50 })) {
 The wasm engine loads in parallel with the open, outside your main bundle
 
 ```ts
-// 19.7 kB gzip in your main bundle
+// 19.4 kB gzip in your main bundle
 import { openDb } from "@opfs-lsm/kv";
 // the SharedWorker loads here, but you
 // can already do everything without it
@@ -288,7 +288,7 @@ These benchmarks show our work in this direction.
 
 <div class="bench-foot">
 
-Runs in headless Chrome 157 and 158 on an Apple M2 Pro, and on an Apple M5 Max for the task tracker, except its writes at 200,000 issues.
+Runs in headless Chrome 158 on an Apple M5 Max, except the writes at 200,000 issues, which ran on an Apple M2 Pro.
 
 [Every table](../docs/benchmarks.md) · [How we measure](../bench/README.md)
 

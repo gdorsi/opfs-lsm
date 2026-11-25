@@ -271,16 +271,16 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
     expect(refused(r.compact)).toBe(true);
   });
 
-  it("L0, the footer's magic flipped: every read of it fails as corrupt", async () => {
+  it("L0, the footer's magic flipped: a tab reads the run without its Bloom filter, and compaction refuses it", async () => {
     const r = await run("L0 run: magic flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - 2)));
-    expect(crashes(r)).toEqual([]);
-    expect(wrongAnswers(r)).toEqual([]);
+    expect(r).toMatchObject({ open: "ok", get: "ok", range: "ok", contains: "ok" });
+    expect(refused(r.compact)).toBe(true);
   });
 
-  it("L0, truncated by half", async () => {
+  it("L0, truncated by half: every read of it fails as corrupt", async () => {
     const r = await run("L0 run: truncated", standard, async (f) => corruptFile(f.fs, await l0(f), (b) => b.slice(0, b.byteLength >> 1)));
-    expect(crashes(r)).toEqual([]);
-    expect(wrongAnswers(r)).toEqual([]);
+    expect(r).toMatchObject({ open: "ok", get: "corrupt", range: "corrupt", contains: "corrupt" });
+    expect(refused(r.compact)).toBe(true);
   });
 
   it("L0, the index offset field inflated", async () => {
@@ -296,7 +296,7 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
 
   // KT2 (fuzz/findings.test.ts): one flipped bit in the high byte of the
   // footer's block count made a tab allocate 2^24 x 8 bytes before it read
-  // the index. `readFooter` now refuses a count the index cannot hold.
+  // the index. A tab now reads no block count from a run.
   it("L0, the footer's block count high byte flipped", async () => {
     const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - SST_FOOTER_BYTES + 7, 0x01)));
     expect(crashes(r)).toEqual([]);
