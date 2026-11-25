@@ -5,9 +5,9 @@ import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
 import { decodeGeneration, encodeGeneration, manifestHead, publishGeneration, publishL0, runsOfCopy } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { decodeIndex, encodeIndex, readFooter } from "../src/store/sst.js";
+import { decodeIndex, encodeIndex } from "../src/store/sst.js";
 import { loadLatestGeneration } from "./latest-generation.js";
-import { encodeRunRef, encodeSstRef, indexBlob, sstBlockIndex, sstKeyRange, sstRunEnd } from "./oracle/sst-ref.js";
+import { encodeRunRef, encodeSstRef, footerRef, indexBlob, sstBlockIndex, sstKeyRange, sstRunEnd } from "./oracle/sst-ref.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import { NO_BLOCKS, runGet } from "./runs.js";
 import { indexWorkload } from "./sst-workloads.js";
@@ -155,7 +155,7 @@ describe("manifest", () => {
 
     it("is encoded from the index rows of a run's file as its decoded index says", () => {
       const body = encodeSstRef(indexWorkload(300), 256);
-      const { indexStart, indexEnd } = readFooter(body, body.byteLength);
+      const { indexStart, indexEnd } = footerRef(body, body.byteLength);
       expect(encodeIndex(body.subarray(indexStart, indexEnd))).toEqual(indexBlob(sstBlockIndex(body)));
     });
   });

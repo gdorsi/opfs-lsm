@@ -591,8 +591,7 @@ prefix. Without those records, the manifest alone is one.
    empty counts as lost.
 
 In a running database only rule 2 applies. A manifest newer than the recorded one is a leftover
-of a crash between a publish and its IndexedDB commit. Its seqs are still in the WAL, so it is
-ignored.
+of a crash between a publish and its IndexedDB commit. Its seqs are still in the WAL, so it is ignored.
 
 ### Recording a manifest
 

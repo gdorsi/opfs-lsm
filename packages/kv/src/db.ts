@@ -728,13 +728,13 @@ class DbImpl implements Db {
         if (!runs[i]) gone = true;
       }
     };
-    const [read, ...opens] = await Promise.allSettled([
+    const settled = await Promise.allSettled([
       manifest,
       ...Array.from({ length: Math.min(OPEN_CONCURRENCY, paths.length) }, openNext),
     ]);
     const held = runs.filter((r) => r !== undefined);
-    const failed = [read, ...opens].find((r) => r.status === "rejected");
-    const meta = read.status === "fulfilled" ? read.value : undefined;
+    const failed = settled.find((r) => r.status === "rejected");
+    const meta = failed ? undefined : await manifest;
     if (failed || gone || !meta || this.closed || this.has(generation, ahead)) {
       this.dropRuns(held);
       if (failed) throw failed.reason;
@@ -766,11 +766,8 @@ class DbImpl implements Db {
       const meta = (await manifest.catch(() => undefined))?.runs[i];
       run = this.runs.get(path);
       if (run || !meta) file.close();
-      if (!run) {
-        if (!meta) return undefined;
-        run = { path, file, reader: new SstReader(file, this.cache, meta, meta.marksThrough), layers: 0 };
-        this.runs.set(path, run);
-      }
+      else this.runs.set(path, (run = { path, file, reader: new SstReader(file, this.cache, meta, meta.marksThrough), layers: 0 }));
+      if (!run) return undefined;
     }
     run.layers += 1;
     return run;

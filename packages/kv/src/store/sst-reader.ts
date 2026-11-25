@@ -221,10 +221,10 @@ export class SstReader {
       const { size } = this.file;
       const from = this.index.blockStart[this.index.sepEnd.length]!;
       const tail = await this.read(from, size - from);
-      const f = readFooter(tail, size);
-      if (f.dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
-      const bits = tail.slice(0, f.indexStart - from);
-      return { value: { bits, hashCount: f.bloomHashCount }, bytes: bits.byteLength };
+      const { dataLen, indexStart, bloomHashCount: hashCount } = readFooter(tail, size);
+      if (dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
+      const bits = tail.slice(0, indexStart - from);
+      return { value: { bits, hashCount }, bytes: bits.byteLength };
     });
     if (!(bloom instanceof Miss)) return bloom;
     bloom.ready.catch(() => undefined);

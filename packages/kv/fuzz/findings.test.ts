@@ -86,9 +86,9 @@ describe("decoder bugs the fuzzers found", () => {
   // KT2, tab path. A tab sized `sepEnd` and `blockStart` (Uint32Array) from
   // the footer's block count before it read the index: a count of 2^24 cost
   // 128 MiB, and one near 2^32 asked for 32 GiB. One flipped bit in the
-  // count's high byte was enough. `readFooter` now refuses a count whose
-  // 16-byte index entries pass the index length, and a tab takes the index
-  // from the manifest, whose decoder sizes it by the bytes left.
+  // count's high byte was enough. A tab now reads no block count from a
+  // run: it takes the index from the manifest, whose decoder refuses a
+  // count its bytes cannot hold.
   it("KT2: a corrupt block count does not size an allocation", async () => {
     const buf = encodeSstRef(entries);
     footer(buf).setUint32(4, 0x01000000, true);

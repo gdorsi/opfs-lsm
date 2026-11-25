@@ -296,7 +296,7 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
 
   // KT2 (fuzz/findings.test.ts): one flipped bit in the high byte of the
   // footer's block count made a tab allocate 2^24 x 8 bytes before it read
-  // the index. `readFooter` now refuses a count the index cannot hold.
+  // the index. A tab now reads no block count from a run.
   it("L0, the footer's block count high byte flipped", async () => {
     const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - SST_FOOTER_BYTES + 7, 0x01)));
     expect(crashes(r)).toEqual([]);

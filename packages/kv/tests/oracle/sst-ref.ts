@@ -302,6 +302,22 @@ export function encodeSstRef(entries: readonly SstEntry[], blockTarget = SST_BLO
   return encodeRunRef(entries, blockTarget).body;
 }
 
+/** A run's footer as `readFooter` checks it, with the fields only this reference reads. */
+export type FooterRef = SstFooter & {
+  entryCount: number;
+  blockCount: number;
+  /** Where the footer starts, which is also where the index ends. */
+  indexEnd: number;
+};
+
+/** `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run, as for `readFooter`. */
+export function footerRef(tail: Uint8Array, fileSize: number): FooterRef {
+  const f = readFooter(tail, fileSize);
+  const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  const at = tail.byteLength - SST_FOOTER_BYTES;
+  return { ...f, entryCount: view.getUint32(at, true), blockCount: view.getUint32(at + 4, true), indexEnd: fileSize - SST_FOOTER_BYTES };
+}
+
 type BlockLayout = {
   view: DataView;
   /** Where the CRC is stored. It covers every byte before it. */
@@ -316,7 +332,7 @@ type BlockLayout = {
 };
 
 function parseFooter(buf: Uint8Array): BlockLayout {
-  const f = readFooter(buf, buf.byteLength);
+  const f = footerRef(buf, buf.byteLength);
   return {
     view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
     crcOff: f.indexEnd + 28,
@@ -366,7 +382,7 @@ function readBlockIndex(
  * bytes from `footer.dataLen` to its end. Encoders write blocks back to back
  * from offset 0 and a merge reads them that way, so the index must agree.
  */
-export function blockLengths(meta: Uint8Array, footer: SstFooter): number[] {
+export function blockLengths(meta: Uint8Array, footer: FooterRef): number[] {
   const view = new DataView(meta.buffer, meta.byteOffset, meta.byteLength);
   const index = readBlockIndex(meta, view, footer.indexStart - footer.dataLen, footer.indexEnd - footer.dataLen, footer.blockCount);
   let next = 0;

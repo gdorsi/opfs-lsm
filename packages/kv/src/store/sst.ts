@@ -13,8 +13,6 @@ export const SST_FOOTER_BYTES = 40;
  * loops once per hash, so a corrupt count must not set its cost.
  */
 const MAX_BLOOM_HASHES = 32;
-/** The smallest index entry: two u32 key lengths, offset and length. */
-const MIN_INDEX_ENTRY_BYTES = 16;
 
 const TAG_PUT = 1;
 const TAG_DEL = 2;
@@ -308,19 +306,17 @@ export class RecordWalker {
 }
 
 export type SstFooter = {
-  entryCount: number;
-  blockCount: number;
   /** Data blocks are `[0, dataLen)`; the Bloom bits start here. */
   dataLen: number;
   bloomHashCount: number;
+  /** Where the Bloom bits end and the run's own index starts. */
   indexStart: number;
-  /** Where the footer starts, which is also where the index ends. */
-  indexEnd: number;
 };
 
 /**
- * Footer is 7 u32 fields, then CRC, version, and magic. Rejects any other
- * version. `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run.
+ * Where a run keeps its Bloom filter. The footer is 7 u32 fields, then CRC,
+ * version, and magic. Rejects any other version. `tail` is the last
+ * `tail.byteLength` bytes of a `fileSize`-byte run.
  */
 export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   if (tail.byteLength < SST_FOOTER_BYTES || fileSize < tail.byteLength) throw new CorruptDatabaseError("sst too short");
@@ -330,16 +326,19 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   const version = view.getUint32(tail.byteLength - 8, true);
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   const at = tail.byteLength - SST_FOOTER_BYTES;
-  const field = (i: number) => view.getUint32(at + 4 * i, true);
-  const [entryCount, blockCount, bloomOffset, bloomLen, bloomHashCount, indexOffset, indexLen] =
-    [0, 1, 2, 3, 4, 5, 6].map(field) as [number, number, number, number, number, number, number];
-  const footer = fileSize - SST_FOOTER_BYTES;
-  if (indexOffset !== bloomOffset + bloomLen || indexOffset + indexLen !== footer) {
+  // Fields 0 and 1, the entry and block counts, are for a reader of the run's own index.
+  const [dataLen, bloomLen, bloomHashCount, indexStart, indexLen] = [2, 3, 4, 5, 6].map((i) => view.getUint32(at + 4 * i, true)) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  if (indexStart !== dataLen + bloomLen || indexStart + indexLen !== fileSize - SST_FOOTER_BYTES) {
     throw new CorruptDatabaseError("sst footer sections OOB");
   }
   if (bloomHashCount > MAX_BLOOM_HASHES) throw new CorruptDatabaseError(`sst bloom hash count ${bloomHashCount}`);
-  if (blockCount * MIN_INDEX_ENTRY_BYTES > indexLen) throw new CorruptDatabaseError("sst block count past the index");
-  return { entryCount, blockCount, dataLen: bloomOffset, bloomHashCount, indexStart: indexOffset, indexEnd: footer };
+  return { dataLen, bloomHashCount, indexStart };
 }
 
 /** One block's bytes: a u32 record count at `start`, then records up to `end`. */

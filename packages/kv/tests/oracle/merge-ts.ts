@@ -3,8 +3,8 @@ import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
 import { throughAt, type Marks } from "../../src/store/marks.js";
 import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
-import { readFooter, SST_FOOTER_BYTES, type RunEnd, type SstEntry, type SstFooter } from "../../src/store/sst.js";
-import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize } from "./sst-ref.js";
+import { SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../../src/store/sst.js";
+import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize, footerRef, type FooterRef } from "./sst-ref.js";
 
 /**
  * The merge session in TypeScript (packages/kv/engine/abi.md, "Merge session"),
@@ -234,7 +234,7 @@ type Read =
   /** The run's tail: its footer, and its bloom and index when they fit. */
   | { readonly kind: "tail" }
   /** The bloom or index starts before the tail: the bytes in front of it are asked for. */
-  | { readonly kind: "meta-rest"; readonly tail: Uint8Array; readonly footer: SstFooter }
+  | { readonly kind: "meta-rest"; readonly tail: Uint8Array; readonly footer: FooterRef }
   | Blocks
   /** Every run of the source was read and checked. */
   | { readonly kind: "done" };
@@ -319,7 +319,7 @@ class Reader {
       this.startBlocks(read.footer, meta);
       return;
     }
-    const footer = readFooter(bytes, size);
+    const footer = footerRef(bytes, size);
     const tailAt = size - bytes.byteLength;
     if (footer.dataLen < tailAt) {
       this.read = { kind: "meta-rest", tail: bytes, footer };
@@ -336,7 +336,7 @@ class Reader {
   }
 
   /** Index the run from `meta`, its bytes from the end of its data on. */
-  private startBlocks(footer: SstFooter, meta: Uint8Array): Blocks {
+  private startBlocks(footer: FooterRef, meta: Uint8Array): Blocks {
     // The CRC sits after the footer's seven fields and covers every byte before it.
     const crcAt = footer.indexEnd + 28 - footer.dataLen;
     const layout: Layout = {
