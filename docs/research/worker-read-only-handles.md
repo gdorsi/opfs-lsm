@@ -3,6 +3,8 @@
 Status: rejected. A prototype cut one page read from about 160 µs to 20 µs, but only Chromium has
 read-only sync access handles, opening a database with data got up to about 5 ms slower, and two
 linearlite steps got slower. The prototype was dropped, and its code is not in the repository.
+A later probe read the same handles through a SharedArrayBuffer
+([sab-sync-read.md](sab-sync-read.md)).
 
 Date: 2026-11-15. Chrome 157 headless, macOS arm64, Apple M5 Max. The machine ran other work
 during every measurement, including another bench session. Every comparison alternates its
