@@ -1,5 +1,6 @@
 import { dbInternals, type Db } from "./db.js";
 import type { HostStats } from "./host/protocol.js";
+import { watchAppends, type TabWal } from "./idb/wal.js";
 import { CountingFs, type IoCounters } from "./opfs/counting-fs.js";
 
 export type { IoCount, IoCounters } from "./opfs/counting-fs.js";
@@ -17,6 +18,15 @@ export type KvStats = {
   host: HostStats;
 };
 
+/** What each tab WAL committed since this module loaded. */
+const appended = new WeakMap<TabWal, { records: number; bytes: number }>();
+watchAppends((wal, bytes) => {
+  const counts = appended.get(wal) ?? { records: 0, bytes: 0 };
+  counts.records += 1;
+  counts.bytes += bytes;
+  appended.set(wal, counts);
+});
+
 function internalsOf(db: Db) {
   const found = dbInternals(db);
   if (!found) throw new Error("db was not opened by @opfs-lsm/kv");
@@ -26,10 +36,11 @@ function internalsOf(db: Db) {
 export async function readStats(db: Db): Promise<KvStats> {
   const { name, wal, fs, ingestClient } = internalsOf(db);
   const host = await ingestClient.stats(name);
+  const { records, bytes } = appended.get(wal) ?? { records: 0, bytes: 0 };
   return {
     tab: {
-      walAppends: wal.appendedRecords,
-      walBytes: wal.appendedBytes,
+      walAppends: records,
+      walBytes: bytes,
       ...(fs instanceof CountingFs ? { fs: structuredClone(fs.counters) } : {}),
     },
     host,

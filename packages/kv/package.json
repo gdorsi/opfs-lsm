@@ -27,6 +27,7 @@
     "./dist/host/shared-worker.js",
     "./dist/host/metered-worker.js",
     "./dist/host/metered-host.js",
+    "./dist/stats.js",
     "./dist/testing.js"
   ],
   "exports": {
