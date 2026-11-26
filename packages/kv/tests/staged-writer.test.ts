@@ -98,19 +98,21 @@ describe("a file written where OPFS has no createWritable", () => {
   });
 
   it.each([
-    ["throws QuotaExceededError", false],
-    ["writes part of the bytes", true],
-  ])("fails as a refused createWritable write does when the browser %s, and the path can be written again", async (_how, short) => {
+    ["throws QuotaExceededError", false, 8],
+    ["writes part of the bytes", true, 8],
+    ["fails a write no byte of which fits", true, 4],
+  ])("fails as a refused createWritable write does when the browser %s, and the path can be written again", async (_how, short, free) => {
     const { dir, fs } = folder();
     dir.origin.short = short;
-    dir.origin.free = 8;
+    dir.origin.free = free;
     const refused = await fs.create(PATH);
     await refused.write(utf("fits"));
     const err = await refused.write(utf("does not fit")).catch((e: unknown) => e);
     expect(codeOfError(err)).toBe("quota");
     expect(dir.files()).toEqual({});
     expect(dir.origin.open).toBe(0);
-    expect(dir.origin.free).toBe(8);
+    expect(dir.origin.free).toBe(free);
+    await expect(refused.abort()).resolves.toBeUndefined();
 
     dir.origin.free = 64;
     const again = await fs.create(PATH);

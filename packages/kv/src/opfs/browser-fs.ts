@@ -245,9 +245,10 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
     const handle = (await dir.getFileHandle(swap, { create: true })) as StagedHandle;
     let access: SyncAccess | undefined;
     let at = 0;
+    // A step that failed has removed the staged file already, and an abort after it resolves, as a writable's does.
     const abort = async (): Promise<void> => {
       await access?.close();
-      await dir.removeEntry(swap);
+      await ignoreNotFound(dir.removeEntry(swap));
     };
     const orAbort = async (step: () => unknown): Promise<void> => {
       try {
@@ -264,9 +265,15 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
     return {
       write: (bytes) =>
         orAbort(() => {
-          const written = access!.write(bytes, { at });
+          let written = 0;
+          try {
+            written = access!.write(bytes, { at });
+          } catch (err) {
+            // Safari fails a write no byte of which fits with InvalidStateError: it wrote none.
+            if ((err as { name?: string }).name !== "InvalidStateError") throw err;
+          }
           at += written;
-          // A full disk writes part of the bytes, and is a refusal like a full quota.
+          // A full disk writes the part that fits, and is a refusal like a full quota.
           if (written < bytes.byteLength) throw new DOMException("short write", "QuotaExceededError");
         }),
       close: () =>

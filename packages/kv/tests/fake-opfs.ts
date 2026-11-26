@@ -11,7 +11,11 @@ export type FakeOrigin = {
   readonly handles: Handles;
   /** Bytes a sync access handle may still write. A remove, a truncate and a replaced file give theirs back. */
   free: number;
-  /** At the limit, write what fits and return the count, as a full disk does. Otherwise throw `QuotaExceededError`. */
+  /**
+   * At the limit, behave as a full disk does in Safari: write what fits and
+   * return the count, or throw `InvalidStateError` when no byte fits.
+   * Otherwise throw `QuotaExceededError`.
+   */
   short: boolean;
   /** Every entry a directory removed, by name, in order. */
   readonly removals: string[];
@@ -58,6 +62,7 @@ function fakeDir(origin: FakeOrigin) {
         if (take > origin.free) {
           if (!origin.short) throw domError("QuotaExceededError", "the origin is full");
           take = Math.max(0, origin.free);
+          if (take === 0) throw domError("InvalidStateError", "Failed to write to file");
         }
         const grown = new Uint8Array(Math.max(target.bytes.byteLength, at + take));
         grown.set(target.bytes);
