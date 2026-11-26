@@ -1,7 +1,6 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { packPatterns } from "../src/store/block-scan.js";
-import { encodeRunIn, scanBlockContainsIn } from "../src/store/engine.js";
+import { encodeRunIn, packPatterns, scanBlockContainsIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
@@ -170,7 +169,6 @@ describe("wasm traps", () => {
   it("KW3: after a trap the engine replaces the instance and keeps answering", async () => {
     vi.resetModules();
     const engine = await import("../src/store/engine.js");
-    const scan = await import("../src/store/block-scan.js");
     await import("../src/testing.js");
     const { engineMemory } = await import("../src/host/metered-host.js");
     const instantiate = WebAssembly.instantiate.bind(WebAssembly);
@@ -185,13 +183,12 @@ describe("wasm traps", () => {
     } finally {
       spy.mockRestore();
     }
-    const scanBlock = scan.blockScanner();
     const block = blocksOf(encodeSstRef([{ kind: "put", key: utf("big"), value: new Uint8Array(3 << 20).fill(7), seq: 1 }]))[0]!;
     // A scan with no hit leaves the block's input region in place, then the memory takes every page wasm32 allows.
-    expect(scanBlock(block, packPatterns([utf("absent")]))).toHaveLength(0);
+    expect(engine.scanBlock(block, packPatterns([utf("absent")]))).toHaveLength(0);
     memory!.grow(65_536 - memory!.buffer.byteLength / 65_536);
 
-    const hits = scan.unpackHits(scanBlock(block, packPatterns([])));
+    const hits = engine.unpackHits(engine.scanBlock(block, packPatterns([])));
     expect([...hits].map((h) => h.key)).toEqual([utf("big")]);
     expect(engineMemory()).toMatchObject({ wasmPeakBytes: 2 ** 32 });
     expect(engineMemory().wasmBytes).toBeLessThan(2 ** 28);
