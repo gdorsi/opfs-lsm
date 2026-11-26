@@ -1,43 +1,143 @@
-import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp, type Db } from "@opfs-lsm/kv";
-import { parseCatalog } from "./catalog.js";
-import { decodeDocs, type StoredDoc } from "./derive.js";
+import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp } from "@opfs-lsm/kv";
+import { parseCatalog, readableTarget, type BoundCollection, type IndexPlan } from "./catalog.js";
+import { decodeDocs, indexEntries, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, bytesEqual, hasPrefix, idOf, rowPrefix, touches, type CollectionId } from "./keys.js";
-import type { JsonDoc } from "./schema.js";
+import {
+  CATALOG_KEY,
+  bytesEqual,
+  compareBytes,
+  decodeEntries,
+  hasPrefix,
+  idBytes,
+  idOf,
+  keyId,
+  keyString,
+  rowPrefix,
+  touches,
+  type CollectionId,
+} from "./keys.js";
+import type { EntryOf, IndexEntry, JsonDoc, KeyOnlyIndex } from "./schema.js";
+import type { StoreCore } from "./store.js";
 
 /** The documents of an event are parsed together on the first access to any `doc`, so a listener that only needs `id` pays no JSON.parse. `deleted` tells a delete from a put without parsing. */
-export type DocChange<T extends JsonDoc> = {
+export type DocChange<T extends JsonDoc, Ix = any> = {
   readonly id: string;
   readonly deleted: boolean;
   /** The stored form after the change. Undefined for a delete. */
   readonly doc: T | undefined;
+  /**
+   * The entries the document had in `index` before the change, in index
+   * order, as `queryEntries` gives them: none when it did not exist or was
+   * not in the index. They come from the index entries the write removed and
+   * added, and from `doc` for an index the write left alone, so nothing is
+   * read. `index` is a sorted or multi index that is not unique and includes
+   * no field: a write can replace the value of any other entry in place, and
+   * the key of a unique entry does not name its document. Throws
+   * DocStoreError "schema" or "index-failed" when the catalog of the change
+   * holds the index otherwise than this handle declares it, as a query does,
+   * but not while it builds.
+   */
+  before<I extends KeyOnlyIndex<Ix>>(index: I): EntryOf<T, Ix, I>[];
 };
 
-export type CollectionChange<T extends JsonDoc> =
-  | { readonly kind: "append"; readonly seq: number; readonly changes: readonly DocChange<T>[] }
+export type CollectionChange<T extends JsonDoc, Ix = any> =
+  | { readonly kind: "append"; readonly seq: number; readonly changes: readonly DocChange<T, Ix>[] }
   /** What the listener holds may be stale: read again. Sent for kv's `gap`, when the collection was cleared or dropped, and for any range delete over its documents. */
   | { readonly kind: "gap" }
   /** The last event. `reason` is kv's: "close" for the kv handle's `close()`, "destroyed" when its database was removed. */
   | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
 
-/** `slot` is the change's place in `docs`, the documents of its kv record. */
-function docChange<T extends JsonDoc>(id: string, slot: number | undefined, docs: (slot: number) => StoredDoc): DocChange<T> {
-  return {
-    id,
-    deleted: slot === undefined,
-    get doc() {
-      return slot === undefined ? undefined : (docs(slot) as unknown as T);
-    },
-  };
-}
+/** One index's ops in a run, by document id. */
+type EntryOps = Map<string, { readonly removed: Uint8Array[]; readonly added: Uint8Array[] }>;
 
 /**
- * The documents of `puts`, all parsed on the first access to any. A listener
- * reads every document of an event or none, so one batch is the cheapest.
+ * The ops of one kv record that one catalog describes: the rows, parsed
+ * together on the first access to any document, since a listener reads every
+ * document of an event or none, and the collection's index entries, grouped
+ * by index on the first `before` that asks for one.
  */
-function lazyDocs(puts: readonly Uint8Array[]): (slot: number) => StoredDoc {
-  let docs: (StoredDoc | undefined)[] | undefined;
-  return (slot) => (docs ??= decodeDocs(puts))[slot]!;
+class Run {
+  readonly puts: Uint8Array[] = [];
+  readonly entries: ChangeOp[] = [];
+  private docs: (StoredDoc | undefined)[] | undefined;
+  private coll: BoundCollection | undefined;
+  private readonly byIndex = new Map<string, EntryOps>();
+
+  constructor(private readonly bound: () => BoundCollection) {}
+
+  doc(slot: number): StoredDoc {
+    return (this.docs ??= decodeDocs(this.puts))[slot]!;
+  }
+
+  /** The document's entries in `index` before the change: what the write removed, and what it holds now that the write did not add. */
+  before(index: string, id: string, slot: number | undefined): IndexEntry[] {
+    const plan = this.plan(index);
+    let ops = this.byIndex.get(index);
+    if (!ops) this.byIndex.set(index, (ops = this.group(plan)));
+    const mine = ops.get(id);
+    const keys = mine ? mine.removed.slice() : [];
+    if (slot !== undefined) {
+      const now = indexEntries(plan, idBytes(id), this.doc(slot));
+      const added = new Set(mine?.added.map(keyString));
+      if (Array.isArray(now)) for (const e of now) if (!added.has(keyString(e.key))) keys.push(e.key);
+    }
+    keys.sort(compareBytes);
+    return decodeEntries(plan.target, keys.map((key) => ({ key, value: undefined })), 0);
+  }
+
+  private plan(index: string): IndexPlan {
+    const coll = (this.coll ??= this.bound());
+    const r = coll.readable.get(index);
+    // A building index is written like a ready one. Any other state throws here.
+    const plan = r && (!("kind" in r) || r.kind === "building") ? coll.maintained.find((p) => p.name === index) : undefined;
+    if (!plan) readableTarget(coll, index);
+    if (plan!.target.kind !== "sorted") {
+      throw new DocStoreError("query", `before cannot read "${index}"`);
+    }
+    return plan!;
+  }
+
+  private group(plan: IndexPlan): EntryOps {
+    const out: EntryOps = new Map();
+    for (const op of this.entries) {
+      if (op.type === "deleteRange" || !hasPrefix(op.key, plan.target.prefix)) continue;
+      const id = keyId(plan.target, op.key);
+      let mine = out.get(id);
+      if (!mine) out.set(id, (mine = { removed: [], added: [] }));
+      (op.type === "del" ? mine.removed : mine.added).push(op.key);
+    }
+    return out;
+  }
+}
+
+class Change<T extends JsonDoc> implements DocChange<T, any> {
+  readonly deleted: boolean;
+  readonly #slot: number | undefined;
+  readonly #run: Run;
+
+  /** `slot` is the change's place in the run's rows. */
+  constructor(
+    readonly id: string,
+    slot: number | undefined,
+    run: Run,
+  ) {
+    this.deleted = slot === undefined;
+    this.#slot = slot;
+    this.#run = run;
+  }
+
+  get doc(): T | undefined {
+    return this.#slot === undefined ? undefined : (this.#run.doc(this.#slot) as unknown as T);
+  }
+
+  before(index: string): any[] {
+    return this.#run.before(index, this.id, this.#slot);
+  }
+}
+
+/** Whether `key` is an index entry of the collection whose rows start with `rows`: it starts with the collection's prefix and an index id. */
+function isEntryOf(key: Uint8Array, rows: Uint8Array): boolean {
+  return key.length > rows.length && key[0] === rows[0] && key[1] === rows[1] && key[2] === rows[2] && key[3] !== rows[3];
 }
 
 /** The id of collection `name` in catalog `bytes`, or undefined when the catalog lacks it or this library cannot read it. */
@@ -61,21 +161,24 @@ function collectionIdIn(bytes: Uint8Array | undefined, name: string): Collection
  * event too, and reads it again after a kv `gap`, which may have skipped such
  * a write.
  */
-export function followCollection<T extends JsonDoc>(
-  kv: Db,
+export function followCollection<T extends JsonDoc, Ix>(
+  store: StoreCore,
   name: string,
-  listener: (change: CollectionChange<T>) => void,
+  listener: (change: CollectionChange<T, Ix>) => void,
 ): () => void {
+  const kv = store.kv;
   let live = true;
   let held: ChangeEvent[] | undefined;
   let id: CollectionId | undefined;
   let prefix: Uint8Array | undefined;
+  /** The catalog that gives `id`, for the index entries of the changes. */
+  let catalog: Uint8Array | undefined;
   /** Events at or below this seq are reflected in what the feed already knows. */
   let through = 0;
   /** The last catalog read failed, so events may have been missed. */
   let stale = false;
 
-  const emit = (change: CollectionChange<T>) => {
+  const emit = (change: CollectionChange<T, Ix>) => {
     if (!live) return;
     try {
       listener(change);
@@ -84,21 +187,25 @@ export function followCollection<T extends JsonDoc>(
     }
   };
 
-  const follow = (next: CollectionId | undefined) => {
+  const follow = (next: CollectionId | undefined, bytes: Uint8Array | undefined) => {
     id = next;
     prefix = next === undefined ? undefined : rowPrefix(next);
+    catalog = bytes;
+  };
+
+  const newRun = () => {
+    const bytes = catalog;
+    return new Run(() => store.collectionIn(bytes, name));
   };
 
   const append = (seq: number, ops: readonly ChangeOp[]) => {
-    let changes: DocChange<T>[] = [];
-    let puts: Uint8Array[] = [];
-    let docs = lazyDocs(puts);
+    let changes: DocChange<T, Ix>[] = [];
+    let run = newRun();
     /** Send the changes so far, then a gap. */
     const gap = () => {
       if (changes.length > 0) emit({ kind: "append", seq, changes });
       changes = [];
-      puts = [];
-      docs = lazyDocs(puts);
+      run = newRun();
       emit({ kind: "gap" });
     };
     for (const op of ops) {
@@ -106,21 +213,29 @@ export function followCollection<T extends JsonDoc>(
         case "put":
         case "del":
           if (prefix && hasPrefix(op.key, prefix)) {
-            const slot = op.type === "put" ? puts.push(op.value) - 1 : undefined;
-            changes.push(docChange<T>(idOf(op.key, prefix.length), slot, docs));
+            const slot = op.type === "put" ? run.puts.push(op.value) - 1 : undefined;
+            changes.push(new Change<T>(idOf(op.key, prefix.length), slot, run));
+          } else if (prefix && isEntryOf(op.key, prefix)) {
+            run.entries.push(op);
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
-            const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
-            if (next === id) continue;
-            follow(next);
+            // Copied: the bytes are a view of a memtable chunk.
+            const bytes = op.type === "put" ? op.value.slice() : undefined;
+            const next = collectionIdIn(bytes, name);
+            if (next === id) {
+              catalog = bytes;
+              run = newRun();
+              continue;
+            }
+            follow(next, bytes);
             gap();
           }
           break;
         case "deleteRange": {
-          const catalog = touches(op, CATALOG_KEY);
+          const overCatalog = touches(op, CATALOG_KEY);
           // A clear, or another layer's delete. The op says which rows are gone only by their seqs, which the feed does not keep.
-          if (catalog || (prefix && touches(op, prefix))) gap();
+          if (overCatalog || (prefix && touches(op, prefix))) gap();
           // Where the collection is now, the next catalog read says.
-          if (catalog) return resync();
+          if (overCatalog) return resync();
           break;
         }
       }
@@ -153,17 +268,17 @@ export function followCollection<T extends JsonDoc>(
    */
   const resync = (first: ChangeEvent[] = []) => {
     held = first;
-    kv.view(async (snap) => ({ seq: snap.seq, id: collectionIdIn(await snap.get(CATALOG_KEY), name) }))
+    kv.view(async (snap) => ({ seq: snap.seq, catalog: await snap.get(CATALOG_KEY) }))
       .then(
         (base) => {
           through = base.seq;
-          follow(base.id);
+          follow(collectionIdIn(base.catalog, name), base.catalog);
           if (stale) emit({ kind: "gap" });
           stale = false;
           return held!;
         },
         (err: unknown) => {
-          follow(undefined);
+          follow(undefined, undefined);
           if (err instanceof ClosedError) return held!;
           console.error("docstore changes() could not read the catalog", err);
           stale = true;

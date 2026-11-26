@@ -72,6 +72,8 @@ export interface StoreCore {
   readonly kv: Db;
   /** The collection in the catalog that `snap` holds. A promise only when the catalog has to be read. */
   collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection>;
+  /** The collection in catalog `bytes`, which a record or a snapshot holds. */
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
   write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R>;
   clear(name: string): Promise<void>;
@@ -198,6 +200,10 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
 
   collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection> {
     return snap.seq === this.syncedAt ? collectionOf(this.bound, name) : this.readCatalog(snap, name);
+  }
+
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection {
+    return collectionOf(this.boundIn(bytes), name);
   }
 
   private async readCatalog(snap: ViewSnapshot, name: string): Promise<BoundCollection> {

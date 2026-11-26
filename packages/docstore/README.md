@@ -652,7 +652,30 @@ await todos.delete("t1");
 // reading only id and deleted costs no JSON.parse
 ```
 
-**Note.** A gap means kv skipped records a flush folded, or the collection was cleared or dropped. Index entries and catalog writes send no event, and a listener that throws is logged and skipped.
+**Note.** A gap means kv skipped records a flush folded, or the collection was cleared or dropped. A write of index entries alone, such as a backfill, and a catalog write send no event, and a listener that throws is logged and skipped.
+
+`before(index)` gives the entries a document had in an index before the change, as `queryEntries` returns them: none when it did not exist or was not in the index. With the entries before and the document after, a list or a count kept from an index follows each change without a read and without a copy of every document.
+
+```ts
+await todos.modify("t1", (t) => ({ ...t, done: true }));
+// changes[0].before("open") => [{ id: "t1", values: [false, 0] }]
+// changes[0].doc => { id: "t1", ..., done: true }
+```
+
+```ts
+let open = await todos.count({ index: "open", eq: [false] });
+todos.changes((event) => {
+	if (event.kind !== "append") return;
+	for (const c of event.changes) {
+		// [done, createdAt] before the change, or none
+		const [was] = c.before("open");
+		if (was?.values[0] === false) open--;
+		if (c.doc?.done === false) open++;
+	}
+});
+```
+
+**Note.** `before` reads nothing, and a write stores nothing for it. It takes the index entries the write removed and added, which kv's record already holds, and the document after the change for an index the write left alone. It takes a sorted or multi index that is not unique and includes no field. A write replaces the value of a text entry or of an entry with included fields in place, and the key of a unique entry does not name its document, so their ops cannot say what the document was. Every todo has `done` and `createdAt`, so an empty `before("open")` means the write created it. Follow the feed from a snapshot, as below, so that no change is counted twice.
 
 To follow the collection with no hole and no repeat, subscribe first, read a snapshot, then apply only events above `snap.seq`. Hold the events that arrive while a snapshot loads, and read again on a gap.
 

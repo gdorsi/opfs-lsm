@@ -98,12 +98,13 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   view<R>(body: (snap: CollectionSnapshot<T, Ix>) => Promise<R>): Promise<R>;
   /**
    * Every change to this collection's documents, from this handle, other
-   * handles and other tabs, in kv seq order. Index entries are not reported.
-   * Returns the unsubscribe function. To read the collection and then follow
-   * it without a hole, subscribe first, then `view`, and ignore events with a
+   * handles and other tabs, in kv seq order. A change gives the document
+   * after it, and with `before` its entries in an index before it. Returns
+   * the unsubscribe function. To read the collection and then follow it
+   * without a hole, subscribe first, then `view`, and ignore events with a
    * seq at or below `snap.seq`.
    */
-  changes(listener: (change: CollectionChange<T>) => void): () => void;
+  changes(listener: (change: CollectionChange<T, Ix>) => void): () => void;
 }
 
 export const RETRY: unique symbol = Symbol("retry");
@@ -418,7 +419,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     });
   }
 
-  changes(listener: (change: CollectionChange<T>) => void): () => void {
-    return followCollection(this.store.kv, this.name, listener);
+  changes(listener: (change: CollectionChange<T, Ix>) => void): () => void {
+    return followCollection(this.store, this.name, listener);
   }
 }
