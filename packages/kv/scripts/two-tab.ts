@@ -426,8 +426,8 @@ function killChrome(child: ChildProcess): void {
 
 async function runOnce(options: RunOptions): Promise<number> {
   const dist = path.join(root, "dist/index.js");
-  const worker = path.join(root, "dist/host/shared-worker.js");
-  if (!fs.existsSync(dist) || !fs.existsSync(worker)) {
+  const workers = ["dist/host/shared-worker.js", "dist/host/metered-worker.js"].map((file) => path.join(root, file));
+  if (!fs.existsSync(dist) || !workers.every((file) => fs.existsSync(file))) {
     console.error("missing dist. Run pnpm --filter @opfs-lsm/kv build");
     return 1;
   }
@@ -686,6 +686,9 @@ async function runOnce(options: RunOptions): Promise<number> {
       exitCode = 1;
     } else if (!options.quota && !options.destroy && !parsed.log.includes("two-databases ok")) {
       console.error("missing the two-databases ok line");
+      exitCode = 1;
+    } else if (!options.local && !options.quota && !options.destroy && !parsed.log.includes("shipped-worker ok")) {
+      console.error("missing the shipped-worker ok line");
       exitCode = 1;
     } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
       console.error("missing SharedWorker mode");

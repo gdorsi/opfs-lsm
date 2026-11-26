@@ -511,10 +511,6 @@ export async function openExistingWal(dbName: DbName): Promise<IdBWal | undefine
  * memtable in memory. Ack = transaction complete.
  */
 export type TabWal = IdBWal & {
-  /** WAL records this handle committed. `readStats` in `@opfs-lsm/kv/testing` reports it, and the bench reads it from an `openDb` handle. */
-  appendedRecords: number;
-  /** Encoded bytes of those records. */
-  appendedBytes: number;
   /**
    * The tail after `since`, from one readonly transaction, with the
    * `manifest` copy when the recorded generation is not `held`. `started`
@@ -547,6 +543,15 @@ export type TabWal = IdBWal & {
    */
   append(record: ArrayBuffer): Promise<Seq>;
 };
+
+/** Hears each record a tab's WAL commits, with its encoded bytes. */
+type AppendWatcher = (wal: TabWal, bytes: number) => void;
+let appendWatcher: AppendWatcher | undefined;
+
+/** Only `@opfs-lsm/kv/testing` calls it, for `readStats`, so an app's bundle keeps no append counter. */
+export function watchAppends(next: AppendWatcher): void {
+  appendWatcher = next;
+}
 
 /**
  * The tab's open, the one open that creates the database. The connection
@@ -670,8 +675,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
     // tab before it commits: one more round trip per write.
     tx.commit();
     await done;
-    wal.appendedRecords += 1;
-    wal.appendedBytes += record.byteLength;
+    appendWatcher?.(wal, record.byteLength);
     return { seq, ops: decision.ops, record, result: decision.result };
   }
 
@@ -711,10 +715,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
     for (const entry of entries) join(group, entry);
     txDone(tx).then(
       () => {
-        for (const { entry } of group.adds) {
-          wal.appendedRecords += 1;
-          wal.appendedBytes += entry.record.byteLength;
-        }
+        if (appendWatcher) for (const { entry } of group.adds) appendWatcher(wal, entry.record.byteLength);
         finish(group);
         for (const { entry, add } of group.adds) entry.resolve(asSeq(add.result as number));
       },
@@ -757,8 +758,6 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
     },
     meta: () => metaOf(connection),
     close,
-    appendedRecords: 0,
-    appendedBytes: 0,
     tail,
     appendAfter,
     append,

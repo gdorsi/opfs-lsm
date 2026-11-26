@@ -42,7 +42,7 @@ A new row or table is an entry in `docs-tables.ts` and, for a table, a pair of m
 
 | family | ours | baseline |
 |---|---|---|
-| `kv` | kv (`openDb`, SharedWorker host) | a hand-written IndexedDB key-value store: one object store, one transaction per batch with an explicit `commit()`, `getAll` pages for scans, with `direction: "prev"` for reverse ones |
+| `kv` | kv (`openDbWith` of `@opfs-lsm/kv/testing`: `openDb` on the SharedWorker that keeps host counters) | a hand-written IndexedDB key-value store: one object store, one transaction per batch with an explicit `commit()`, `getAll` pages for scans, with `direction: "prev"` for reverse ones |
 | `tanstack` | `docstoreCollectionOptions` from `@opfs-lsm/tanstack-db` (`packages/tanstack-db`), eager, over a docstore collection with no indexes | TanStack DB's `indexedDBCollectionOptions`, eager, its only mode |
 | `tanstack-ondemand` | `docstoreCollectionOptions` with `syncMode: "on-demand"` over a docstore index on `[owner, createdAt]` | TanStack DB's `@tanstack/browser-db-sqlite-persistence` (wa-sqlite on OPFS), on-demand, with `createIndex` on `owner`, `createdAt` and `id` and the adapter patch described below |
 | `automerge` | `@opfs-lsm/automerge` (`packages/automerge`) | automerge-repo's `IndexedDBStorageAdapter` |
@@ -148,7 +148,7 @@ The phases:
 
 ## Amplification
 
-kv counts the bytes it writes in the configuration apps run: the tab and the SharedWorker host. The counters come from `readStats` in `@opfs-lsm/kv/testing`. The report derives:
+kv counts the bytes it writes in the configuration apps run: the tab and the SharedWorker host. The counters come from `readStats` in `@opfs-lsm/kv/testing`. The SharedWorker an app loads keeps none, so the bench page opens the one of `@opfs-lsm/kv/testing`, the same host with a meter. The report derives:
 
 - **W-Amp engine**: (flush + compaction bytes written) / user bytes in. This is the number RocksDB and Pebble report.
 - **W-Amp total**: (WAL + flush + compaction + manifest bytes) / user bytes in. It counts the WAL, as Lim et al. (FAST '16) do. WAL bytes are the records handed to IndexedDB; what IndexedDB itself writes is not visible.

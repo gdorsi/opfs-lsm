@@ -20,7 +20,7 @@ Preconditions:
 - `verify-opfs-lsm doctor` prints `doctor: ok`.
 
 - **Run nobc two-tab.** Execute `.agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm drive two-tab-nobc`. Exit code `0`.
-- **Confirm mode.** Stdout contains `mode=SharedWorker nobc`, `two-databases ok` and `two-tab ok`.
+- **Confirm mode.** Stdout contains `mode=SharedWorker nobc`, `two-databases ok`, `shipped-worker ok` and `two-tab ok`.
 - **Confirm BC stub.** Stdout contains `bc_posts=` with a positive count.
 - **Proof.** Keep `artifacts/two-tab-nobc/<run-id>/stdout.txt` including `two-databases ok`, `two-tab ok` and `bc_posts=`.
 

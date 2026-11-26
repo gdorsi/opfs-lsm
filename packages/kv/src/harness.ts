@@ -9,14 +9,15 @@ import {
   NEEDS_BROWSER,
   openOn,
   ROW_POST_MS,
-  workerIngest,
   type Db,
   type OpenOptions,
 } from "./db.js";
-import { checkDbName, newWriterId, type WriterId } from "./check.js";
+import { checkDbName, newWriterId, type DbName, type WriterId } from "./check.js";
 import { StorageUnavailableError } from "./errors.js";
 import { DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
-import { EngineHost, createLocalIngestClient } from "./host/engine-host.js";
+import { createLocalIngestClient } from "./host/engine-host.js";
+import { MeteredHost } from "./host/metered-host.js";
+import { createPortIngestClient } from "./host/port-client.js";
 import type { IngestClient } from "./host/protocol.js";
 import type { AsyncFs, ReadFs, RemovableFs } from "./opfs/async-fs.js";
 import { openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -26,7 +27,7 @@ import { MemoryFs } from "./opfs/memory-fs.js";
 /**
  * Where the run files live and who flushes them. An fs comes with the client
  * of the host that publishes to it. Without one the fs is OPFS, and the client
- * is the package SharedWorker's unless one is given.
+ * is the metered SharedWorker's unless one is given.
  */
 export type Backing =
   | { readonly fs: AsyncFs; readonly ingest: IngestClient }
@@ -64,7 +65,7 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
       const fs = options.fs ?? openBrowserReadFs(name, parent!);
       return {
         fs: options.wrapFs?.(fs) ?? fs,
-        ingest: options.ingest ?? workerIngest(name),
+        ingest: options.ingest ?? meteredWorker(name),
         ownsIngestClient: !options.ingest,
         writerId: (options.writerId ?? newWriterId()) as WriterId,
         rowPostMs: options.rowPostMs ?? ROW_POST_MS,
@@ -72,6 +73,16 @@ export async function openDbWith(options: OpenWithOptions): Promise<Db> {
       };
     };
   });
+}
+
+/** A client of the SharedWorker that runs a `MeteredHost`, so `readStats` answers in a browser. */
+function meteredWorker(name: DbName): IngestClient {
+  // Inline in the constructor, as in `workerIngest`, so bundlers emit the worker chunk.
+  const worker = new SharedWorker(
+    new URL("./host/metered-worker.js", import.meta.url),
+    { type: "module", name: `opfs-lsm:${name}` },
+  );
+  return createPortIngestClient(worker.port);
 }
 
 export type HarnessOpenOptions = OpenOptions &
@@ -82,7 +93,7 @@ export type HarnessOpenOptions = OpenOptions &
      */
     readonly fs?: AsyncFs;
     /**
-     * Ingest client. Omit for the package SharedWorker when the fs is OPFS,
+     * Ingest client. Omit for the metered SharedWorker when the fs is OPFS,
      * and for an in-process EngineHost on a given or memory fs.
      */
     readonly ingest?: IngestClient;
@@ -96,7 +107,7 @@ export type HarnessOpenOptions = OpenOptions &
 
 const memoryFsByName = new Map<string, MemoryFs>();
 /** The in-process host that publishes to each fs. */
-const localHosts = new WeakMap<AsyncFs, EngineHost>();
+const localHosts = new WeakMap<AsyncFs, MeteredHost>();
 
 function memoryFs(name: string): MemoryFs {
   let fs = memoryFsByName.get(name);
@@ -110,7 +121,7 @@ function memoryFs(name: string): MemoryFs {
 function localIngest(fs: AsyncFs): IngestClient {
   let host = localHosts.get(fs);
   if (!host) {
-    host = new EngineHost(() => fs);
+    host = new MeteredHost(() => fs);
     localHosts.set(fs, host);
   }
   return createLocalIngestClient(host);

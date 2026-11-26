@@ -5,12 +5,14 @@
 import { readEngineWith } from "./store/engine.js";
 
 export {
+  openDbWith,
   openHarnessDb,
   destroyHarnessDb,
   __resetMemoryFsForTests,
   type HarnessOpenOptions,
 } from "./harness.js";
-export { EngineHost, attachEngineHostPort, createLocalIngestClient } from "./host/engine-host.js";
+export { attachEngineHostPort, createLocalIngestClient } from "./host/engine-host.js";
+export { MeteredHost as EngineHost } from "./host/metered-host.js";
 export { createPortIngestClient } from "./host/port-client.js";
 export type { IngestClient } from "./host/protocol.js";
 export {

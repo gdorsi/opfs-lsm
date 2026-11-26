@@ -4,7 +4,6 @@ import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
-import { CountingFs, emptyIoCounters } from "../opfs/counting-fs.js";
 import {
   listRuns,
   liveRuns,
@@ -12,11 +11,10 @@ import {
   reclaimManifests,
   reclaimRuns,
 } from "../store/generation.js";
-import { engineMemory, recycleEngine } from "../store/engine.js";
-import { levelOf } from "../store/levels.js";
+import { recycleEngine } from "../store/engine.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_DUE_MS, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestChunk, type IngestResult } from "./ingest.js";
+import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   unlessHeld,
@@ -36,26 +34,33 @@ import { coalesced, serial } from "../turns.js";
  * and `openDb` make a new one at the same path, so the host keeps no folder
  * across operations. Must create nothing.
  */
-type FsFactory = (name: DbName) => AsyncFs | undefined | Promise<AsyncFs | undefined>;
+export type FsFactory = (name: DbName) => AsyncFs | undefined | Promise<AsyncFs | undefined>;
+
+/**
+ * Counts what a host does, for `readStats`. Only `@opfs-lsm/kv/testing`
+ * gives one: the shipped SharedWorker has none, so no app downloads it.
+ */
+export type Meter = {
+  /** The folder of one operation on `name`, as the host uses it. */
+  fs(name: DbName, inner: AsyncFs): AsyncFs;
+  /** A flush of `name` ended a chunk: it published a run, found nothing to fold, or found L0 full. */
+  flushed(name: DbName, chunk: Chunk): void;
+  /** A compaction step of `name` installed. */
+  compacted(name: DbName): void;
+};
+
+const UNMETERED: Meter = { fs: (_name, inner) => inner, flushed() {}, compacted() {} };
 
 /** The two stores of one database, opened for one operation. */
-type Stores = { readonly wal: IdBWal; readonly fs: CountingFs };
+type Stores = { readonly wal: IdBWal; readonly fs: AsyncFs };
 
 /** What a tab's request to the host rejects with once `destroyDb` removed the database. */
-function destroyed(): ClosedError {
+export function destroyed(): ClosedError {
   return new ClosedError("database was destroyed");
 }
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
-
-/** Host counters for one database, besides the fs IO its CountingFs keeps. */
-type HostCounts = {
-  flushes: number;
-  l0Stops: number;
-  compactionSteps: number;
-  foldedBytes: number;
-};
 
 /**
  * What the host knows about one database's WAL waiting for ingest. Appends
@@ -99,25 +104,22 @@ export class EngineHost {
   constructor(
     private readonly fsFactory: FsFactory,
     private readonly overrides: HostOverrides = {},
+    private readonly meter: Meter = UNMETERED,
   ) {}
 
   private db(name: string): HostedDb {
     const dbName = checkDbName(name);
     let db = this.dbs.get(dbName);
     if (!db) {
-      db = hostedDb(dbName, this.fsFactory, this.overrides);
+      db = hostedDb(dbName, this.fsFactory, this.overrides, this.meter);
       this.dbs.set(dbName, db);
     }
     return db;
   }
 
-  /**
-   * What this host counted for `name` since it started. `generation` and
-   * `layout` describe the recorded generation; their manifest read bypasses
-   * the counters.
-   */
-  async stats(name: string): Promise<HostStats> {
-    return this.db(name).stats();
+  /** What this host counted for `name`. A host with a meter answers; this one rejects. */
+  stats(_name: string): Promise<HostStats> {
+    return Promise.reject(new StorageUnavailableError("this host keeps no stats"));
   }
 
   /**
@@ -174,10 +176,7 @@ export class EngineHost {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) {
-  /** The fs IO of every operation, for stats. */
-  const io = emptyIoCounters();
-  const counts: HostCounts = { flushes: 0, l0Stops: 0, compactionSteps: 0, foldedBytes: 0 };
+function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, meter: Meter) {
   const publishTurn = serial();
   const foldTurn = serial();
   /** A flush waits on a full L0 for the next compaction install. */
@@ -207,10 +206,10 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     return { ...hostBudget(asked), ...overrides };
   }
 
-  /** The folder as it is now. Every fs the host uses is counted, so stats need no hooks in ingest or compaction. */
-  async function folder(): Promise<CountingFs | undefined> {
+  /** The folder as it is now. Every fs the host uses goes through the meter, so ingest and compaction need no hooks for IO. */
+  async function folder(): Promise<AsyncFs | undefined> {
     const inner = await fsFactory(name);
-    return inner && new CountingFs(inner, io);
+    return inner && meter.fs(name, inner);
   }
 
   /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
@@ -235,33 +234,6 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
     } finally {
       stores.wal.close();
     }
-  }
-
-  async function stats(): Promise<HostStats> {
-    const stores = await openStores();
-    if (!stores) throw destroyed();
-    let recorded: Generation;
-    try {
-      recorded = (await stores.wal.meta()).generation ?? GENERATION_NONE;
-    } finally {
-      stores.wal.close();
-    }
-    const latest = await loadGeneration(stores.fs.inner, recorded);
-    const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
-    for (const run of latest?.runs ?? []) {
-      const level = levelOf(run.path) ?? 0;
-      const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
-      entry.runs += 1;
-      entry.bytes += run.bytes;
-      byLevel.set(level, entry);
-    }
-    return structuredClone({
-      fs: io,
-      ...counts,
-      generation: latest?.generation ?? GENERATION_NONE,
-      layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
-      memory: engineMemory(),
-    });
   }
 
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
@@ -327,16 +299,14 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         recycleEngine(budget.wasmRecycleBytes);
         pastStop = false;
         trusted = chunk.generation;
+        meter.flushed(name, chunk);
         if (chunk.kind === "stopped") {
-          counts.l0Stops += 1;
           stopped = true;
           pastStop = (await waitForInstall(installed)) === "idle";
           stopped = false;
           continue;
         }
         foldedBytes += chunk.foldedBytes;
-        counts.foldedBytes += chunk.foldedBytes;
-        if (chunk.kind === "folded") counts.flushes += 1;
         const watch = watching;
         if (watch) {
           watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
@@ -597,7 +567,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
         if (!landed) return;
         installed = true;
         steps += 1;
-        counts.compactionSteps += 1;
+        meter.compacted(name);
         installLanded();
         announceGeneration(name);
       }
@@ -772,7 +742,6 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides) 
   }
 
   return {
-    stats,
     ingest,
     watch: addWatcher,
     unwatch: removeWatcher,
@@ -818,6 +787,16 @@ function isClosedDatabase(err: unknown): boolean {
     "name" in err &&
     (err as { name: string }).name === "InvalidStateError"
   );
+}
+
+/** Serve `host` to every tab that connects to this SharedWorker. */
+export function serveSharedWorker(host: EngineHost): void {
+  // Read off `globalThis`, so the main tsc build needs no webworker lib.
+  const scope = globalThis as unknown as { onconnect: ((ev: MessageEvent) => void) | null };
+  scope.onconnect = (ev) => {
+    const port = (ev as MessageEvent & { ports: MessagePort[] }).ports[0];
+    if (port) attachEngineHostPort(port, host);
+  };
 }
 
 /** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). */

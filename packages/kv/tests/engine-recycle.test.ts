@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { HostBudget } from "../src/host/budget.js";
+import { engineMemory } from "../src/host/metered-host.js";
 import {
   encodeRun,
-  engineMemory,
   ensureEngine,
   openMerge,
   recycleEngine,

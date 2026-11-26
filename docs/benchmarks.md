@@ -205,13 +205,13 @@ The todo column opens first, so it also starts the label list every screen share
 
 ## Bundle size
 
-Importing `@opfs-lsm/kv` adds **19.4 kB** of JavaScript to your main bundle (gzip, 56.5 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **19.3 kB** of JavaScript to your main bundle (gzip, 56.3 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 19.4 kB | 56.5 kB | at import |
-| SharedWorker chunk | 14.0 kB | 41.4 kB | on the first `openDb` |
-| wasm engine | 6.6 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **39.9 kB** | **114.3 kB** | |
+| Main-thread JS | 19.3 kB | 56.3 kB | at import |
+| SharedWorker chunk | 13.5 kB | 39.6 kB | on the first `openDb` |
+| wasm engine | 6.5 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **39.3 kB** | **112.3 kB** | |
 
-For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.5 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.7 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.0 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.3 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

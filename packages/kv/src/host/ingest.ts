@@ -29,7 +29,7 @@ type ChunkLimits = {
 };
 
 /** What `ingestChunk` did. */
-type Chunk = IngestResult & {
+export type Chunk = IngestResult & {
   /**
    * "empty" when no record up to `head` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.

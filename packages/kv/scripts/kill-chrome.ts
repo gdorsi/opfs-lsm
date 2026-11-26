@@ -1101,7 +1101,7 @@ function replay(opts: Options, iteration: number): string {
 
 async function main(): Promise<number> {
   const opts = parseOptions(process.argv.slice(2));
-  for (const f of ["dist/index.js", "dist/testing.js", "dist/host/shared-worker.js"]) {
+  for (const f of ["dist/index.js", "dist/testing.js", "dist/host/shared-worker.js", "dist/host/metered-worker.js"]) {
     if (!fs.existsSync(path.join(root, f))) {
       console.error(`missing ${f}. Run pnpm --filter @opfs-lsm/kv build`);
       return 1;
