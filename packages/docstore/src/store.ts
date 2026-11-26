@@ -1,4 +1,4 @@
-import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry, type ViewSnapshot } from "@opfs-lsm/kv";
+import { prefixBound, type BatchTx, type ChangeEvent, type Db, type Entry, type UpdateTx, type ViewSnapshot } from "@opfs-lsm/kv";
 import { tupleBounds } from "@opfs-lsm/kv/tuple";
 import {
   bind,
@@ -16,10 +16,10 @@ import {
   type IndexPlan,
   type StoredCatalog,
 } from "./catalog.js";
-import { CollectionImpl, RETRY, type Collection } from "./collection.js";
-import { decodeDoc, docEncoder, indexEntries, type Unindexable } from "./derive.js";
+import { CollectionImpl, type Collection } from "./collection.js";
+import { decodeDoc, docEncoder, indexEntries, uniqueConflict, type Claim, type Unindexable } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { CATALOG_KEY, after, bytesEqual, idOf, keyString, touches, type CollectionId, type IndexId } from "./keys.js";
+import { CATALOG_KEY, after, bytesEqual, idOf, touches, type CollectionId, type IndexId } from "./keys.js";
 import type { CollectionName, DocOf, IndexesOf, InputOf, Schema } from "./schema.js";
 
 export interface DocStore<S extends Schema> {
@@ -64,16 +64,21 @@ export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise
 export type WritePlan<R> = {
   /** Point keys the body reads, after CATALOG_KEY, which the store puts first. */
   readonly keys: readonly Uint8Array[];
-  /** Runs inside kv's `update` with the values of `keys`. RETRY must leave `tx` empty. */
-  readonly apply: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => R | typeof RETRY;
+  /** Runs inside kv's `update` with the values of `keys`, and reads any other key with `tx.read`. */
+  readonly apply: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => R;
 };
+
+/** What the body of an `update` returns when the stored catalog is not the one it was planned against. It leaves `tx` empty. */
+const RETRY: unique symbol = Symbol("retry");
 
 export interface StoreCore {
   readonly kv: Db;
   /** The collection in the catalog that `snap` holds. A promise only when the catalog has to be read. */
   collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection>;
+  /** The collection in catalog `bytes`, which a record or a snapshot holds. */
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection;
   /** One kv `update`, planned against this handle's catalog and planned again whenever the stored catalog differs. */
-  write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R>;
+  write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R>): Promise<R>;
   clear(name: string): Promise<void>;
 }
 
@@ -200,6 +205,10 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return snap.seq === this.syncedAt ? collectionOf(this.bound, name) : this.readCatalog(snap, name);
   }
 
+  collectionIn(bytes: Uint8Array | undefined, name: string): BoundCollection {
+    return collectionOf(this.boundIn(bytes), name);
+  }
+
   private async readCatalog(snap: ViewSnapshot, name: string): Promise<BoundCollection> {
     const moves = this.moves;
     // Read where it is stored: the catalog is nearly always the one already bound.
@@ -212,12 +221,12 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return collectionOf(bound, name);
   }
 
-  async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R> | Promise<WritePlan<R>>): Promise<R> {
+  async write<R>(name: string, planner: (coll: BoundCollection) => WritePlan<R>): Promise<R> {
     for (let synced = false; ; ) {
       const bound = this.bound;
       let plan: WritePlan<R>;
       try {
-        plan = await planner(collectionOf(bound, name));
+        plan = planner(collectionOf(bound, name));
       } catch (err) {
         // The planner reads this handle's state, which can lag another tab's write: its error holds once it has read every write acked before the call.
         if (synced) throw err;
@@ -342,37 +351,28 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
         return;
       }
 
-      const unique = plan.target.unique;
+      // The first row the index cannot hold fails it, unless a row before it shares a unique value.
+      const bad = derived.findIndex((d) => !Array.isArray(d));
       const ids = rows.map((r) => r.key.subarray(rowPrefix.length));
-      const ownerKeys = unique ? derived.flatMap((d) => (Array.isArray(d) ? d.map((e) => e.key) : [])) : [];
+      const puts: Entry[] = [];
+      const claims: Claim[] = [];
+      for (let i = 0; i < (bad < 0 ? rows.length : bad); i++) {
+        for (const e of derived[i] as Entry[]) {
+          puts.push(e);
+          if (plan.target.unique) claims.push({ key: e.key, id: ids[i]! });
+        }
+      }
       const out = await this.kv.update(
-        [CATALOG_KEY, ...rows.map((r) => r.key), ...ownerKeys],
+        [CATALOG_KEY, ...rows.map((r) => r.key), ...claims.map((c) => c.key)],
         ([catalog, ...values], tx): Violation | typeof RETRY | undefined => {
           if (!sameCatalog(catalog, bound.bytes)) {
             this.adopt(catalog);
             return RETRY;
           }
           if (rows.some((r, i) => !bytesEqual(values[i], r.value))) return RETRY;
-          const puts: Entry[] = [];
-          const claimed = new Map<string, Uint8Array>();
-          let owners = rows.length;
-          for (let i = 0; i < rows.length; i++) {
-            const entries = derived[i]!;
-            const id = ids[i]!;
-            if (!Array.isArray(entries)) return { reason: "value", ids: [idOf(id)] };
-            const at = owners;
-            if (unique) owners += entries.length;
-            for (let j = 0; j < entries.length; j++) {
-              const e = entries[j]!;
-              if (unique) {
-                const k = keyString(e.key);
-                const owner = values[at + j] ?? claimed.get(k);
-                if (owner && !bytesEqual(owner, id)) return { reason: "unique", ids: [idOf(id), idOf(owner)] };
-                claimed.set(k, id);
-              }
-              puts.push(e);
-            }
-          }
+          const clash = uniqueConflict(claims, values.slice(rows.length));
+          if (clash) return { reason: "unique", ids: clash.map((id) => idOf(id)) };
+          if (bad >= 0) return { reason: "value", ids: [idOf(ids[bad]!)] };
           for (const e of puts) tx.put(e.key, e.value);
           return undefined;
         },

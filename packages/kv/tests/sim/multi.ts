@@ -596,6 +596,8 @@ class UpdateCmd extends SlotCmd {
     private readonly value: ValueSpec,
     /** Ops on keys the body did not read, after the ones `actions` picks. */
     private readonly more: readonly OpSpec[],
+    /** How many of the last keys the body reads with `tx.read`. */
+    private readonly late: number,
   ) {
     super(slot, wait);
   }
@@ -608,14 +610,18 @@ class UpdateCmd extends SlotCmd {
       else if (action === "del") ops.push({ type: "del", key });
     });
     ops.push(...opsOf(w, this.more));
+    const first = keys.slice(0, Math.max(keys.length - this.late, 0));
+    const rest = keys.slice(first.length);
     await w.start(this.slot, "update", { keys, ops }, (db, op) =>
-      db.update(keys, (got, tx) => {
-        op.seen = got.map((v) => (v ? new Uint8Array(v) : undefined));
+      db.update(first, (got, tx) => {
+        const all = rest.length ? [...got, ...tx.read(rest)] : got;
+        op.seen = all.map((v) => (v ? new Uint8Array(v) : undefined));
         applyOps(tx, ops);
       }), this.wait);
   }
   name = () =>
     `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}]` +
+    (this.late ? ` late ${this.late}` : "") +
     (this.more.length ? ` then ${this.more.map(opName).join("; ")}` : "");
 }
 
@@ -811,8 +817,9 @@ export const multiCommandsArb = (replayPath?: string) => {
           fc.array(fc.constantFrom<UpdateAction>("keep", "del", "put"), { minLength: 1, maxLength: 3 }),
           valueArb,
           fc.array(opArb, { maxLength: 2 }),
+          fc.nat({ max: 3 }),
         )
-        .map(([s, x, keys, actions, value, more]) => new UpdateCmd(s, x, keys, actions, value, more)),
+        .map(([s, x, keys, actions, value, more, late]) => new UpdateCmd(s, x, keys, actions, value, more, late)),
       fc.tuple(slot, wait).map(([s, x]) => new IncrementCmd(s, x)),
       fc.tuple(slot, wait).map(([s, x]) => new IncrementCmd(s, x)),
       fc.tuple(slot, wait, keyArb).map(([s, x, k]) => new GetCmd(s, x, k)),

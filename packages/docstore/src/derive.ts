@@ -207,21 +207,13 @@ const NONE: Entry[] = [];
  * On the "next" side, the document about to be written, a value an index
  * cannot hold throws, so nothing is stored. On the "stored" side it gives no
  * entries: such a row predates a still-building index and never had any.
- * The entries of unique indexes are also pushed to `unique`.
  */
-export function entriesOf(
-  coll: BoundCollection,
-  id: Uint8Array,
-  doc: StoredDoc,
-  side: "next" | "stored",
-  unique?: Entry[],
-): Entry[] {
+export function entriesOf(coll: BoundCollection, id: Uint8Array, doc: StoredDoc, side: "next" | "stored"): Entry[] {
   const out: Entry[] = [];
   for (const plan of coll.maintained) {
     const entries = indexEntries(plan, id, doc);
     if (Array.isArray(entries)) {
       for (const e of entries) out.push(e);
-      if (unique && plan.target.unique) for (const e of entries) unique.push(e);
     } else if (side === "next") {
       throw new DocStoreError(
         "document",
@@ -332,6 +324,36 @@ function readPath(doc: StoredDoc, path: Path): unknown {
     v = v[segment];
   }
   return v;
+}
+
+/** A unique key and the id of the row about to write it. */
+export type Claim = { readonly key: Uint8Array; readonly id: Uint8Array };
+
+/**
+ * The first claim that would leave two rows holding one unique value, as the
+ * ids of the claimant and of the holder, or undefined when every key is
+ * free. `owners[i]` is the stored value of `claims[i].key`: the id of the row
+ * that holds the key. It stands in the way unless `released` says the
+ * transaction removes that key. Two claims of one key clash too.
+ */
+export function uniqueConflict(
+  claims: readonly Claim[],
+  owners: readonly (Uint8Array | undefined)[],
+  released?: (key: Uint8Array) => boolean,
+): readonly [claimant: Uint8Array, holder: Uint8Array] | undefined {
+  // One claim has no other to clash with: no string for its key.
+  const taken = claims.length > 1 ? new Map<string, Uint8Array>() : undefined;
+  for (let i = 0; i < claims.length; i++) {
+    const { key, id } = claims[i]!;
+    const owner = owners[i];
+    if (owner && !bytesEqual(owner, id) && !released?.(key)) return [id, owner];
+    if (!taken) continue;
+    const k = keyString(key);
+    const other = taken.get(k);
+    if (other) return [id, other];
+    taken.set(k, id);
+  }
+  return undefined;
 }
 
 /** Up to this many entries on each side `diffEntries` compares keys byte by byte, with no map. At most 32, the width of its bit mask. */

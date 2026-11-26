@@ -1,16 +1,31 @@
-import { defineWorkload } from "../../core/types.ts";
-import { type Bounded, boundedAll, fillPhase, kvParams, type Scan, scanAll, settlePhase, warmPhase } from "../kv-lib.ts";
+import { defineWorkload, type PhaseContext } from "../../core/types.ts";
+import { permutation } from "../../page/model.ts";
+import { type Bounded, boundedAll, fillPhase, getIds, kvParams, type Scan, scanAll, settlePhase, uniform, warmPhase } from "../kv-lib.ts";
 
 /** The page a count-free read asks for. */
 const PAGE = 50;
 /** The values one page of the full scan reads. */
 const READ_PAGE = 1_000;
+/** The key set is cut into this many slots, and `deleterange` deletes a tenth of them, one range each. */
+const SLOTS = 1_000;
 
-/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, pages an offset deep in both directions and reads of many keys. */
+type Ctx = PhaseContext<"kv">;
+
+/** Random gets, a tenth of them in a deleted range. */
+const getDeleted = (ctx: Ctx) => getIds(ctx, Math.ceil(ctx.params.ops / 10), uniform(ctx, ctx.params.entries));
+
+/** A page from the start of each deleted range, which must begin at the first live key past it. */
+async function pageDeleted(ctx: Ctx): Promise<void> {
+  const span = ctx.params.entries / SLOTS;
+  const deleted = Array.from({ length: SLOTS }, (_, slot) => slot * span).filter((from) => ctx.model.version(from) === 0);
+  await scanAll(ctx, deleted.map((from): Scan => ({ from, limit: PAGE, op: "page", count: 1 })));
+}
+
+/** Ascending fill, then a full forward scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, pages an offset deep in both directions, reads of many keys, then range deletes and reads across them. */
 export default defineWorkload({
   family: "kv",
-  title: "ascending fill, full scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, offsets and reads of many keys",
-  owns: ["kv-seq-fill", "kv-scan", "kv-count", "kv-offset", "kv-multi-get"],
+  title: "ascending fill, full scan, random seeks of 10 and 100 keys, reverse seeks, bounded scans, counts, offsets, reads of many keys and range deletes",
+  owns: ["kv-seq-fill", "kv-delete-range", "kv-scan", "kv-count", "kv-offset", "kv-multi-get"],
   params: (size) => kvParams(size),
   phases: [
     fillPhase("fillseq", "seq"),
@@ -114,6 +129,32 @@ export default defineWorkload({
         const got: (Uint8Array | undefined)[][] = [];
         for (const { keys } of batches) got.push(await ctx.time("getMany", 0, () => store.getMany(keys)));
         batches.forEach(({ ids }, i) => ids.forEach((id, j) => ctx.model.verify(id, got[i]![j])));
+      },
+    },
+    {
+      name: "deleterange",
+      page: "same",
+      timed: true,
+      async run(ctx) {
+        const { entries, keyBytes } = ctx.params;
+        const span = entries / SLOTS;
+        const slots = [...permutation(SLOTS, ctx.rng).subarray(0, SLOTS / 10)];
+        const bounds = slots.map((slot) => [ctx.model.key(slot * span), ctx.model.key((slot + 1) * span)] as const);
+        for (const slot of slots) for (let id = slot * span; id < (slot + 1) * span; id++) ctx.model.remove(id);
+        const store = await ctx.store();
+        for (const [lo, hi] of bounds) await ctx.time("deleteRange", 2 * keyBytes, () => store.deleteRange(lo, hi), 1);
+      },
+    },
+    { name: "readdeleted", page: "same", timed: true, run: getDeleted },
+    { name: "pagedeleted", page: "same", timed: true, run: pageDeleted },
+    settlePhase("settle-deleted"),
+    {
+      name: "check-deleted",
+      page: "same",
+      timed: false,
+      async run(ctx) {
+        await getDeleted(ctx);
+        await pageDeleted(ctx);
       },
     },
   ],

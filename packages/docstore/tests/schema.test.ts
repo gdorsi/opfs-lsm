@@ -534,6 +534,22 @@ describe("indexes the stored data cannot fill", () => {
     held.release();
     expect(await codeOf((await opening).collection("todos").query({ index: "bySlug" }))).toBe("index-failed");
   });
+
+  it("accepts a put that changes a row and keeps its unique value, which the building index gave another row", async () => {
+    const name = freshName();
+    const old = await at(name, v1);
+    const docs = rows(600).map((d, i) => (i === 0 || i === 550 ? { ...d, slug: "x" } : d));
+    await old.store.collection("todos").putMany(docs);
+    const held = gate(await kvOn(name), "range", 1);
+    const opening = openOn(held.db, unique(2));
+    await held.arrived(2);
+    const todos = old.store.collection("todos");
+    expect(await codeOf(todos.put({ ...docs[550]!, createdAt: -1 }))).toBe("no error");
+    // Taking the value anew is still refused: the first chunk gave it to r0000.
+    expect(await codeOf(todos.put({ ...docs[551]!, slug: "x" }))).toBe("unique");
+    held.release();
+    expect(await codeOf((await opening).collection("todos").query({ index: "bySlug" }))).toBe("index-failed");
+  });
 });
 
 describe("clear", () => {

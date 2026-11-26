@@ -21,7 +21,7 @@ type DirectedStore = {
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); getMany = one readonly tx of gets; range = getAll(bound, limit), or getAll({ query, count, direction: prev }) in reverse, after a key cursor advance for an offset; count = count(bound)",
+  fastPath: "one object store, binary keys; putMany = one readwrite tx with an explicit commit(); deleteRange = one delete(bound); getMany = one readonly tx of gets; range = getAll(bound, limit), or getAll({ query, count, direction: prev }) in reverse, after a key cursor advance for an offset; count = count(bound)",
   engine: false,
   async open(name) {
     const db = await openIdb(`idb-${name}`, (d) => d.createObjectStore(STORE));
@@ -36,6 +36,12 @@ export default defineContender({
       async deleteMany(keys) {
         const s = store("readwrite");
         for (const key of keys) s.delete(k(key));
+        s.transaction.commit();
+        await done(s.transaction);
+      },
+      async deleteRange(start, endExclusive) {
+        const s = store("readwrite");
+        s.delete(IDBKeyRange.bound(k(start), k(endExclusive), false, true));
         s.transaction.commit();
         await done(s.transaction);
       },

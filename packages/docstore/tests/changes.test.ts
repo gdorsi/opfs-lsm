@@ -1,7 +1,7 @@
 import { ingest } from "@opfs-lsm/kv/testing";
 import { ClosedError, type Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { collection, defineSchema, openDocStore, type CollectionChange } from "../src/index.js";
+import { collection, defineSchema, openDocStore, type CollectionChange, type DocStoreError } from "../src/index.js";
 import { encodeCatalog } from "../src/catalog.js";
 import { CATALOG_KEY, concat, rowPrefix, utf8, type CollectionId } from "../src/keys.js";
 import { schema, type Doc, type Docs } from "./docs.js";
@@ -51,6 +51,18 @@ describe("changes", () => {
     expect([...seqs].sort((x, y) => x - y)).toEqual(seqs);
     expect(new Set(seqs).size).toBe(4);
     expect(seqs.at(-1)).toBe(await kv.view((snap) => snap.seq));
+  });
+
+  it("keeps id, deleted and doc in a copy of a change, as postMessage or JSON makes one", async () => {
+    const { c } = await handle();
+    const { events } = listen(c);
+    await c.put({ id: "1", a: 1 });
+    await c.delete("1");
+    await settled(() => expect(events).toHaveLength(2));
+    const changes = events.flatMap((e) => (e.kind === "append" ? e.changes : []));
+    const want = [{ id: "1", deleted: false, doc: { id: "1", a: 1 } }, { id: "1", deleted: true, doc: undefined }];
+    expect(changes.map((ch) => structuredClone({ ...ch }))).toEqual(want);
+    expect(JSON.parse(JSON.stringify(changes[0]))).toEqual(want[0]);
   });
 
   it("reports a write of its own handle before the write resolves, once the listener has started", async () => {
@@ -349,6 +361,148 @@ describe("changes", () => {
     const { kv, c } = await handle();
     await kv.close();
     expect(() => c.changes(() => undefined)).toThrow(ClosedError);
+  });
+});
+
+describe("before", () => {
+  const INDEXES = ["one", "two", "tags"] as const;
+  type Entries = Record<(typeof INDEXES)[number], Map<string, unknown[]>>;
+
+  /** Every entry of each index, by document id, as `queryEntries` reads them. */
+  async function entriesNow(c: Docs): Promise<Entries> {
+    const out = {} as Entries;
+    for (const index of INDEXES) {
+      const byId = new Map<string, unknown[]>();
+      for (const e of (await c.queryEntries({ index } as Parameters<Docs["queryEntries"]>[0])).entries) byId.set(e.id, [...(byId.get(e.id) ?? []), e]);
+      out[index] = byId;
+    }
+    return out;
+  }
+
+  /** A small PRNG, so a failure replays. */
+  function rng(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), a | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it("gives each document's entries before a create, a move, an edit that keeps them, a removal from the index and a delete", async () => {
+    const { c } = await handle();
+    const seen: string[] = [];
+    c.changes((e) => {
+      if (e.kind !== "append") return;
+      for (const ch of e.changes) seen.push(`${ch.id} ${JSON.stringify(ch.before("two"))} ${JSON.stringify(ch.before("tags"))}`);
+    });
+    await c.put({ id: "x", a: 1, b: "p", tags: ["k", "j", "k"] });
+    await c.modify("x", (d) => ({ ...d, a: 2 }));
+    await c.modify("x", (d) => ({ ...d, t: "words", u: 7 }));
+    await c.modify("x", (d) => ({ id: d.id, a: d.a, tags: ["j"] }));
+    await c.delete("x");
+    await settled(() => expect(seen).toHaveLength(5));
+    expect(seen).toEqual([
+      "x [] []",
+      'x [{"id":"x","values":[1,"p"]}] [{"id":"x","values":["j","p"]},{"id":"x","values":["k","p"]}]',
+      'x [{"id":"x","values":[2,"p"]}] [{"id":"x","values":["j","p"]},{"id":"x","values":["k","p"]}]',
+      'x [{"id":"x","values":[2,"p"]}] [{"id":"x","values":["j","p"]},{"id":"x","values":["k","p"]}]',
+      "x [] []",
+    ]);
+  });
+
+  it("matches the entries read before each write, for random writes from this handle and another one", async () => {
+    const name = freshName();
+    const a = await handle(name);
+    const b = await handle(name);
+    const random = rng(7);
+    const pick = <V>(xs: readonly V[]): V => xs[Math.floor(random() * xs.length)]!;
+    const value = () => pick([undefined, null, false, 1, 2, "s", "t"] as const);
+    const doc = (id: string): Doc => {
+      const d: Doc = { id };
+      if (random() < 0.8) d.a = value();
+      if (random() < 0.8) d.b = value();
+      if (random() < 0.7) d.tags = Array.from({ length: Math.floor(random() * 4) }, () => pick([1, 2, "x", "y"]));
+      return d;
+    };
+    const ids = ["d0", "d1", "d2", "d3", "d4", "d5"];
+    const heard: { id: string; deleted: boolean; before: Record<string, unknown> }[][] = [];
+    let announced = 0;
+    a.kv.changes((e) => {
+      if (e.kind === "append") announced = e.seq;
+    });
+    a.c.changes((e) => {
+      if (e.kind !== "append") return;
+      heard.push(e.changes.map((ch) => ({ id: ch.id, deleted: ch.deleted, before: Object.fromEntries(INDEXES.map((i) => [i, ch.before(i)])) })));
+    });
+
+    let checked = 0;
+    for (let step = 0; step < 120; step++) {
+      const was = await entriesNow(a.c);
+      const writer = random() < 0.5 ? a : b;
+      const chosen = ids.filter(() => random() < 0.4);
+      if (chosen.length === 0) chosen.push(pick(ids));
+      const kind = random();
+      if (kind < 0.4) await writer.c.putMany(chosen.map(doc));
+      else if (kind < 0.7) {
+        // Drawn before the call: `fn` may run more than once.
+        const plan = chosen.map((id) => ({ next: random() < 0.3 ? null : random() < 0.2 ? undefined : doc(id), keepA: random() < 0.5 }));
+        await writer.c.modifyMany(chosen, (docs) => plan.map(({ next, keepA }, i) => (next && keepA && docs[i] ? { ...next, a: docs[i]!.a } : next)));
+      }
+      else await writer.c.deleteMany(chosen);
+      await a.kv.sync();
+      const head = await a.kv.view(async (snap) => snap.seq);
+      await settled(() => expect(announced).toBeGreaterThanOrEqual(head));
+      for (const ch of heard.splice(0).flat()) {
+        checked++;
+        expect(ch.before, `step ${step}, ${ch.id}`).toEqual(Object.fromEntries(INDEXES.map((i) => [i, was[i].get(ch.id) ?? []])));
+      }
+    }
+    expect(checked).toBeGreaterThan(150);
+  });
+
+  it("throws for an index whose entries hold a value, and for one a newer schema redefined", async () => {
+    const { c } = await handle();
+    const errors: string[] = [];
+    c.changes((e) => {
+      if (e.kind !== "append") return;
+      const [ch] = e.changes;
+      for (const index of ["uniq", "search", "covered"]) {
+        try {
+          // @ts-expect-error: only a sorted index that is not unique and includes no field
+          ch!.before(index);
+        } catch (err) {
+          errors.push(`${index} ${(err as DocStoreError).code}`);
+        }
+      }
+    });
+    await c.put({ id: "x", a: 1 });
+    await settled(() => expect(errors).toEqual(["uniq query", "search query", "covered query"]));
+
+    type Row = { id: string; a?: number; b?: number };
+    const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
+    const v2 = defineSchema({ version: 2, collections: { rows: collection<Row>().index("byA", "b") } });
+    const name = freshName();
+    const kvA = await openKv(name);
+    const kvB = await openKv(name);
+    open.push(kvA, kvB);
+    const rows = (await openDocStore(kvA, v1)).collection("rows");
+    const thrown: unknown[] = [];
+    rows.changes((e) => {
+      if (e.kind !== "append") return;
+      try {
+        e.changes[0]!.before("byA");
+      } catch (err) {
+        thrown.push(err);
+      }
+    });
+    const next = await openDocStore(kvB, v2);
+    await next.whenIdle();
+    await next.collection("rows").put({ id: "r", a: 1, b: 2 });
+    await kvA.sync();
+    await settled(() => expect(thrown).toHaveLength(1));
+    expect(thrown[0]).toMatchObject({ name: "DocStoreError", code: "schema" });
   });
 });
 

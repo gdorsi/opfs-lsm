@@ -234,6 +234,21 @@ describe("modify", () => {
     expect(calls).toBe(0);
   });
 
+  it("reads a unique key only when fn's document takes a value the stored one did not hold", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const { db, updates } = recording(kv);
+    const c = (await openDocStore(db, schema)).collection("notes");
+    await c.put({ id: "1", slug: "s", n: 1 });
+    updates.length = 0;
+    await c.modify("1", (d) => ({ ...d, n: 2 }));
+    await c.modify("1", (d) => ({ ...d, slug: "t" }));
+    await c.modify("1", (d) => ({ id: d.id, n: 3 }));
+    // The catalog and the row each time, and the key of "t".
+    expect(updates.map((u) => u.reads)).toEqual([2, 3, 2]);
+    expect(await c.get("1")).toEqual({ id: "1", n: 3 });
+  });
+
   it("throws document when fn changes the id, and stores nothing", async () => {
     const { notes: c } = await notes();
     await c.put({ id: "1", n: 1 });
@@ -375,24 +390,12 @@ describe("modifyMany", () => {
   it("runs fn again when a document it left as is changed after fn read it", async () => {
     const name = freshName();
     const other = await notes(name);
-    const kv = await openKv(name);
+    // This handle hears of no other write, so `fn` first reads the limit it wrote itself.
+    const kv = await openKvWithoutBus(name);
     open.push(kv);
-    let armed = true;
-    const held = wrap(kv, {
-      getMany: (async (...args: Parameters<Db["getMany"]>) => {
-        const values = await kv.getMany(...args);
-        if (armed && args[0].some((key) => new TextDecoder().decode(key).endsWith("limit"))) {
-          armed = false;
-          await other.notes.put({ id: "limit", n: 5 });
-          await kv.sync();
-        }
-        return values;
-      }) as Db["getMany"],
-    });
-    const c = (await openDocStore(held, schema)).collection("notes");
-    armed = false;
+    const c = (await openDocStore(kv, schema)).collection("notes");
     await c.putMany([{ id: "limit", n: 1 }, { id: "counter", n: 0 }]);
-    armed = true;
+    await other.notes.put({ id: "limit", n: 5 });
     const seen: (number | undefined)[] = [];
     await c.modifyMany(["limit", "counter"], ([limit, counter]) => {
       seen.push(limit!.n);
@@ -400,6 +403,35 @@ describe("modifyMany", () => {
     });
     expect(seen).toEqual([1, 5]);
     expect(await c.get("counter")).toEqual({ id: "counter", n: 50 });
+  });
+
+  it("reads each row once, in the kv transaction that writes it, and the unique keys fn's documents take", async () => {
+    const kv = await openKv(freshName());
+    open.push(kv);
+    let gets = 0;
+    const counted = wrap(kv, {
+      get: (key) => (gets++, kv.get(key)),
+      getMany: ((...args: Parameters<Db["getMany"]>) => (gets++, kv.getMany(...args))) as Db["getMany"],
+    });
+    const { db, updates } = recording(counted);
+    const c = (await openDocStore(db, schema)).collection("notes");
+    await c.putMany([
+      { id: "replace", slug: "r", n: 1 },
+      { id: "keep", slug: "k", n: 1 },
+      { id: "leave", slug: "l" },
+    ]);
+    updates.length = 0;
+    const before = gets;
+    let runs = 0;
+    await c.modifyMany(["create", "replace", "keep", "leave"], ([, replace, keep]) => {
+      runs++;
+      return [{ id: "create", slug: "c" }, { ...replace!, slug: "r2" }, { ...keep!, n: 2 }, undefined];
+    });
+    expect(gets - before).toBe(0);
+    expect(runs).toBe(1);
+    // The catalog, the four rows, and the keys of "c" and "r2".
+    expect(updates).toEqual([{ reads: 7, puts: 5, deletes: 1 }]);
+    expect((await c.queryIds({ index: "bySlug" })).ids).toEqual(["create", "keep", "leave", "replace"]);
   });
 });
 
@@ -517,6 +549,26 @@ describe("unique", () => {
     await c.putMany([{ id: "a", slug: "x" }, { id: "b", slug: "y" }]);
     expect(await codeOf(c.modify("b", (d) => ({ ...d, slug: "x" })))).toBe("unique");
     expect(await c.getMany(["a", "b"])).toEqual([{ id: "a", slug: "x" }, { id: "b", slug: "y" }]);
+  });
+
+  it("refuses a value held by a document in a run file this handle has not read, and takes a free one", async () => {
+    const name = freshName();
+    const first = await notes(name);
+    await first.notes.putMany([{ id: "a", slug: "x" }, { id: "b", slug: "y" }]);
+    await ingest(first.kv);
+    await first.kv.close();
+    open.splice(open.indexOf(first.kv), 1);
+    const { notes: c } = await notes(name);
+    const err = await c.put({ id: "c", slug: "x" }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "unique", ids: ["c", "a"] });
+    expect(await codeOf(c.modify("b", (d) => ({ ...d, slug: "x" })))).toBe("unique");
+    await c.modifyMany(["a", "b"], ([a, b]) => [{ ...a!, slug: "y" }, { ...b!, slug: "x" }]);
+    await c.put({ id: "c", slug: "z" });
+    expect((await c.query({ index: "bySlug" })).docs).toEqual([
+      { id: "b", slug: "x" },
+      { id: "a", slug: "y" },
+      { id: "c", slug: "z" },
+    ]);
   });
 
   it("treats null as a value, and a missing path as no value", async () => {

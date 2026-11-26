@@ -55,6 +55,7 @@ export const TABLES: readonly Table[] = [
       { label: "Every 8 KiB value in a fresh tab, 500 neighbouring keys a read", workload: "kv/large-values", phase: "readall-cold", metric: "rate" },
       { label: "Every 8 KiB value in a fresh tab, 500 scattered keys a read", workload: "kv/large-values", phase: "readscattered-cold", metric: "rate" },
       { label: "Opening the database in a fresh tab", workload: "kv/fillrandom", phase: "coldopen", metric: "mean:open" },
+      { label: "The first read after that open", workload: "kv/fillrandom", phase: "coldopen", metric: "mean:first get" },
     ],
   },
   {

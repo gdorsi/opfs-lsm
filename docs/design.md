@@ -102,13 +102,14 @@ key: they add and delete a record at the new head, which moves the key generator
 power loss that loses commits also loses what they did to the key generator, and this is what keeps
 the next append from taking a seq that a manifest already holds.
 
-`update(keys, body)` runs the synchronous `body` on what its tab reads and appends, by group commit, a
-row whose header names `appliedThrough + 1`. The row takes that seq only if no write committed since the
-read. Failing that, the update runs in one transaction that reads the tail, applies it to the memtable,
-runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an update whose `body`
-wrote nothing or threw, or one issued while appends of its handle are in flight: its transaction is
-created after theirs, so `body` reads them. After a row loses, the handle appends no such row until one
-of those transactions writes with an empty tail. A handle runs its updates one at a time, in call order.
+`update(keys, body)` runs the synchronous `body` on what its tab reads and appends, by group commit, a row whose
+header names `appliedThrough + 1`. The row takes that seq only if no write committed since the read. Failing that, the
+update runs in one transaction that reads the tail, applies it to the memtable, runs `body` and adds the batch at
+`head + 1`, which no writer can beat. So does an update whose `body` wrote nothing or threw, or one issued while
+appends of its handle are in flight: its transaction is created after theirs, so `body` reads them. After a row loses,
+the handle appends no such row until one of those transactions writes with an empty tail. `tx.read` reads more keys in
+the turn `body` runs in, so in the same state. A run of `body` that needs a value not in memory appends nothing, and
+runs again once the value is loaded. A handle runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
@@ -300,16 +301,15 @@ acked before the call. The broadcast is an optimization. The WAL tail is the sou
 
 ### Installing a generation
 
-A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation
-never holds a seq past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the
-manifest and opens its runs outside the transaction, then reads the tail again. An open starts that load when the
-transaction names the generation, before it reads the records. A flush or a compaction records the manifest's head in
-`meta.manifest` with its generation, and such a tail reads it: when the copy decodes to that generation, the tab
-opens the runs it names while it reads the manifest file for their block indexes. The load fails without the file: a
-power loss can keep the copy and lose the file and its runs. Recovery never reads the copy.
+A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation never holds a seq
+past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the manifest and opens its runs outside the
+transaction, then reads the tail again. An open starts that load before it reads the records. A flush or a compaction records the
+manifest's head in `meta.manifest`, and such a tail reads it: when the copy decodes to that generation, the tab opens its runs while it
+reads the manifest file for their block indexes. The load fails without the file, which a power loss can lose while the copy stays.
+Recovery never reads the copy. An open also reads ahead of IndexedDB, which answers last in a cold tab: meanwhile it lists `m/`, reads the
+newest manifest and opens its first 16 runs. The first load takes the open runs, and the manifest when it is its generation's. The open closes the rest.
 
-After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
-tabs call `sync`.
+After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and tabs call `sync`.
 
 ### Loading a generation under churn
 

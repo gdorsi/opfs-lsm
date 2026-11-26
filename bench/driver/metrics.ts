@@ -308,11 +308,13 @@ function rangeOf(sorted: readonly number[]): Range {
 
 /** A few runs always split somewhere. Below this share of the median, a gap is noise. */
 const MIN_CLUSTER_GAP = 0.1;
+/** The fewest runs that can show two clusters: with fewer, two against two would mark a third of the noisy series. */
+export const CLUSTER_RUNS = 5;
 
 function summarize(values: readonly number[]): Summary {
   const sorted = [...values].sort((a, b) => a - b);
   const all = rangeOf(sorted);
-  if (sorted.length < 5) return all;
+  if (sorted.length < CLUSTER_RUNS) return all;
   let cut = 1;
   let gap = -1;
   for (let i = 1; i < sorted.length; i++) {

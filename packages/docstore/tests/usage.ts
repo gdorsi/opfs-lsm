@@ -94,7 +94,12 @@ export async function snapshotsAndChanges(store: DocStore<typeof todoSchema>): P
     if (event.kind !== "append") return;
     for (const change of event.changes) {
       const doc: { title: string } | undefined = change.doc;
-      void [change.id, change.deleted, doc];
+      const created: number | undefined = change.before("byCreated")[0]?.values[0];
+      // @ts-expect-error a text index's entries hold the words, which a write can replace in place
+      change.before("search");
+      // @ts-expect-error not an index of todos
+      change.before("byCreatd");
+      void [change.id, change.deleted, doc, created];
     }
   });
 }

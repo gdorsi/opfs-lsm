@@ -11,7 +11,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_SEED, type RunRecord, type SizeName } from "../core/types.ts";
-import { describe, ENOUGH_RUNS, LEVEL, measure, versus, type Measures, type Metric, type Series } from "./metrics.ts";
+import { CLUSTER_RUNS, describe, ENOUGH_RUNS, LEVEL, measure, versus, type Measures, type Metric, type Series } from "./metrics.ts";
 import { readRecords } from "./records.ts";
 
 const DOCS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../docs");
@@ -201,6 +201,7 @@ function renderTable(t: Table, pub: Published): string {
     provenance(t, pub, used, size),
     ...(unseparated ? [`‡ These runs do not separate the two contenders (rank-sum test, ${LEVEL * 100}% level).`] : []),
     ...(clustered ? ["† The runs of a marked cell form two clusters, so its median hides two states."] : []),
+    ...([...used].some((s) => s.summary.n < CLUSTER_RUNS) ? [`No cell of fewer than ${CLUSTER_RUNS} runs is checked for two clusters, so a median here can hide two states.`] : []),
   ];
   return [table.join("\n"), ...notes].join("\n\n");
 }

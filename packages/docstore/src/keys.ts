@@ -63,6 +63,11 @@ export function indexPrefix(collection: CollectionId, index: IndexId): Uint8Arra
   return Uint8Array.of(ROOT, collection >> 8, collection & 0xff, index);
 }
 
+/** The index id in the key of an index entry. */
+export function indexIdOf(key: Uint8Array): number {
+  return key[3]!;
+}
+
 /** Up to this many UTF-16 units `idBytes` encodes into `scratch`. */
 const SCRATCH_UNITS = 1024;
 const scratch = new Uint8Array(SCRATCH_UNITS * 3);

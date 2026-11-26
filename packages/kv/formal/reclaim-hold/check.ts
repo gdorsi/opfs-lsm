@@ -86,8 +86,19 @@ function sourceSync(): string[] {
   need("db.ts", /return this\.wal\.tail\(this\.mem\.appliedThrough, this\.installed\.generation\)\.then\(\(tail\) => this\.follow\(tail\)\);/, "an attempt reads the tail inside the attempt");
   need(
     "db.ts",
-    /let run = this\.runs\.get\(path\);\s*if \(!run\) \{\s*const file = await this\.fs\.open\(path\);\s*if \(!file\) return undefined;/,
-    "openRun reuses a run the tab holds open, else opens it",
+    /let run = this\.runs\.get\(path\);\s*if \(!run\) \{\s*const opened = early\?\.get\(path\);\s*early\?\.delete\(path\);\s*const file = await \(opened \?\? this\.fs\.open\(path\)\);\s*if \(!file\) return undefined;/,
+    "openRun reuses a run the tab holds open, else takes the one its open opened ahead, else opens it",
+  );
+  need(
+    "db.ts",
+    /const \{ head \} = this;\s*this\.head = undefined;[\s\S]*?this\.openRun\(paths\[i\]!, i, manifest, head\?\.files\)/,
+    "only the first load of an open takes the runs opened ahead, so a retry under the reclaim lock opens its own",
+  );
+  need("db.ts", /const file = fs\.open\(path\);\s*file\.catch\(\(\) => undefined\);\s*head\.files\.set\(path, file\);/, "a run opened ahead of IndexedDB is opened as any other, under its shared lock");
+  need(
+    "db.ts",
+    /\} finally \{[^}]*head\.taken = true;\s*head\.manifest = undefined;\s*for \(const file of head\.files\.values\(\)\) file\.then\(\(f\) => f\?\.close\(\)\)/,
+    "an open closes the runs it opened ahead that no load took",
   );
   need("db.ts", /if \(--run\.layers > 0\) continue;\s*this\.runs\.delete\(run\.path\);\s*run\.reader\.close\(\);\s*run\.file\.close\(\);/, "a run closes when no layers hold it");
   need("db.ts", /if \(layers\) \{\s*this\.release\(this\.installed\);\s*this\.installed = layers;/, "the old layers are released only once the new ones are installed");

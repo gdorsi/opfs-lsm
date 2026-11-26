@@ -27,6 +27,8 @@ type Common = {
 export type KvStore = Common & {
   putMany(entries: readonly (readonly [Bytes, Bytes])[]): Promise<void>;
   deleteMany(keys: readonly Bytes[]): Promise<void>;
+  /** Deletes every key in [start, endExclusive) in one write. */
+  deleteRange(start: Bytes, endExclusive: Bytes): Promise<void>;
   get(key: Bytes): Promise<Bytes | undefined>;
   /** One read for every key, in the order asked. */
   getMany(keys: readonly Bytes[]): Promise<(Bytes | undefined)[]>;
@@ -66,7 +68,7 @@ export type CollectionStore = Common & {
   size(): number;
 };
 
-/** One live query over the todo rows. Each kind is one index read on both sides. */
+/** One live query over the todo rows. `owner` and `ids` are one index read on both sides; `page` is one on docstore only (bench/README.md, the SQLite patch). */
 export type TodoQuery =
   | { readonly kind: "owner"; readonly owner: string }
   /** Up to `limit` rows of `owner` with createdAt >= from, ascending. */

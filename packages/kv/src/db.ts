@@ -35,7 +35,7 @@ import { Miss, ReadSet, type Entry, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { OpenFile, ReadFs, RemovableFolder } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
-import { loadGeneration, runsOfCopy, type GenerationMeta } from "./store/generation.js";
+import { loadGeneration, manifestNumbers, runsOfCopy, type GenerationMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -170,6 +170,19 @@ export interface BatchTx {
   deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
+/** The `tx` of an `update`: a batch that also reads. */
+export interface UpdateTx extends BatchTx {
+  /**
+   * The values of more keys, in the order of `keys`, in the same state as
+   * the `values` of the update: for a key the body learns only from what it
+   * read. A value this tab holds in memory comes back at once. For any
+   * other, this run of `body` ends here: `read` throws, kv loads the values
+   * and runs `body` again. A run that ended so never counts, even when
+   * `body` caught what `read` threw.
+   */
+  read(keys: readonly Uint8Array[]): (Uint8Array | undefined)[];
+}
+
 export interface Db {
   /** The name passed to `openDb`. */
   readonly name: string;
@@ -206,17 +219,18 @@ export interface Db {
   /**
    * Read `keys` and write as one step: `body` runs synchronously with the
    * values, in the order of `keys`, and its writes commit only if no other
-   * write landed since they were read. So there is no conflict to handle,
-   * and concurrent updates lose nothing. `body` usually runs once. It runs
-   * again when another write landed between its read and its commit, when
-   * it writes nothing or throws, and when the browser refuses the write for
-   * lack of space: three times at most. Only its last run counts, so keep
-   * it free of side effects. The updates of one handle run one at a time,
-   * in call order.
+   * write landed since they were read. `tx.read` reads more keys in that
+   * same state. So there is no conflict to handle, and concurrent updates
+   * lose nothing. `body` usually runs once. It runs again when another
+   * write landed between its read and its commit, when it writes nothing or
+   * throws, and when the browser refuses the write for lack of space: three
+   * times at most. It also runs again each time `tx.read` has to load a
+   * value. Only its last run counts, so keep it free of side effects. The
+   * updates of one handle run one at a time, in call order.
    */
   update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T>;
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
@@ -396,6 +410,8 @@ async function openStores(
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
+  const head: HeadStart = { files: new Map() };
+  headStart(tabFs, head).catch(() => undefined);
   try {
     const wal = await TabWal.open(
       name,
@@ -422,7 +438,7 @@ async function openStores(
       parts.rowPostMs,
     );
     heldDb = db;
-    await db.boot(recovering);
+    await db.boot(recovering, head);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     db.watch({
       maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
@@ -439,18 +455,29 @@ async function openStores(
       heldWal?.close();
     }
     throw err;
+  } finally {
+    // The files no load took close, and the head start opens no more.
+    head.taken = true;
+    head.manifest = undefined;
+    for (const file of head.files.values()) file.then((f) => f?.close()).catch(() => undefined);
+    head.files.clear();
   }
 }
 
+/** The ops `build` chose. `read` answers the `tx.read` of an update. A batch has none. */
 function collectBatch(
-  build: (tx: BatchTx) => unknown,
+  build: (tx: UpdateTx) => unknown,
+  read?: UpdateTx["read"],
 ): readonly CheckedOp[] {
   const batch = new CheckedBatch();
   let open = true;
   // A build that catches a check error still rejects the whole batch.
   let failure: { readonly error: unknown } | undefined;
-  const add = (op: BatchOp) => {
+  const live = () => {
     if (!open) throw new ConstraintError("tx used after its callback returned");
+  };
+  const add = (op: BatchOp) => {
+    live();
     try {
       batch.add(op);
     } catch (error) {
@@ -465,6 +492,10 @@ function collectBatch(
       delete: (key) => add({ type: "del", key }),
       deleteRange: (bounds, options) =>
         add({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through }),
+      read: (keys) => {
+        live();
+        return read!(keys);
+      },
     });
   } finally {
     open = false;
@@ -501,6 +532,35 @@ type Layers = {
 
 /** Runs opened at once while loading a generation. */
 const OPEN_CONCURRENCY = 16;
+
+/**
+ * What an open reads of the newest manifest in `m/` while IndexedDB opens,
+ * for the load of that generation to take: IndexedDB names the generation,
+ * and in a cold tab it answers after the folder does. Nothing here decides
+ * anything. A load of another generation reads its own files.
+ */
+type HeadStart = {
+  generation?: Generation;
+  /** Until a load takes it. */
+  manifest?: Promise<GenerationMeta | undefined> | undefined;
+  /** Open files of the manifest's first runs, each until a load takes it. */
+  readonly files: Map<string, Promise<OpenFile | undefined>>;
+  /** A load asked, or the open ended: nothing more is opened. */
+  taken?: boolean;
+};
+
+async function headStart(fs: ReadFs, head: HeadStart): Promise<void> {
+  const [newest] = await manifestNumbers(fs);
+  if (newest === undefined || head.taken) return;
+  head.generation = newest;
+  const meta = await (head.manifest = loadGeneration(fs, newest));
+  if (!meta || head.taken) return;
+  for (const { path } of meta.runs.slice(0, OPEN_CONCURRENCY)) {
+    const file = fs.open(path);
+    file.catch(() => undefined);
+    head.files.set(path, file);
+  }
+}
 
 /**
  * A row that lands within this long of the tab's last post waits, and one
@@ -544,6 +604,8 @@ class DbImpl implements Db {
   };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined = undefined;
+  /** What the open read ahead of IndexedDB, from `boot` until its first load. */
+  private head: HeadStart | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
@@ -732,7 +794,13 @@ class DbImpl implements Db {
    */
   private async load(generation: Generation, ahead: boolean, copy?: Uint8Array): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
-    const manifest = loadGeneration(this.fs, generation);
+    // Only the first load of an open takes the head start. A retry reads the manifest again, which the host may
+    // have been writing when the head start read it, and opens its files under the reclaim lock.
+    const { head } = this;
+    this.head = undefined;
+    if (head) head.taken = true;
+    const early = head?.generation === generation ? head.manifest : undefined;
+    const manifest = early ?? loadGeneration(this.fs, generation);
     const paths = runsOfCopy(copy, generation) ?? (await manifest)?.runs.map((r) => r.path);
     if (!paths) return false;
     const runs: (Run | undefined)[] = [];
@@ -741,7 +809,7 @@ class DbImpl implements Db {
     const openNext = async (): Promise<void> => {
       while (next < paths.length && !gone) {
         const i = next++;
-        runs[i] = await this.openRun(paths[i]!, i, manifest);
+        runs[i] = await this.openRun(paths[i]!, i, manifest, head?.files);
         if (!runs[i]) gone = true;
       }
     };
@@ -774,10 +842,12 @@ class DbImpl implements Db {
    * generation retries handle. Reads no run bytes: the reader loads its
    * blocks and its Bloom filter on first use.
    */
-  private async openRun(path: string, i: number, manifest: Promise<GenerationMeta | undefined>): Promise<Run | undefined> {
+  private async openRun(path: string, i: number, manifest: Promise<GenerationMeta | undefined>, early?: HeadStart["files"]): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
-      const file = await this.fs.open(path);
+      const opened = early?.get(path);
+      early?.delete(path);
+      const file = await (opened ?? this.fs.open(path));
       if (!file) return undefined;
       // A manifest that does not decode fails the load, which awaits it too.
       const meta = (await manifest.catch(() => undefined))?.runs[i];
@@ -904,7 +974,8 @@ class DbImpl implements Db {
    * recovery checks, and the tail applies when recovery wrote nothing.
    * Otherwise the tail is not one any more, and a sync reads again.
    */
-  async boot(recovering: Promise<boolean>): Promise<void> {
+  async boot(recovering: Promise<boolean>, head?: HeadStart): Promise<void> {
+    this.head = head;
     // The runs open while the records are read. The read settles once the
     // load has, so no load installs its generation after the fallback below.
     let loading: Promise<boolean> | undefined;
@@ -1113,7 +1184,7 @@ class DbImpl implements Db {
 
   async update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
@@ -1130,58 +1201,92 @@ class DbImpl implements Db {
    * `body` saw the state just before its own write. Otherwise the row has no
    * ops, and `write` runs `body` again inside a transaction, which cannot
    * lose. `write` runs it alone when an append of this handle is in flight,
-   * whose row the memtable lacks, or when a read still waits for a page, and
-   * again when `body` wrote nothing or threw, so that what it returns or
-   * throws was read at the committed head. It also runs it alone after a row
-   * lost (`beaten`): while another tab keeps writing, every row would lose,
-   * and cost a round trip more than the transaction alone.
+   * whose row the memtable lacks, and again when `body` wrote nothing or
+   * threw, so that what it returns or throws was read at the committed
+   * head. It also runs it alone after a row lost (`beaten`): while another
+   * tab keeps writing, every row would lose, and cost a round trip more
+   * than the transaction alone.
+   *
+   * `tx.read` reads in the turn `body` runs in, so it reads the state
+   * `body` got its values from. A read that waits for a page ends that run
+   * of `body`, here and in the transaction: nothing is appended, the page
+   * loads, and `body` runs again from a new read of every key.
    */
   private async updateOnce<T>(
     ks: readonly CheckedKey[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T> {
     // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
-    const read = () => keysReader(this.memRows(ks), ks, this.point());
-    /** What the last `warm` read, and the `appliedThrough` it read at. */
+    const read = (keys: readonly CheckedKey[]) => keysReader(this.memRows(keys), keys, this.point());
+    /** A read that cannot wait: of the memtable and the pages in memory, in this turn. */
+    const now = (keys: readonly CheckedKey[]) => held.attempt(() => read(keys)(this.installed.levels));
+    /** What `warm` loads: `ks`, then the keys the last run of `body` gave `tx.read`. */
+    let wanted = ks;
+    /** What the last `warm` read of `ks`, and the `appliedThrough` it read at. */
     let warmed: [Seq, (Uint8Array | undefined)[]] | undefined;
     const plan = () => {
       // Nothing landed since the warm read, so it read this state: no second read.
-      const values =
-        warmed?.[0] === this.mem.appliedThrough ? warmed[1] : held.attempt(() => read()(this.installed.levels));
+      const values = warmed?.[0] === this.mem.appliedThrough ? warmed[1] : now(ks);
       warmed = undefined;
       if (values instanceof Miss) return held.keep(values);
+      wanted = ks;
       let result!: T;
-      const ops = collectBatch((tx) => {
-        result = body(values, tx);
-        return result;
-      });
-      return { ops, result };
+      /** The load a `tx.read` waits for. This run of `body` does not count, whatever it did after. */
+      let miss: Miss | undefined;
+      let ops: readonly CheckedOp[] | undefined;
+      try {
+        ops = collectBatch(
+          (tx) => (result = body(values, tx)),
+          (keys) => {
+            if (!miss) {
+              const more = keys.map(checkKey);
+              wanted = wanted.concat(more);
+              const got = now(more);
+              if (!(got instanceof Miss)) return got;
+              miss = got;
+            }
+            throw miss;
+          },
+        );
+      } catch (err) {
+        if (!miss) throw err;
+      }
+      return miss ? held.keep(miss) : { ops: ops!, result };
     };
     const warm = async () => {
       // The rows, levels and marks it reads are all taken now, so the values are the state at `at`.
       const at = this.mem.appliedThrough;
-      warmed = [at, await this.settleInstalled(read(), held)];
+      const values = await this.settleInstalled(read(wanted), held);
+      // Only the values of `ks` are kept: `tx.read` reads its keys in the turn `body` runs in.
+      values.length = ks.length;
+      warmed = [at, values];
     };
     // Only its turn: the handle is checked open again below.
     await this.pressure.admit();
-    await warm();
-    this.ensureOpen();
-    // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
-    const next = nextSeq(this.mem.appliedThrough);
-    if (!this.appending && !this.beaten) {
+    let next: Seq;
+    for (;;) {
+      await warm();
+      this.ensureOpen();
+      // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
+      next = nextSeq(this.mem.appliedThrough);
+      if (this.appending || this.beaten) break;
       let planned: ReturnType<typeof plan> | undefined;
       try {
         planned = plan();
       } catch {
         // This handle can lag another tab's write: the run in `write`, at the head, throws for good.
       }
-      // `write` loads what missed again and surfaces a failure, so the one of this load is dropped.
-      if (planned instanceof Miss) planned.ready.catch(() => undefined);
-      else if (planned?.ops.length) {
+      if (planned instanceof Miss) {
+        // The next `warm` loads what missed again and surfaces a failure, so the one of this load is dropped.
+        await planned.ready.catch(() => undefined);
+        continue;
+      }
+      if (planned?.ops.length) {
         if (rowValid(next, await this.commit(planned.ops, next))) return planned.result;
         this.beaten = true;
       }
+      break;
     }
     const out = await this.write(plan, warm);
     // The transaction took the seq this update started at: no other write is in the way.
