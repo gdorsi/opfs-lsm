@@ -102,13 +102,13 @@ key: they add and delete a record at the new head, which moves the key generator
 power loss that loses commits also loses what they did to the key generator, and this is what keeps
 the next append from taking a seq that a manifest already holds.
 
-`update(keys, body)` runs the synchronous `body` on what its tab reads and appends, by group commit,
-a row whose header names `appliedThrough + 1`. The row takes that seq only if no write committed
-since the read. Failing that, the update runs in one transaction that reads the tail, applies it to
-the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
-update issued while an append of its handle is in flight, or whose `body` wrote nothing or threw. After a row
-loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
-runs its updates one at a time, in call order.
+`update(keys, body)` runs the synchronous `body` on what its tab reads and appends, by group commit, a
+row whose header names `appliedThrough + 1`. The row takes that seq only if no write committed since the
+read. Failing that, the update runs in one transaction that reads the tail, applies it to the memtable,
+runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an update whose `body`
+wrote nothing or threw, or one issued while appends of its handle are in flight: its transaction is
+created after theirs, so `body` reads them. After a row loses, the handle appends no such row until one
+of those transactions writes with an empty tail. A handle runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
@@ -169,7 +169,7 @@ seqs wrote, and the marks of the newly ingested records.
 |---|---|---|
 | below | Under 7/8 of the limit | None. |
 | requested | At 7/8 | The tab asks the host for one flush and keeps writing. |
-| waiting | At the limit | A write waits for that flush before it appends. A `put`, `delete`, `batch` or `update` called while one waits goes after it, so they append in call order. |
+| waiting | At the limit | A write waits for that flush before it appends. A write called while one waits takes its turn after it, so `put`, `delete` and `batch` append in call order. An `update` reads when its turn comes, and a write called while it reads can append before it: `body` then reads that write. |
 
 One flush is in flight per tab. If the flush fails, or returns without moving the generation,
 the write goes on, and the tab asks again after the memtable grows by another 1/8 of the limit.
@@ -683,9 +683,9 @@ so every record stays in the WAL ([costs](browser-support.md#where-the-host-cann
 
 ## Assumptions about the platform
 
-1. IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
-   An aborted transaction reverts the key generator of the store. An `add` at an explicit key
-   moves the generator past that key, and deleting the record does not move it back.
+1. IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers, in
+   creation order. An aborted transaction reverts the key generator of the store. An `add` at an
+   explicit key moves the generator past that key, and deleting the record does not move it back.
 2. OPFS publishes a file whole: at `createWritable().close()`, or at the rename of a staged file flushed before it.
 3. Each store keeps the order of its own completed writes across a power loss, so a prefix of
    them survives. Nothing orders IndexedDB against OPFS, or two IndexedDB databases, except that

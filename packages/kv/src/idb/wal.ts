@@ -485,6 +485,8 @@ type Group = {
   readonly adds: { readonly entry: GroupEntry; readonly add: IDBRequest<IDBValidKey> }[];
   /** True until the commit starts, in a microtask of the turn that opened the transaction. */
   joinable: boolean;
+  /** The browser refused the transaction for lack of space. */
+  refused: boolean;
 };
 
 /**
@@ -533,7 +535,8 @@ export type TabWal = IdBWal & {
    * In one readwrite transaction, read the tail after `since`, let `decide`
    * choose a batch, and append it under the next seq. `decide` runs
    * synchronously inside the transaction. Returning undefined writes nothing,
-   * and a throw aborts the transaction and rethrows. A transaction the
+   * and a throw aborts the transaction and rethrows. The transaction runs
+   * after that of every `append` issued before the call. A transaction the
    * browser refuses for lack of space runs once more, `decide` included,
    * after the host released the reserve, and then rejects with
    * `StorageFullError`.
@@ -578,6 +581,8 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   let open: Group | undefined;
   /** Appends that arrived after `open` went inactive: the next group. */
   let queued: GroupEntry[] = [];
+  /** Each resumes an `appendAfter` that waits for `next` to start the queue. */
+  let waiting: (() => void)[] = [];
   let closing = false;
   /**
    * Set while the connection is replaced after a quota abort. No write
@@ -645,7 +650,6 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   }
 
   async function appendAfter<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
-    while (recovering) await recovering.catch(() => undefined);
     try {
       return await appendOnce(since, decide);
     } catch (err) {
@@ -665,9 +669,18 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
   }
 
   async function appendOnce<R>(since: Seq, decide: Decide<R>): Promise<Appended<R> | undefined> {
+    // IndexedDB runs transactions in the order they were created, so this one
+    // is created only once every append issued before it has its own.
+    while (recovering || queued.length > 0) await new Promise<void>((resume) => waiting.push(resume));
+    const ahead = open;
     const tx = transaction([WAL_STORE, META_STORE], "readwrite");
     const done = txDone(tx);
     const tail = await readTail(tx, since);
+    if (ahead?.refused) {
+      // The group ahead is added once more, in a transaction after this one.
+      tx.abort();
+      return appendOnce(since, decide);
+    }
     let decision: ReturnType<typeof decide>;
     try {
       decision = decide(tail);
@@ -715,7 +728,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
       return;
     }
     // A retried group takes no new append: it is the refused group, as it was.
-    const group: Group = { tx, adds: [], joinable: !retried };
+    const group: Group = { tx, adds: [], joinable: !retried, refused: false };
     open = group;
     // A microtask, so the appends issued synchronously after this one join.
     // Without the commit, Chrome waits for the adds' success events to
@@ -737,6 +750,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
           for (const { entry } of group.adds) entry.reject(err);
           return;
         }
+        group.refused = true;
         const retry = !retried && makeRoom !== undefined;
         const refused = group.adds.map(({ entry }) => entry);
         // `open` stays this group meanwhile, so the appends that arrive queue behind it and keep their order.
@@ -761,6 +775,7 @@ async function openTabWal(dbName: DbName, onAskedToClose?: () => void, makeRoom?
     queued = [];
     if (entries.length > 0) commitGroup(entries);
     else if (closing) connection.close();
+    if (waiting.length > 0) for (const resume of waiting.splice(0)) resume();
   }
 
   const wal: TabWal = {
