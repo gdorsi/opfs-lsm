@@ -1,6 +1,6 @@
 # A document store on an ordered key-value store
 
-Status: shipped. docstore follows the design this survey proposed ([docstore README](../../packages/docstore/README.md)). The key layout is in the header comment of `packages/docstore/src/keys.ts`, and the value encoding is kv's "Tuple keys" ([kv README](../../packages/kv/README.md#tuple-keys)). Not built: reads inside `update` (item C), a keys-only scan flag, and live queries matched by key range.
+Status: shipped. docstore follows the design this survey proposed ([docstore README](../../packages/docstore/README.md)). The key layout is in the header comment of `packages/docstore/src/keys.ts`, and the value encoding is kv's "Tuple keys" ([kv README](../../packages/kv/README.md#tuple-keys)). Not built: a keys-only scan flag, and live queries matched by key range.
 
 Date: researched 2026-11-09 at commit `10f7f99`, before docstore existed. Nothing was run. External sources were fetched on 2026-11-09.
 
@@ -17,7 +17,7 @@ How do existing systems build a document store on an ordered key-value store? Wh
 - **Backfill.** `building`, then chunked idempotent passes, then `ready`. A crash starts over, and open waits. Shipped. It differs in two ways. A unique conflict marks the index `failed` and open resolves, where the survey proposed failing the open. There is no option to open without waiting.
 - **Clear.** Shipped as one kv range delete over the collection, in the write that updates the catalog. The collection keeps its id.
 - **Query.** One index range per query, no planner: equality on the first fields, one range or `startsWith` on the next, `limit`, an exclusive cursor, `reverse`, and `count`. Shipped as `query`, `queryIds`, `queryEntries` and `count`. Added since: `offset`, lists of values in `eq` merged like SQL `IN`, and included fields.
-- **Unique.** A point key checked inside `update`. `modify` on a collection with unique indexes reads the rows before the transaction and commits only if their bytes are unchanged. Shipped as proposed for a kv without item C.
+- **Unique.** A point key checked inside `update`. A put asks for the owners of its unique values up front. `modify` runs `fn` in the transaction and reads the owners of the unique values it takes with `tx.read` (item C).
 - **Not shipped.** `patch`, and `subscribe(query)` with key-range matching. docstore has a per-collection `changes` feed that carries the documents.
 
 ## What kv lacked on 2026-11-09
@@ -26,7 +26,7 @@ How do existing systems build a document store on an ordered key-value store? Wh
 |---|---|---|
 | A. Reverse scan | must-have | shipped, `reverse` on a range (design.md, "Reads") |
 | B. Changed keys on `changes` | must-have for live queries | shipped, every event carries its ops (design.md, "Change events") |
-| C. Reads inside the `update` body | worth-having | not built. `update` reads a fixed list of keys |
+| C. Reads inside the `update` body | worth-having | shipped, `tx.read` in the body (kv README, `update`) |
 | D. Keys-only scan and count | worth-having | `count` shipped and copies nothing. No keys-only flag |
 | E. Range delete | worth-having | shipped (design.md, "Range deletes") |
 | F. Atomic writes over the batch limit | not-needed | not built. The batch limit is 8 MiB with no op cap (design.md, "Limits") |
