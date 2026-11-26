@@ -14,7 +14,6 @@ import {
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { CountingFs } from "../src/opfs/counting-fs.js";
 import { loadLatestGeneration } from "./latest-generation.js";
-import { levelOf } from "../src/store/levels.js";
 
 const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
@@ -127,17 +126,14 @@ describe("readStats", () => {
     const latest = (await loadLatestGeneration(fs))!;
     expect(stats.host.generation).toBe(latest.generation);
     const runsByLevel = new Map<number, number>();
-    for (const run of latest.runs) {
-      const level = levelOf(run.path)!;
-      runsByLevel.set(level, (runsByLevel.get(level) ?? 0) + 1);
-    }
+    for (const { level } of latest.runs) runsByLevel.set(level, (runsByLevel.get(level) ?? 0) + 1);
     expect(stats.host.layout.map((l) => [l.level, l.runs])).toEqual(
       [...runsByLevel].sort((a, b) => a[0] - b[0]),
     );
     expect(stats.host.layout.every((l) => l.bytes > 0)).toBe(true);
     let l1FileBytes = 0;
     for (const run of latest.runs) {
-      if (levelOf(run.path) === 1) l1FileBytes += (await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!.byteLength;
+      if (run.level === 1) l1FileBytes += (await fs.read(run.path, 0, Number.POSITIVE_INFINITY))!.byteLength;
     }
     expect(stats.host.layout.find((l) => l.level === 1)!.bytes).toBe(l1FileBytes);
 

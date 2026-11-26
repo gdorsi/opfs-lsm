@@ -18,7 +18,6 @@ import { coversRun, NO_MARKS, throughAt, type Marks } from "./marks.js";
 import { bloomHash } from "./bloom.js";
 import { RecordWalker } from "./sst.js";
 import type { SstReader } from "./sst-reader.js";
-import { levelOf } from "./levels.js";
 
 /**
  * The live put of `key`, where its bytes are, or undefined: a memtable row,
@@ -229,21 +228,20 @@ export class RunLevel {
 }
 
 /**
- * The scan sources of a manifest's runs, newest first: each L0 run alone,
- * then one RunLevel per deeper level. A run with no level may overlap any
- * other, so it stands alone too.
+ * The scan sources of a manifest's runs, newest first, from each run's
+ * level and reader: each L0 run alone, then one RunLevel per deeper level.
  */
 export function runLevels(
-  paths: readonly string[],
+  levels: readonly number[],
   readers: readonly SstReader[],
 ): RunLevel[] {
   const out: RunLevel[] = [];
   let i = 0;
   while (i < readers.length) {
-    const level = levelOf(paths[i]!);
+    const level = levels[i]!;
     let j = i + 1;
-    if (level !== undefined && level > 0) {
-      while (j < readers.length && levelOf(paths[j]!) === level) j++;
+    if (level > 0) {
+      while (j < readers.length && levels[j] === level) j++;
     }
     out.push(new RunLevel(readers.slice(i, j)));
     i = j;

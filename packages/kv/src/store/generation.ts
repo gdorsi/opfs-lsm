@@ -1,13 +1,10 @@
-import type { AsyncFs, ReadFs } from "../opfs/async-fs.js";
+import type { ReadFs } from "../opfs/async-fs.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asGeneration, asSeq, GENERATION_NONE, SEQ_ZERO, type Generation, type Seq } from "../seq.js";
 import { crc32 } from "./crc32.js";
-import { encodeRun } from "./engine.js";
-import { levelOfDir, levelRunPath } from "./levels.js";
 import { decodeMarks, encodeMarks, NO_MARKS, type Marks } from "./marks.js";
-import type { RunEnd, SstEntry } from "./sst.js";
+import type { RunEnd } from "./sst.js";
 
-const GEN_PREFIX = "m/";
 /** Magic ASCII "OLGN". */
 const GEN_MAGIC = 0x4f4c474e;
 /** Version 6: a head that names the runs, then each run's block index. */
@@ -18,8 +15,10 @@ const GEN_VERSION = 6;
  * (`RunEnd`), and where the file is.
  */
 export type RunMeta = RunEnd & {
-  /** Relative to the db root: `l<n>/<name>.sst`. The directory is the level, see levels.ts. */
+  /** Relative to the db root: `l<n>/<name>.sst`. */
   readonly path: string;
+  /** The `n` of the path's `l<n>/` directory; a manifest whose path names none does not decode. */
+  readonly level: number;
   /**
    * Every range delete whose record is at or below this seq was applied
    * when the run was written: it holds no version one of them covers. It
@@ -47,8 +46,9 @@ export type GenerationMeta = {
 /** The empty database: no runs, no seqs, no marks. */
 export const GENERATION_ZERO: GenerationMeta = { generation: GENERATION_NONE, runs: [], through: SEQ_ZERO, marks: NO_MARKS };
 
-function genPath(generation: Generation): string {
-  return `${GEN_PREFIX}${String(generation).padStart(16, "0")}.mft`;
+/** The manifest file of `generation`, relative to the db root. */
+export function manifestPath(generation: Generation): string {
+  return `m/${String(generation).padStart(16, "0")}.mft`;
 }
 
 /** Where a manifest's head says how many bytes it is. */
@@ -119,12 +119,18 @@ export function manifestHead(file: Uint8Array): Uint8Array {
   return file.slice(0, new DataView(file.buffer, file.byteOffset).getUint32(HEAD_BYTES_AT, true));
 }
 
+/** A run as the manifest head names it: all of `RunMeta` but the block index. */
+type RunHead = Omit<RunMeta, "index">;
+
 /**
- * The manifest a whole manifest file holds. A run's index is not read here:
- * `decodeIndex` checks it. With `head`, `buf` may end with its head, and then
- * its runs have no index.
+ * Decode a manifest file, or with `whole` false its head alone: its fields,
+ * and `run` of each run's head and the span of the file that holds its index.
  */
-export function decodeGeneration(buf: Uint8Array, head = false): GenerationMeta {
+function decode<R>(
+  buf: Uint8Array,
+  run: (head: RunHead, indexAt: number, indexEnd: number) => R,
+  whole: boolean,
+): Omit<GenerationMeta, "runs"> & { runs: R[] } {
   if (buf.byteLength < 40) {
     throw new CorruptDatabaseError("generation too short");
   }
@@ -146,7 +152,7 @@ export function decodeGeneration(buf: Uint8Array, head = false): GenerationMeta 
   const { marks, end } = decodeMarks(buf, HEAD_BYTES_AT + 4, crcOff, through);
   let o = end;
   const dec = new TextDecoder("utf-8", { ignoreBOM: true });
-  const runs: RunMeta[] = [];
+  const runs: R[] = [];
   // Past the CRC only bytes written on purpose reach here; each read is
   // still checked, so they throw CorruptDatabaseError, not RangeError.
   const take = (n: number): number => {
@@ -165,17 +171,34 @@ export function decodeGeneration(buf: Uint8Array, head = false): GenerationMeta 
     const len = view.getUint16(take(2), true);
     const at = take(len);
     const path = dec.decode(buf.subarray(at, at + len));
+    const level = /^l(\d+)\//.exec(path)?.[1];
+    if (!level) throw new CorruptDatabaseError("generation run path names no level");
     const bytes = view.getUint32(take(4), true);
     const range = buf[take(1)] === 1 ? { smallest: span(), largest: span() } : undefined;
     const marksThrough = asSeq(Number(view.getBigUint64(take(8), true)));
     if (marksThrough > through) throw new CorruptDatabaseError("generation run past through");
-    // A copy: a reader keeps its run's index, and a view would keep this whole file with it.
-    const index = buf.slice(indexAt, (indexAt += view.getUint32(take(4), true)));
-    const run = { path, bytes, marksThrough, index };
-    runs.push(range ? { ...run, range } : run);
+    const head = { path, level: Number(level), bytes, marksThrough };
+    runs.push(run(range ? { ...head, range } : head, indexAt, (indexAt += view.getUint32(take(4), true))));
   }
-  if (o !== crcOff || (!head && indexAt !== buf.byteLength)) throw new CorruptDatabaseError("generation trailing");
+  if (o !== crcOff || (whole && indexAt !== buf.byteLength)) throw new CorruptDatabaseError("generation trailing");
   return { generation, runs, through, marks };
+}
+
+/** The manifest a whole manifest file holds. A run's index is not read here: `decodeIndex` checks it. */
+export function decodeGeneration(buf: Uint8Array): GenerationMeta {
+  // A copy: a reader keeps its run's index, and a view would keep this whole file with it.
+  return decode(buf, (run, at, to): RunMeta => ({ ...run, index: buf.slice(at, to) }), true);
+}
+
+/** What a manifest head names: its generation, and its runs by path. */
+export type ManifestHead = {
+  readonly generation: Generation;
+  readonly runs: readonly string[];
+};
+
+/** The head of a manifest file, which may end with its head (`manifestHead`). */
+export function decodeManifestHead(buf: Uint8Array): ManifestHead {
+  return decode(buf, (run) => run.path, false);
 }
 
 /**
@@ -183,11 +206,11 @@ export function decodeGeneration(buf: Uint8Array, head = false): GenerationMeta 
  * Undefined when the copy is another generation's or does not decode: the
  * manifest file decides then.
  */
-export function runsOfCopy(copy: Uint8Array | undefined, generation: Generation): string[] | undefined {
+export function runsOfCopy(copy: Uint8Array | undefined, generation: Generation): readonly string[] | undefined {
   if (!(copy instanceof Uint8Array)) return undefined;
   try {
-    const meta = decodeGeneration(copy, true);
-    return meta.generation === generation ? meta.runs.map((r) => r.path) : undefined;
+    const head = decodeManifestHead(copy);
+    return head.generation === generation ? head.runs : undefined;
   } catch (err) {
     if (err instanceof CorruptDatabaseError) return undefined;
     throw err;
@@ -210,150 +233,33 @@ export async function manifestNumbers(fs: ReadFs): Promise<Generation[]> {
  * there and does not decode, which a power loss cannot (OPFS publishes a
  * file whole).
  */
-export async function probeManifest(
+export async function readManifest(
   fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | "missing" | "corrupt"> {
-  if (generation === GENERATION_NONE) return GENERATION_ZERO;
-  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
-  if (!buf || buf.byteLength === 0) return "missing";
   try {
-    return decodeGeneration(buf);
+    return (await loadGeneration(fs, generation)) ?? "missing";
   } catch (err) {
     if (err instanceof CorruptDatabaseError) return "corrupt";
     throw err;
   }
 }
 
-/** Manifest `generation`, or undefined when it is missing, empty or does not decode. */
-export async function readManifest(
+/** The manifest of `generation`, or undefined when a newer publish removed it. One that does not decode throws. */
+export async function loadGeneration(
   fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | undefined> {
-  const m = await probeManifest(fs, generation);
-  return typeof m === "string" ? undefined : m;
+  if (generation === GENERATION_NONE) return GENERATION_ZERO;
+  const buf = await fs.read(manifestPath(generation), 0, Number.POSITIVE_INFINITY);
+  return buf?.byteLength ? decodeGeneration(buf) : undefined;
 }
 
 /** True when every run `meta` lists is on disk and not empty. */
 export async function isIntact(fs: ReadFs, meta: GenerationMeta): Promise<boolean> {
   for (const run of meta.runs) {
     const head = await fs.read(run.path, 0, 1);
-    if (!head || head.byteLength === 0) return false;
+    if (!head?.byteLength) return false;
   }
   return true;
-}
-
-/** Write the manifest of `meta`, and return its head for the transaction that records it. */
-export async function publishGeneration(
-  fs: AsyncFs,
-  meta: GenerationMeta,
-): Promise<Uint8Array> {
-  const body = encodeGeneration(meta);
-  const w = await fs.create(genPath(meta.generation));
-  await w.write(body);
-  await w.finish();
-  return manifestHead(body);
-}
-
-/** Write a non-empty L0 run that applied the range deletes through `marksThrough`. */
-export async function publishL0(
-  fs: AsyncFs,
-  name: string,
-  entries: readonly SstEntry[],
-  marksThrough: Seq,
-): Promise<RunMeta> {
-  const path = levelRunPath(0, name);
-  const { body, end } = await encodeRun(entries);
-  const w = await fs.create(path);
-  await w.write(body);
-  await w.finish();
-  return { path, ...end, marksThrough };
-}
-
-/** The manifest of `generation`, or undefined when a newer publish removed it. */
-export async function loadGeneration(
-  fs: ReadFs,
-  generation: Generation,
-): Promise<GenerationMeta | undefined> {
-  if (generation === GENERATION_NONE) return GENERATION_ZERO;
-  const buf = await fs.read(genPath(generation), 0, Number.POSITIVE_INFINITY);
-  if (!buf || buf.byteLength === 0) return undefined;
-  return decodeGeneration(buf);
-}
-
-/**
- * Delete manifests older than `keepFrom`, and swap files (`<n>.mft.crswap`,
- * left by a write killed mid-flight) numbered up to `keepFrom`. Call after
- * IDB records `keepFrom`. A write in progress always numbers past the
- * recorded generation, so its swap file is above `keepFrom` and stays.
- */
-export async function reclaimManifests(
-  fs: AsyncFs,
-  keepFrom: Generation,
-): Promise<void> {
-  for (const name of await fs.list("m")) {
-    const m = /^(\d+)\.mft(\.crswap)?$/.exec(name);
-    if (!m) continue;
-    const n = Number(m[1]);
-    if (m[2] ? n > keepFrom : n >= keepFrom) continue;
-    try {
-      await fs.remove(`${GEN_PREFIX}${name}`);
-    } catch {
-      // best-effort
-    }
-  }
-}
-
-/**
- * Remove each path in `drop` that `keep` does not retain and no tab holds
- * open. A file that stays, held or failing, goes at a later call.
- */
-export async function reclaimRuns(
-  fs: AsyncFs,
-  drop: readonly string[],
-  keep: readonly string[],
-): Promise<void> {
-  const retained = new Set(keep);
-  for (const path of drop) {
-    if (retained.has(path)) continue;
-    await fs.removeUnlessOpen(path).catch(() => undefined);
-  }
-}
-
-/** `loadGeneration` of a recorded generation, which nothing may remove: a manifest that is gone throws. */
-export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<GenerationMeta> {
-  const meta = await loadGeneration(fs, recorded);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
-  return meta;
-}
-
-/**
- * The runs of the recorded generation, and of every manifest numbered past
- * it and past `destroyedTop`. Such a manifest is left by a publish whose
- * IndexedDB commit failed or never ran. Its runs stay while it does: once
- * they are gone, a power loss that takes the appends back lets a flush
- * write the same path with other rows, and recovery would adopt the
- * manifest over them. A manifest up to `destroyedTop` predates a destroy,
- * which moved the head past its seqs for good. A read that fails throws,
- * and a recorded manifest that is gone throws too: nothing may be swept
- * against it.
- */
-export async function liveRuns(fs: ReadFs, recorded: Generation, destroyedTop: Generation): Promise<string[]> {
-  const runs = (await loadRecorded(fs, recorded)).runs;
-  const newer: RunMeta[] = [];
-  for (const n of await manifestNumbers(fs)) {
-    if (n <= recorded || n <= destroyedTop) break;
-    newer.push(...((await readManifest(fs, n))?.runs ?? []));
-  }
-  return [...runs, ...newer].map((run) => run.path);
-}
-
-/** Every run file on disk, from the `l<n>/` directories. */
-export async function listRuns(fs: ReadFs): Promise<string[]> {
-  const out: string[] = [];
-  for (const dir of await fs.list("")) {
-    if (levelOfDir(dir) === undefined) continue;
-    for (const name of await fs.list(dir)) out.push(`${dir}/${name}`);
-  }
-  return out;
 }

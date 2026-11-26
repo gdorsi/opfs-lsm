@@ -8,7 +8,6 @@ import {
   GENERATION_ZERO,
   isIntact,
   manifestNumbers,
-  probeManifest,
   readManifest,
   type GenerationMeta,
 } from "./store/generation.js";
@@ -197,8 +196,8 @@ async function highestThrough(fs: ReadFs | undefined, numbers: readonly Generati
   let floor = from;
   if (!fs) return floor;
   for (const n of numbers) {
-    const through = (await readManifest(fs, n))?.through ?? SEQ_ZERO;
-    if (through > floor) floor = through;
+    const m = await readManifest(fs, n);
+    if (typeof m === "object" && m.through > floor) floor = m.through;
   }
   return floor;
 }
@@ -208,7 +207,7 @@ async function longerPrefix(fs: ReadFs, meta: WalMeta, numbers: readonly Generat
   for (const n of numbers) {
     if (meta.generation !== undefined && n <= meta.generation) break;
     const m = await readManifest(fs, n);
-    if (m && m.through > meta.head && (await isIntact(fs, m))) return m;
+    if (typeof m === "object" && m.through > meta.head && (await isIntact(fs, m))) return m;
   }
   return undefined;
 }
@@ -225,20 +224,20 @@ async function choose(
   if (longer) return longer;
   if (recorded !== undefined) {
     if (trusted === recorded) return undefined;
-    const m = await probeManifest(fs, recorded);
+    const m = await readManifest(fs, recorded);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${recorded} does not decode`);
     if (m !== "missing") {
       if (await isIntact(fs, m)) return undefined;
       for (const n of numbers) {
         const other = await readManifest(fs, n);
-        if (other && other.through >= meta.ingestedThrough && (await isIntact(fs, other))) return other;
+        if (typeof other === "object" && other.through >= meta.ingestedThrough && (await isIntact(fs, other))) return other;
       }
       throw new CorruptDatabaseError(`manifest ${recorded} lists a run that is gone`);
     }
   }
   for (const n of numbers) {
     if (n <= meta.destroyedTop) break;
-    const m = await probeManifest(fs, n);
+    const m = await readManifest(fs, n);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${n} does not decode`);
     if (m !== "missing" && (await isIntact(fs, m))) return m;
   }

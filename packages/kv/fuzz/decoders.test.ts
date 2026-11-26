@@ -223,7 +223,7 @@ const manifestArb: fc.Arbitrary<GenerationMeta> = fc.integer({ min: 0, max: 2 **
           },
           { requiredKeys: ["path", "file", "marksThrough"] },
         )
-        .map(({ file, ...run }) => ({ ...run, ...file })),
+        .map(({ file, ...run }) => ({ ...run, level: Number(run.path[1]), ...file })),
       { maxLength: 6 },
     ),
   }),

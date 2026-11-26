@@ -30,7 +30,7 @@
  * - a pass that installed nothing sweeps (`sweepIdle`).
  * Every removal runs under `unlessHeld`: the reclaim lock taken exclusively
  * when no tab holds it, else skipped, never waited for. A run goes only
- * through `removeUnlessOpen` (src/opfs/browser-fs.ts, src/store/generation.ts
+ * through `removeUnlessOpen` (src/opfs/browser-fs.ts, src/host/reclaim.ts
  * `reclaimRuns`): under its run lock taken exclusively when available. Each
  * removal is a step of its own, so the tab can move between any two. The
  * files of a generation are on disk before IndexedDB records it, so a record

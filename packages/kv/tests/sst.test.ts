@@ -157,7 +157,7 @@ describe("sst", () => {
       { kind: "put", key: utf("a"), value: utf("new"), seq: 2 },
       { kind: "del", key: utf("b"), seq: 2 },
     ]);
-    const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst"], [readerOfBytes(newer), readerOfBytes(older)]);
+    const levels = runLevels([0, 0], [readerOfBytes(newer), readerOfBytes(older)]);
     expect(await untilHit(() => pointGet(undefined, levels, utf("a"), NO_MARKS))).toEqual(utf("new"));
     expect(await untilHit(() => pointGet(undefined, levels, utf("b"), NO_MARKS))).toBeUndefined();
     expect(await untilHit(() => pointGet(undefined, levels, utf("c"), NO_MARKS))).toBeUndefined();

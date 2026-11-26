@@ -772,7 +772,7 @@ class DbImpl implements Db {
     this.loaded = {
       generation,
       runs: held,
-      levels: runLevels(paths, held.map((r) => r.reader)),
+      levels: runLevels(meta.runs.map((r) => r.level), held.map((r) => r.reader)),
       marks: meta.marks,
       refs: 1,
     };

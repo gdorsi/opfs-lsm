@@ -5,7 +5,6 @@ import { CountingFs, emptyIoCounters, type IoCounters } from "../opfs/counting-f
 import { GENERATION_NONE, type Generation } from "../seq.js";
 import { engineMemoryBytes, watchEngine } from "../store/engine.js";
 import { loadGeneration } from "../store/generation.js";
-import { levelOf } from "../store/levels.js";
 import { destroyed, EngineHost, type FsFactory, type HostOptions, type Meter } from "./engine-host.js";
 import type { HostStats } from "./protocol.js";
 
@@ -95,7 +94,7 @@ export class MeteredHost extends EngineHost {
     const latest = await loadGeneration(fs, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();
     for (const run of latest?.runs ?? []) {
-      const level = levelOf(run.path) ?? 0;
+      const level = run.level;
       const entry = byLevel.get(level) ?? { level, runs: 0, bytes: 0 };
       entry.runs += 1;
       entry.bytes += run.bytes;

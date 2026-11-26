@@ -9,10 +9,10 @@ import { decodeSst } from "./oracle/sst-ref.js";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const run = (path: string, bytes: number, smallest?: string, largest?: string): RunMeta =>
-  smallest === undefined
-    ? { path, bytes, marksThrough: 0 }
-    : { path, bytes, range: { smallest: enc.encode(smallest), largest: enc.encode(largest ?? smallest) }, marksThrough: 0 };
+const run = (path: string, bytes: number, smallest?: string, largest?: string): RunMeta => {
+  const head = { path, level: Number(path[1]), bytes, marksThrough: 0, index: new Uint8Array(0) };
+  return smallest === undefined ? head : { ...head, range: { smallest: enc.encode(smallest), largest: enc.encode(largest ?? smallest) } };
+};
 const manifest = (runs: readonly RunMeta[], marks = NO_MARKS) => ({ runs, marks });
 const paths = (plan: CompactionPlan | undefined) => plan?.inputs.map((r) => r.path);
 

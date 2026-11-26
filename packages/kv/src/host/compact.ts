@@ -4,13 +4,7 @@ import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import { nextGeneration, type Generation } from "../seq.js";
 import { openMerge, type Demand, type MergeCore } from "../store/engine.js";
-import {
-  loadRecorded,
-  manifestNumbers,
-  publishGeneration,
-  type GenerationMeta,
-  type RunMeta,
-} from "../store/generation.js";
+import { manifestNumbers, type GenerationMeta, type RunMeta } from "../store/generation.js";
 import {
   levelRunPath,
   planCompaction,
@@ -18,12 +12,13 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
+import { loadRecorded, publishGeneration } from "./publish.js";
 import { retireMarks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";
 
-/** A run the merge wrote, before it is given a `marksThrough`. */
-type MergedRun = Omit<RunMeta, "marksThrough">;
+/** A run the merge wrote, before it is given its level and a `marksThrough`. */
+type MergedRun = Omit<RunMeta, "level" | "marksThrough">;
 
 /** Merged runs written to OPFS and not yet in any generation. */
 type CompactionOutput = {
@@ -60,7 +55,7 @@ export async function mergeNextStep(
     inputs: plan.inputs.map((r) => r.path),
     // The merge applied every mark of `base`. One the manifest gains before
     // the install is past `base.through`, so the output claims none of it.
-    outputs: merged.map((run) => ({ ...run, marksThrough: base.through })),
+    outputs: merged.map((run) => ({ ...run, level: plan.outputLevel, marksThrough: base.through })),
   };
 }
 

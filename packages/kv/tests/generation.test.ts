@@ -2,7 +2,8 @@ import { crc32 } from "../src/store/crc32.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { __resetMemoryFsForTests, MemoryFs } from "../src/testing.js";
-import { decodeGeneration, encodeGeneration, manifestHead, publishGeneration, publishL0, runsOfCopy } from "../src/store/generation.js";
+import { publishGeneration, publishL0 } from "../src/host/publish.js";
+import { decodeGeneration, decodeManifestHead, encodeGeneration, manifestHead, runsOfCopy } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeIndex } from "../src/store/sst.js";
@@ -66,10 +67,11 @@ describe("manifest", () => {
     const meta = {
       generation: 3,
       runs: [
-        { path: "l0/1-2.sst", ...sstRunEnd(blocks), marksThrough: 9 },
-        { path: "l1/c2.0.sst", bytes: 2 ** 32 - 1, marksThrough: 0, index: NO_BLOCKS },
+        { path: "l0/1-2.sst", level: 0, ...sstRunEnd(blocks), marksThrough: 9 },
+        { path: "l1/c2.0.sst", level: 1, bytes: 2 ** 32 - 1, marksThrough: 0, index: NO_BLOCKS },
         {
           path: "l2/c9.1.sst",
+          level: 2,
           bytes: 2 ** 32 - 1,
           range: { smallest: new Uint8Array(0), largest: new Uint8Array(300).fill(7) },
           marksThrough: 5,
@@ -99,6 +101,13 @@ describe("manifest", () => {
     for (const meta of [{ ...valid, marks: late }, { ...valid, runs: [run] }]) {
       expect(() => decodeGeneration(encodeGeneration(meta))).toThrow(CorruptDatabaseError);
     }
+  });
+
+  it.each(["a.sst", "l/a.sst", "lx/a.sst", "m/a.sst", "l1a.sst"])("refuses a run path that names no level: %s", (path) => {
+    const meta = { generation: 2, runs: [{ path, level: 0, bytes: 90, marksThrough: 7, index: NO_BLOCKS }], through: 7, marks: NO_MARKS };
+    const file = encodeGeneration(meta);
+    expect(() => decodeGeneration(file)).toThrow("generation run path names no level");
+    expect(() => decodeManifestHead(manifestHead(file))).toThrow(CorruptDatabaseError);
   });
 
   it.each([1, 2, 3, 4, 5])("refuses a version %i manifest rather than read it as version 6", (version) => {
@@ -171,6 +180,7 @@ describe("a manifest's head", () => {
   const head = manifestHead(file);
 
   it("names the runs and holds no block index, in a buffer of its own", () => {
+    expect(decodeManifestHead(head)).toMatchObject({ generation: 4, runs: ["l0/3-4.sst", "l1/c2.0.sst"] });
     expect(runsOfCopy(head, 4)).toEqual(["l0/3-4.sst", "l1/c2.0.sst"]);
     expect(head.byteLength).toBe(file.byteLength - 2 * sstRunEnd(body).index.byteLength);
     expect(head.buffer.byteLength).toBe(head.byteLength);
@@ -226,7 +236,7 @@ describe("publishL0", () => {
 });
 
 describe("loadLatestGeneration", () => {
-  const a = { path: "l0/a.sst", bytes: 1, marksThrough: 0, index: NO_BLOCKS };
+  const a = { path: "l0/a.sst", level: 0, bytes: 1, marksThrough: 0, index: NO_BLOCKS };
 
   it("skips an empty newest manifest and returns the older one", async () => {
     const fs = new MemoryFs();

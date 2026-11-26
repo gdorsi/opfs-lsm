@@ -540,7 +540,7 @@ export class Sys implements Disk {
     }
   }
 
-  /** `reclaimManifests` in src/store/generation.ts: the manifests older than `keepFrom`. */
+  /** `reclaimManifests` in src/host/reclaim.ts: the manifests older than `keepFrom`. */
   private reclaimManifests(keepFrom: number): void {
     for (const n of this.numbers().reverse()) {
       if (n < keepFrom) this.write({ store: "opfs", label: `remove m/${n}`, rmManifest: n });

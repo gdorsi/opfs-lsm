@@ -51,7 +51,7 @@ function readers(kind: Kind): RunLevel[] {
           seq: SST_SEQ,
         };
   const body = encodeSstRef([entry]);
-  return runLevels(["l0/1-1.sst"], [new SstReader(bytesFile(body), new PageCache(), sstRunEnd(body))]);
+  return runLevels([0], [new SstReader(bytesFile(body), new PageCache(), sstRunEnd(body))]);
 }
 
 function marks(mark: Mark): Marks {
@@ -144,7 +144,7 @@ for (const newer of KINDS) {
       for (const warmOlder of WARMTHS) {
         pairs++;
         const readers = [await run(SST_SEQ + 1, newer, warmNewer), await run(SST_SEQ, older, warmOlder)];
-        const levels = runLevels(["l0/2-2.sst", "l1/1-1.sst"], readers);
+        const levels = runLevels([0, 1], readers);
         const got = await untilHit(() => pointGet(undefined, levels, KEY, NO_MARKS));
         const want = expected("miss", newer === "miss" ? older : newer, "none");
         if (!eq(got, want)) {

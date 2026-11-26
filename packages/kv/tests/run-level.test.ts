@@ -28,6 +28,9 @@ function run(keys: number[], tag: string): SstReader {
   return readerOfBytes(encodeSstRef(entries, 64));
 }
 
+/** The level a run path names: `l<n>/`. */
+const levelOf = (path: string) => Number(path[1]);
+
 /** Newest first: two overlapping L0 runs, then L1 and L2 cut into disjoint runs with gaps. */
 function layout() {
   const l2 = [[0, 30], [40, 70], [75, 120]].map(([a, b]) => run(range(a!, b!, 1), "l2:"));
@@ -82,7 +85,7 @@ async function scan(cursors: readonly LayerCursor[], limit?: number, reverse?: b
 describe("runLevels", () => {
   it("scans the same rows as one cursor per run, for every bound", async () => {
     const { paths, readers } = layout();
-    const levels = runLevels(paths, readers);
+    const levels = runLevels(paths.map(levelOf), readers);
     expect(levels).toHaveLength(4);
     const bounds = [undefined, ...range(-1, 125, 4).flatMap((a) =>
       range(a, 130, 9).map((b) => ({ start: key(a < 0 ? 0 : a), endExclusive: key(b) })),
@@ -98,7 +101,7 @@ describe("runLevels", () => {
 
   it("scans the forward rows backward, for every bound", async () => {
     const { paths, readers } = layout();
-    const levels = runLevels(paths, readers);
+    const levels = runLevels(paths.map(levelOf), readers);
     const bounds = [undefined, ...range(-1, 125, 4).flatMap((a) =>
       range(a, 130, 9).map((b) => ({ start: key(a < 0 ? 0 : a), endExclusive: key(b) })),
     ), ...range(0, 125, 6).map((a) => ({ start: key(a) })), ...range(0, 125, 6).map((b) => ({ endExclusive: key(b) }))];
@@ -113,7 +116,7 @@ describe("runLevels", () => {
 
   it("gets the same entry as asking every run newest first", async () => {
     const { paths, readers } = layout();
-    const levels = runLevels(paths, readers);
+    const levels = runLevels(paths.map(levelOf), readers);
     const show = (e: SstEntry | undefined) =>
       e && `${dec.decode(e.key)}:${e.kind}:${e.kind === "put" ? dec.decode(e.value) : ""}`;
     for (let i = -2; i < 125; i++) {
@@ -128,7 +131,7 @@ describe("runLevels", () => {
       const { paths, bodies } = layoutBodies();
       const reads = bodies.map((): Reads => ({ blocks: 0, tails: 0 }));
       const readers = bodies.map((body, r) => countedReader(body, reads[r]!));
-      const got = latestSstEntry(runLevels(paths, readers), key(i));
+      const got = latestSstEntry(runLevels(paths.map(levelOf), readers), key(i));
       const holding = bodies.map((body) => {
         const { smallest, largest } = sstRunEnd(body).range!;
         return compareBytes(smallest, key(i)) <= 0 && compareBytes(key(i), largest) <= 0 ? 1 : 0;
@@ -145,7 +148,7 @@ describe("runLevels", () => {
     const cache = new PageCache();
     const reads = versions.map((): Reads => ({ blocks: 0, tails: 0 }));
     const readers = versions.map((body, r) => countedReader(body, reads[r]!, cache));
-    const levels = runLevels(["l0/2-2.sst", "l0/1-1.sst", "l1/c1.0-0.sst"], readers);
+    const levels = runLevels([0, 0, 1], readers);
     // A get of a key in another block leaves every filter resident and the block of `key(30)` unread.
     for (const reader of readers) await runGet(reader, key(0));
     await loadsDone(cache);
@@ -160,7 +163,7 @@ describe("runLevels", () => {
     const newer = encodeSstRef([{ kind: "put", key: key(1), value: enc.encode("new"), seq: 2 }], 64);
     const older = encodeSstRef([1, 2].map((i) => ({ kind: "put" as const, key: key(i), value: enc.encode("old"), seq: 1 })), 64);
     const broken = new Error("unreadable run");
-    const open = () => runLevels(["l0/2-2.sst", "l1/c1.0-0.sst"], [
+    const open = () => runLevels([0, 1], [
       readerOfBytes(newer),
       new SstReader({ size: older.byteLength, read: () => Promise.reject(broken) }, new PageCache(), sstRunEnd(older)),
     ]);
@@ -173,7 +176,7 @@ describe("runLevels", () => {
 
   it("keeps runs in key order inside a level", async () => {
     const { paths, readers } = layout();
-    const rows = await scan(runLevels(paths, readers).map((l) => l.cursor()));
+    const rows = await scan(runLevels(paths.map(levelOf), readers).map((l) => l.cursor()));
     const keys = rows.map((r) => enc.encode(r.split("=")[0]!));
     for (let i = 1; i < keys.length; i++) expect(compareBytes(keys[i - 1]!, keys[i]!)).toBeLessThan(0);
   });
@@ -234,7 +237,7 @@ describe("a scan under range deletes", () => {
         };
         const cache = new PageCache();
         const readers = runs.map((r) => new SstReader(bytesFile(r.body), cache, sstRunEnd(r.body), r.marksThrough));
-        const levels = runLevels(runs.map((r) => r.path), readers);
+        const levels = runLevels(runs.map((r) => levelOf(r.path)), readers);
         passedOver += readers.filter((r) => r.range && coversRun(marks, { range: r.range, marksThrough: r.marksThrough }, bounds)).length;
         const patterns = [enc.encode(pattern)];
         for (const reverse of [false, true]) {
@@ -255,7 +258,7 @@ describe("a scan under range deletes", () => {
 describe("the layers a view reads", () => {
   it("hands its marks to every level, so a scan passes over a run a range delete covers", async () => {
     const { paths, readers } = layout();
-    const levels = runLevels(paths, readers);
+    const levels = runLevels(paths.map(levelOf), readers);
     const marks: Marks = [{ start: key(0), endExclusive: key(60), through: 1, at: 2 }];
     const bounds = { start: key(10), endExclusive: key(50) };
     for (const range of [bounds, { ...bounds, valueContains: [enc.encode("l1")] }]) {

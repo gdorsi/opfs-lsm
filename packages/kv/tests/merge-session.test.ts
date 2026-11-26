@@ -6,7 +6,8 @@ import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
 import type { AsyncFs, FileWriter, OpenFile } from "../src/opfs/async-fs.js";
 import { encodeRunIn, openMergeIn, type MergeCore, type MergeSpec } from "../src/store/engine.js";
-import { publishGeneration, type RunMeta } from "../src/store/generation.js";
+import { publishGeneration } from "../src/host/publish.js";
+import type { RunMeta } from "../src/store/generation.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
