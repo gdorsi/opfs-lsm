@@ -2,7 +2,8 @@ import type { Collection } from "@tanstack/db";
 import type { Body, Comment, Rows, StoredIssue, SyncState } from "../domain/model.ts";
 import type { Stream } from "../domain/stores.ts";
 import type { IssueFilter } from "./filter.ts";
-import type { Unsubscribe } from "./live.ts";
+
+export type Unsubscribe = () => void;
 
 /** A row of each store as the model reads and writes it. */
 export interface StoreRows extends Rows {

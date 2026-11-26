@@ -4,9 +4,8 @@ import { isDeepStrictEqual } from "node:util";
 import { createCollection, createLiveQueryCollection, localOnlyCollectionOptions, type Collection } from "@tanstack/db";
 import { generateNKeysBetween } from "fractional-indexing";
 import { stored, type Body, type Comment, type Issue, type PriorityCode, type StatusCode, type StoredIssue } from "../domain/model.ts";
-import type { Backend, StoreName, StoreRows } from "../model/backend.ts";
+import type { Backend, StoreName, StoreRows, Unsubscribe } from "../model/backend.ts";
 import { parseIssueFilter, SORT_FIELDS, type IssueFilter, type SortField } from "../model/filter.ts";
-import type { Unsubscribe } from "../model/live.ts";
 import { bodyOf, commentsOf, issueById, unsent, windowQuery } from "../model/query.ts";
 
 /** A fresh, empty backend stored under `name`, and how to release all it holds. */
@@ -106,7 +105,7 @@ export function contract(label: string, open: OpenBackend): void {
       });
 
       it("derives an issue's sort keys from the row a merge returns, which may carry stale ones", async () => {
-        const list = windowQuery(backend().collection("issues"), parseIssueFilter({ sort: "priority", dir: "desc" }), 5);
+        const list = windowQuery(backend().collection("issues"), parseIssueFilter({ sort: "priority", dir: "desc" }), { offset: 0, limit: 5 });
         list.subscribeChanges(() => {});
         await shown(list);
         await backend().transact("issues", [{ id: "i5" }], (local) => ({ ...local!, priority: 4, status: 4, modified: 10_000 }));
@@ -139,7 +138,7 @@ export function contract(label: string, open: OpenBackend): void {
         status: (a, b) => a.status - b.status || text(a.kanbanorder, b.kanbanorder),
       };
       const windowOf = async (filter: IssueFilter, size: number, offset = 0, status?: StatusCode) => {
-        const query = windowQuery(backend().collection("issues"), filter, size, status, offset > 0 ? { offset } : undefined);
+        const query = windowQuery(backend().collection("issues"), filter, { offset, limit: size }, status);
         const rows = ids(await shown(query));
         await query.cleanup();
         return rows;
@@ -348,7 +347,7 @@ export function contract(label: string, open: OpenBackend): void {
         localOnlyCollectionOptions<StoredIssue>({ id: `every-${label}`, getKey: (i) => i.id, initialData: all.map(stored), defaultStringCollation: { stringSort: "lexical" } }),
       ) as unknown as Collection<StoredIssue, string>;
       const expected = async (filter: IssueFilter, n: number) => {
-        const q = windowQuery(every, filter, SIZE, undefined, { offset: n });
+        const q = windowQuery(every, filter, { offset: n, limit: SIZE });
         const rows = ids(await shown(q));
         await q.cleanup();
         return rows;
@@ -373,7 +372,7 @@ export function contract(label: string, open: OpenBackend): void {
             const base = watched((emit: (b: number) => void) => anchoring.watchBase(anchor.value, emit));
             await eventually(base.latest, anchor.base, `base ${what}`);
             base.stop();
-            const q = windowQuery(backend().collection("issues"), filter, SIZE, undefined, { from: anchor.value, offset: n - anchor.base });
+            const q = windowQuery(backend().collection("issues"), filter, { from: anchor.value, offset: n - anchor.base, limit: SIZE });
             assert.deepEqual(ids(await shown(q)), await expected(filter, n), what);
             await q.cleanup();
           }
@@ -392,7 +391,7 @@ export function contract(label: string, open: OpenBackend): void {
         const anchoring = backend().anchor(filter)!;
         const anchor = (await anchoring.locate(n))!;
         const offset = n - anchor.base;
-        const q = windowQuery(backend().collection("issues"), filter, SIZE, undefined, { from: anchor.value, offset });
+        const q = windowQuery(backend().collection("issues"), filter, { from: anchor.value, offset, limit: SIZE });
         // Subscribed as a list on screen is: a window query no one subscribes to is dropped at once.
         q.subscribeChanges(() => {});
         await shown(q);
