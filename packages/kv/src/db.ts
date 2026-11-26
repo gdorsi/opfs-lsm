@@ -24,9 +24,11 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type BusRow, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
+import { holdingFiles, type BusMessage, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
+import { storageFullResponder, type StorageFullResponder } from "./host/storage-full.js";
 import { removeDatabase } from "./destroy.js";
-import { fullLock, layersChannel, openLock, webLocks, withLock } from "./locks.js";
+import { layersChannel, openLock, withLock } from "./locks.js";
+import { ROW_POST_MS, rowPost, type RowPost } from "./row-post.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
 import { reconcileOpen } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from "./seq.js";
@@ -88,8 +90,6 @@ export type OpenOptions = {
    */
   readonly reserveBytes?: number;
 };
-
-type StorageFullHandler = (full: StorageFull) => Promise<void>;
 
 /** Below this, one page per merge source may not fit. */
 const MIN_MEMORY_BUDGET = 1024 * 1024;
@@ -562,19 +562,6 @@ async function headStart(fs: ReadFs, head: HeadStart): Promise<void> {
   }
 }
 
-/**
- * A row that lands within this long of the tab's last post waits, and one
- * message carries the rows of the wait (design.md, "Seeing other tabs'
- * writes"). The cost of a post is per message, and a tab that awaits each
- * put lands many rows in this time.
- */
-export const ROW_POST_MS = 4;
-
-/** A page nobody looks at. The browser slows its timers, and can stop them. */
-function pageHidden(): boolean {
-  return typeof document !== "undefined" && document.visibilityState === "hidden";
-}
-
 /** Tries under the reclaim lock: each failure means files really are gone. */
 const GENERATION_RETRIES = 8;
 /** Why a catch-up or write attempt must run again: "behind" when another load installed a newer generation, "gone" when a file of the tail's generation is missing. */
@@ -616,25 +603,12 @@ class DbImpl implements Db {
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
-  /** Landed and not yet posted, in seq order, with the bytes of their ops. */
-  private unposted: BusRow[] = [];
-  private unpostedBytes = 0;
-  /** `performance.now()` of the last post. */
-  private postedAt = Number.NEGATIVE_INFINITY;
-  /** Posts the rows that no later landing posted. */
-  private postTimer: ReturnType<typeof setTimeout> | undefined = undefined;
-  /** Posts the rows that wait when the page is hidden, before the browser slows the timer. */
-  private readonly onVisibility = () => this.postRows();
+  /** Batches this tab's rows onto `bus`. */
+  private readonly rows: RowPost | undefined;
   private readonly pressure: Backpressure;
   /** The last read point and the two tables it joined. */
   private lastPoint: { readonly installed: Marks; readonly mem: Marks; readonly at: Marks } | undefined;
-  private readonly handlers = new Set<StorageFullHandler>();
-  /** Lets go of the full lock, or of the wait for it. Set while this handle has a handler. */
-  private unlock: (() => void) | undefined;
-  private holding = false;
-  private answering = false;
-  /** This handle has said once that no tab has a handler. */
-  private warned = false;
+  private readonly full: StorageFullResponder;
   /** Appends of this handle that have not joined the memtable yet. A read now would miss them. */
   private appending = 0;
   /** The last `update` of this handle. Each waits for the one before it. */
@@ -653,7 +627,7 @@ class DbImpl implements Db {
     readonly ingestClient: IngestClient,
     private readonly ownsIngestClient: boolean,
     caps: MemtableCaps,
-    private readonly rowPostMs: number,
+    rowPostMs: number,
   ) {
     this.pressure = new Backpressure(
       caps,
@@ -663,10 +637,9 @@ class DbImpl implements Db {
     if (typeof BroadcastChannel !== "undefined") {
       this.bus = new BroadcastChannel(layersChannel(name));
       this.bus.addEventListener("message", (ev: MessageEvent<BusMessage>) => this.onMessage(ev.data));
-      if (typeof document !== "undefined") {
-        document.addEventListener("visibilitychange", this.onVisibility);
-      }
+      this.rows = rowPost(this.bus, writerId, rowPostMs);
     }
+    this.full = storageFullResponder(name, this.bus);
   }
 
   private onMessage(data: BusMessage): void {
@@ -682,7 +655,7 @@ class DbImpl implements Db {
       }
       return this.announce();
     }
-    if (data?.kind === "full") return void this.answer(data.full).catch(() => undefined);
+    if (data?.kind === "full") return void this.full.answer(data.full).catch(() => undefined);
     if (data?.kind === "full-pull" || data?.kind === "full-done") return;
     // An `ingest`, or a message this build does not know: catch up from the WAL.
     void this.sync().catch(() => undefined);
@@ -690,36 +663,6 @@ class DbImpl implements Db {
 
   private ensureOpen(): void {
     if (this.closed) throw new ClosedError("database is closed");
-  }
-
-  /**
-   * Tell the other tabs and the host about a row this tab appended. Posted
-   * at once unless the tab posted within the last `rowPostMs`: then it
-   * waits for the first landing past that time, or for the timer when no
-   * landing follows. A hidden page posts every row at once.
-   */
-  private broadcast(row: BusRow, bytes: number): void {
-    if (this.closed || !this.bus) return;
-    this.unposted.push(row);
-    this.unpostedBytes += bytes;
-    if (pageHidden() || performance.now() - this.postedAt >= this.rowPostMs) this.postRows();
-    else this.postTimer ??= setTimeout(() => this.postRows(), this.rowPostMs);
-  }
-
-  private postRows(): void {
-    clearTimeout(this.postTimer);
-    this.postTimer = undefined;
-    if (this.unposted.length === 0) return;
-    const message: BusMessage = {
-      kind: "rows",
-      writerId: this.writerId,
-      rows: this.unposted,
-      bytes: this.unpostedBytes,
-    };
-    this.unposted = [];
-    this.unpostedBytes = 0;
-    this.postedAt = performance.now();
-    this.bus?.postMessage(message);
   }
 
   /** The one place a record joins the memtable. */
@@ -1036,7 +979,8 @@ class DbImpl implements Db {
     if (this.applyRecord({ seq, ops: resolveOps(ops, seq) }) === "gap" && ops.length && !this.closed) await this.sync();
     this.pressure.landed();
     this.announce();
-    this.broadcast({ seq, record }, flushBytes(ops));
+    // Tell the other tabs and the host about the row.
+    if (!this.closed) this.rows?.add({ seq, record }, flushBytes(ops));
   }
 
   /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
@@ -1358,70 +1302,9 @@ class DbImpl implements Db {
     };
   }
 
-  onStorageFull(handler: StorageFullHandler): () => void {
+  onStorageFull(handler: (full: StorageFull) => Promise<void>): () => void {
     this.ensureOpen();
-    const own: StorageFullHandler = (full) => handler(full);
-    this.handlers.add(own);
-    if (!this.unlock) this.askLock();
-    return () => {
-      if (this.handlers.delete(own) && this.handlers.size === 0) this.unlock?.();
-    };
-  }
-
-  private askLock(): void {
-    const abort = new AbortController();
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    const unlock = (this.unlock = () => {
-      this.unlock = undefined;
-      this.holding = false;
-      abort.abort();
-      release();
-    });
-    webLocks()
-      ?.request(fullLock(this.name), { signal: abort.signal }, () => {
-        // Granted before `unlock` could abort the request: `held` is settled, so the lock goes back.
-        if (this.unlock !== unlock) return held;
-        this.holding = true;
-        this.bus?.postMessage({ kind: "full-pull" } satisfies BusMessage);
-        return held;
-      })
-      .catch(() => undefined);
-  }
-
-  /**
-   * Answer an offer. The holder of the full lock runs its handlers. A
-   * handle with no handler answers when no handle holds the lock, so the
-   * host tries the reserve again once space is free.
-   */
-  private async answer(full: StorageFull): Promise<void> {
-    if (this.holding && !this.answering) {
-      this.answering = true;
-      for (const handler of [...this.handlers]) {
-        try {
-          await handler(full);
-        } catch (err) {
-          console.error(`opfs-lsm: an onStorageFull handler of ${this.name} failed`, err);
-        }
-      }
-      this.answering = false;
-      // A handle that let go of the lock meanwhile stays silent, so the next holder pulls the offer.
-      if (this.holding) this.bus?.postMessage({ kind: "full-done" } satisfies BusMessage);
-    } else if (this.handlers.size === 0) {
-      const free = await webLocks()?.request(
-        fullLock(this.name),
-        { mode: "shared", ifAvailable: true },
-        (lock) => lock !== null,
-      );
-      if (!free || this.closed) return;
-      if (!this.warned) {
-        this.warned = true;
-        console.warn(
-          `opfs-lsm: the browser refused a write to ${this.name}, and no tab has an onStorageFull handler to free ${full.need} bytes`,
-        );
-      }
-      this.bus?.postMessage({ kind: "full-done" } satisfies BusMessage);
-    }
+    return this.full.on(handler);
   }
 
   watch(policy: WatchPolicy): void {
@@ -1462,14 +1345,9 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.emit({ kind: "closed", reason });
-    this.unlock?.();
-    if (this.bus) {
-      this.postRows();
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", this.onVisibility);
-      }
-      this.bus.close();
-    }
+    this.full.close();
+    this.rows?.close();
+    this.bus?.close();
     if (this.watched) this.ingestClient.unwatch(this.name);
     if (this.ownsIngestClient) this.ingestClient.close();
     this.wal.close();
