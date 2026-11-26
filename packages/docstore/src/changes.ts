@@ -92,7 +92,8 @@ class Run {
     // A building index is written like a ready one. Any other state throws here.
     const plan = r && (!("kind" in r) || r.kind === "building") ? coll.maintained.find((p) => p.name === index) : undefined;
     if (!plan) readableTarget(coll, index);
-    if (plan!.target.kind !== "sorted") {
+    const t = plan!.target;
+    if (t.kind === "text" || t.unique || t.include) {
       throw new DocStoreError("query", `before cannot read "${index}"`);
     }
     return plan!;
