@@ -36,4 +36,4 @@ Preconditions:
 - `TWO_TAB_STAGED=1` needs `TWO_TAB_HOSTS=dedicated`. Chrome gives a sync access handle to a dedicated Worker only, so a staged SharedWorker host would write no file there. The script exits `1` without the pair.
 - `host writes=` is the proof that the staged writer ran. A run that reads `writable` under `two-tab-staged` did not test it.
 - These drives prove that several hosts keep one database consistent. They open with `reserveBytes: 0`, so they say nothing about the reserve, which several hosts do not share (`docs/reserve.md`, "Several hosts").
-- The kill loop takes the same modes: `pnpm --filter @opfs-lsm/kv kill-chrome --hosts dedicated [--staged]` (`docs/verification.md`, "Kill real Chrome").
+- The kill loop takes the same modes: `pnpm --filter @opfs-lsm/kv kill-chrome --hosts dedicated [--staged]` (`docs/verification.md`, "Kill real Chrome"). Its `quota` kind fails there at a small `maxWalBytes`, for a reason `docs/verification.md` lists under "Gaps".

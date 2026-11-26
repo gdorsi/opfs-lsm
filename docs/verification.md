@@ -24,6 +24,8 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | How a tab follows another: a BroadcastChannel row, `catchUp`, `follow`, a generation install that moves the memtable (`advance`), `changes()` (`applyRecord`, `announce`), or `dangerousDestroy` seen from a second handle | `KV_FOLLOW_DEPTH=4` on `tests/sim/tab-follow.test.ts`, `KV_INFLIGHT_SEEDS=400` on `tests/sim/in-flight-feed.test.ts` (`KV_INFLIGHT_FIRST=<seed> KV_INFLIGHT_SEEDS=1` replays a seed), and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. No formal model covers it. |
 | `openDb`, the SharedWorker, or cross-tab visibility | `drive two-tab` |
 | `BrowserFs` (`createWritable`, removes, file locks), the SharedWorker port, or any Web Lock | `kill-chrome --minutes 10` (see [Kill real Chrome](#kill-real-chrome)) |
+| The staged writer of `BrowserFs` (`stage`), or the probe that picks it (`fileWrites`, `serveWorker`) | `tests/staged-writer.test.ts` and `tests/worker-entry.test.ts`, then `drive two-tab-staged`, then `kill-chrome --hosts dedicated --staged --minutes 5`. No drive runs it in Safari, whose SharedWorker is where it ships. |
+| What one host holds while another host writes the same database (`trusted`, `pendingBytes`, the L0 stop, the reserve's state) | `tests/two-hosts.test.ts`, and `KV_TWOHOSTS_SEEDS=400` on `tests/sim/two-hosts.test.ts` (`KV_TWOHOSTS_FIRST=<seed> KV_TWOHOSTS_SEEDS=1` replays a seed), then `drive two-tab-dedicated` and `kill-chrome --hosts dedicated --minutes 5` |
 | `packages/automerge/src/index.ts`, or a kv change claimed to speed up Automerge | `drive bench automerge/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/yjs/src/index.ts`, or a kv change claimed to speed up Yjs | `drive bench yjs/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `packages/tanstack-query/src/index.ts`, or a kv change claimed to speed up TanStack Query's persister | `pnpm --filter @opfs-lsm/tanstack-query test` and `drive bench tanstack-query/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
@@ -55,7 +57,7 @@ From the repo root, in this order:
 .agents/skills/verify-opfs-lsm/bin/verify-opfs-lsm cleanup
 ```
 
-`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `tanstack-query/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
+`<feature>` is one of `two-tab`, `two-tab-nobc`, `two-tab-local`, `two-tab-dedicated`, `two-tab-staged`, `quota`, `destroy`, `bench <selector…> [--size tiny|small|large] [--reps N] [--contenders a,b] [--seed N]` and `bench-smoke`. A selector is a family (`kv/`, `tracker/`, `tanstack-live/`, `automerge/`, `yjs/`, `tanstack-query/`) or one workload such as `kv/fillrandom`. Drive each feature that the table above names. Run `doctor` again after a drive that fails, then `cleanup`, before the next drive.
 
 `launch` installs dependencies when `node_modules` is missing, builds `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs` and `@opfs-lsm/automerge`, and runs `doctor`. A checkout with no `dist` fails the first `doctor` (`kv dist: MISSING`). `launch` is the repair.
 
@@ -68,10 +70,14 @@ The helper runs:
 | `two-tab` | `pnpm --filter @opfs-lsm/kv two-tab` |
 | `two-tab-nobc` | `TWO_TAB_NOBC=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `two-tab-local` | `TWO_TAB_LOCAL=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `two-tab-dedicated` | `TWO_TAB_HOSTS=dedicated pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
+| `two-tab-staged` | `TWO_TAB_HOSTS=dedicated TWO_TAB_STAGED=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `quota` | `TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `destroy` | `TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts` |
 | `bench <selector…>` | `pnpm bench <selector…>`, with the flags after it |
 | `bench-smoke` | `pnpm bench:smoke` |
+
+The two `dedicated` drives remove `SharedWorker` from each page, so each handle starts a dedicated Worker, and they ask the testing worker for a host that writes run files there: several hosts then flush and compact one database. The worker an app loads writes no file in a dedicated Worker, which the `shipped-worker ok` step of those drives checks. `two-tab-staged` also hides `createWritable()` in the testing worker, so its hosts stage their files as a host does in a browser without it. Chrome gives a sync access handle to a dedicated Worker only, so the staged writer has no drive in a SharedWorker. Both flags travel in the fragment of the testing worker's URL, which the shipped worker never reads.
 
 A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is `0`. Stdout contains the proof strings:
 
@@ -80,6 +86,8 @@ A passing drive prints `drive: ok evidence=...` and exits 0. `exit_code.txt` is 
 | `two-tab` | `tabs=2`, `mode=SharedWorker`, `two-databases ok`, `shipped-worker ok`, `two-tab ok` |
 | `two-tab-nobc` | `mode=SharedWorker nobc`, `two-databases ok`, `shipped-worker ok`, `two-tab ok`, and `bc_posts=` with a positive count |
 | `two-tab-local` | `tabs=1`, `mode=local EngineHost`, `two-databases ok`, `two-tab ok` |
+| `two-tab-dedicated` | `tabs=2`, `mode=dedicated Worker`, `SharedWorker=false`, `two-databases ok`, `shipped-worker ok`, `host writes=writable`, `two-tab ok` |
+| `two-tab-staged` | `tabs=2`, `mode=dedicated Worker staged`, `two-databases ok`, `shipped-worker ok`, `host writes=staged`, `two-tab ok` |
 | `quota` | `tabs=2`, `mode=SharedWorker`, `OPFS write is refused`, `storage full answered once, by tab`, `run files`, `the reserve file is back`, `no handler: one warning in each tab, no row lost`, `limit lifted: the reserve file is back`, `quota ok`. The `fill of a 24 MiB reserve` line times the fill. |
 | `destroy` | `mode=SharedWorker`, `other tab closed reason=destroyed`, `other tab put and view read rejected with ClosedError`, `wal database gone`, `folder gone`, `reopened empty`, `never-opened left nothing`, `crashed tab: destroyDb finished`, `destroy ok`. The `frozen tab:` and `tab navigated away:` lines are facts about the Chrome it ran on: a frozen tab holds `destroyDb` until it resumes, and a page in the back/forward cache is evicted. |
 | `bench`, `bench-smoke` | One `## <family>/<workload>: <title>` section per workload, a row per contender, and no `## Failed runs` section. Every read is checked against a model, so exit 0 means every value was right. |
@@ -108,6 +116,7 @@ pnpm --filter @opfs-lsm/kv kill-chrome --minutes 30 --keep-going
 pnpm --filter @opfs-lsm/kv kill-chrome --seed <seed> --from <iteration> --iterations 1 --kinds <kind> --no-probes   # replay
 pnpm --filter @opfs-lsm/kv kill-chrome --probes-only
 pnpm --filter @opfs-lsm/kv kill-chrome --inspect <db> --profile <kept profile> --port <port>   # dump a kept database's files
+pnpm --filter @opfs-lsm/kv kill-chrome --hosts dedicated [--staged]   # a dedicated Worker host per handle, as in the two dedicated drives
 ```
 
 Each iteration opens 2 or 3 tabs on one database, on one Chrome profile. Each tab runs a seeded workload of puts, deletes and batches over 192 keys with `maxWalBytes` of 1, 4 or 16 KiB, so the SharedWorker ingests and compacts many times a second. A tab has one write in flight at a time. It reports each ack (attempt and seq) over a CDP binding as soon as the ack resolves. The workload is a function of (seed, iteration, tab), so the harness can regenerate every attempt a tab made. At a seeded time the harness does one of these, in turn:
@@ -145,6 +154,8 @@ Before the loop, four probes check single facts:
 | `writable-browser-kill` | The same, with `kill -9` of the browser and a relaunch. |
 
 Before the workload, under the quota and around the check, the loop lists the origin's IndexedDB databases and notes any that vanished, or an `indexedDB.open` that failed.
+
+With `--hosts dedicated` each tab hosts its handle in a dedicated Worker that writes, so 2 or 3 hosts flush and compact the database at once, and a kill takes a host mid-write with the others running. `close-worker` then terminates the hosts of one tab, and `worker-locks` checks that the ingest and compaction locks of a terminated dedicated Worker come free. With `--staged` the hosts also stage their files. After each restart the check reads from the host's stats how it wrote its files, and fails the iteration when that is not the way the run asked for. The `quota` kind fails in this mode when `maxWalBytes` is 1 or 4 KiB: its `ingest()` waits for compaction, which several hosts do not end while the tabs write (see [Gaps](#gaps)). `--kinds page-crash,close-worker,kill-renderer,kill-browser,browser-crash` runs the kills alone.
 
 On failure the loop prints the seed, the iteration, the kind, the kill time, the reason and a replay command, writes the evidence (plan, failure, notes, harness log, Chrome stderr) to `--artifacts` (default `$TMPDIR/opfs-kill-chrome`), keeps the profile, and exits 1. Real Chrome does not replay a schedule, so a replay runs the same workload, kind and kill time, not the same interleaving. Run it a few times. A summary at the end prints the iterations per kind, the most orphans and swap files seen, and the errors `ingest()` gave under quota.
 
@@ -230,7 +241,7 @@ Exit 0. The log ends with `All 8 formal checks passed`. Each check prints a `PAS
 
 The same checks have their own scripts: `formal:ingest-visibility`, `formal:wal-over-sst`, `formal:view-pin`, `formal:compact-preserve`, `formal:update-exact`, `formal:reclaim-hold`, `formal:power-loss`, `formal:crash-table`. `formal:power-loss` runs every workload twice: with reclaim, and with a tab holding the reclaim lock throughout, so the host removes no manifest or run. Its workloads mix appends, ingests, compactions, a flush during a merge, a flush or an install whose IndexedDB commit fails on a host that goes on, sweeps, destroys and `destroyDb` removals, and it checks each distinct list of durable ops once. `FORMAL_POWER_CMDS` (default 6) and `FORMAL_POWER_CRASHES` (default 2) widen the power-loss bound; the default bound takes about two minutes. `formal:crash-table` runs the same workloads without destroys and removals, one power loss deep, and `FORMAL_TABLE_CMDS` (default 6) widens it. Each exits 0 on a pass. A failure prints a shortest path or a counterexample and exits non-zero.
 
-The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `04b60e33f1a89e79fb2e731232e0ed6eaa04ac15`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
+The Sync commit in `verify-kv` is the commit where those models were last confirmed against the code they name. The current value is `a8b4a00142bbf9e5fb6aa79e154779d1a7a7224e`. Move it only after `formal:kv` passes and you have checked that the models still describe the code. Set it to `git rev-parse HEAD` of that confirmation. A docs-only commit does not move it.
 
 `pendingBytes` is outside the model. A pass says nothing about the ingest trigger, which the unit tests check (see [Pick the check](#pick-the-check)).
 
@@ -274,6 +285,10 @@ The same file holds the churn tests: a tab whose run opens are slow while the ho
 `tests/sim/io-error.test.ts` fails fault site N for N = 1, 2, … until a run reaches no site N, with one-shot and persistent faults, over durable sites and read sites. Every call must settle, every resolved call must be right, and after healing the database must reopen with the whole committed log. It also sweeps range deletes on a host with small L0 runs and an L0 stop, and a second handle that writes and syncs between the first one's steps, with one-shot faults and with every file write refused as a full origin. `KV_IO_WIDE=1` adds persistent faults to those, and the range deletes on a host with small runs (about 50 s), `KV_IO_SITES=durable|read` runs one kind of site, and `KV_IO_REPORT=1` prints each sweep's size and error names.
 
 `tests/sim/io-error-crash.test.ts` puts a fault and a crash in one run. A workload with one durable site failing goes on, and its crash states must recover as in `crash-enum.test.ts`. A failed IndexedDB commit, a power loss, new writes and a second power loss must leave a log prefix. A crash state recovered with each site of its recovery failing, once or from then on, must reopen to a log prefix once healed. It samples `KV_CRASH_PAIRS` crash states (default 2) per run and per workload, about 10 s; `KV_CRASH_PAIRS=20` takes about 3 minutes.
+
+`tests/sim/two-hosts.test.ts` runs two handles, each on a host of its own, over one MemoryFs and one WAL. The hosts have small flush runs and an L0 stop of two runs, so every flush takes several runs and waits on a full L0 for a pass of either host. Each round writes batches of puts, deletes and range deletes from both handles at once and flushes from both, one round empties the database with `dangerousDestroy` while both hosts flush, and now and then a handle closes and opens on a new host. Every write must take a seq of its own, both handles must read the fold of the acked writes in seq order, `checkDatabase` must find no problem and no run file outside the manifest, and a reopen on a fresh host must read the same rows. It runs 12 seeds by default (about 2 s). `tests/two-hosts.test.ts` holds one flush on a full L0 while another host's merge waits at its first output, and checks that it lands once that pass ends. It also fills an origin under two hosts with a reserve: no acked write is lost and the reserve is written again, and two `it.fails` cases pin what several hosts do not keep (see [Gaps](#gaps)).
+
+`tests/staged-writer.test.ts` runs `BrowserFs` over `tests/fake-opfs.ts`, an in-memory stand-in for OPFS directory and file handles whose sync access handle locks its file, counts bytes against a limit and can write short. A file appears under its name only at `finish`, `abort` leaves nothing, a staged file that a crash left is written over, and a refused write closes and removes the staged file and fails with the code a refused `createWritable` write has. A host on that fs flushes, compacts and keeps its reserve, and lands a refused flush on the released reserve. `tests/worker-entry.test.ts` runs the worker's entry over the same stand-in: with `createWritable()` it writes no scratch file, with a sync access handle that works it stages its files, with one that refuses it writes none, and a request and a second tab that arrive during the probe are answered.
 
 `tests/reserve.test.ts` runs a host over `tests/sim/byte-budget.ts`, a folder under an origin's byte limit: a write past the limit fails with `QuotaExceededError`, and a remove gives the bytes back at once. It fills a database until a write is refused, then checks that the flush lands, that one handler call frees half the rows and that the reserve file returns. `tests/reserve-step.test.ts` checks every row of the state table in [reserve.md](reserve.md). `tests/wal-full.test.ts` aborts the WAL transaction of fake-indexeddb with `QuotaExceededError` after its requests succeed, as Chromium and Firefox do at the limit. fake-indexeddb reverts only the keys it generated when a transaction aborts, so `tests/setup.ts` also reverts a key generator that an explicit key moved, as IndexedDB does (design.md, assumption 1).
 
@@ -381,7 +396,7 @@ Exit 0. It runs `oxlint`, `lint:engine`, `check:docs`, then `fallow dead-code`. 
 - `engine-fuzz`: each engine Jazzer.js target for 30 minutes. The corpus a target grows is cached between nights. A finding is uploaded as `engine-fuzz-<target>`.
 - `mutant-canary`: `pnpm --filter @opfs-lsm/kv mutant-canary`.
 
-The pull request workflow leaves out the decoder Jazzer.js targets, `two-tab-nobc`, `two-tab-local`, and the full `pnpm bench` families. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
+The pull request workflow leaves out the decoder Jazzer.js targets, `two-tab-nobc`, `two-tab-local`, `two-tab-dedicated`, `two-tab-staged`, the kill loop with `--hosts dedicated`, and the full `pnpm bench` families. `bench:smoke` runs every workload on every contender at size `tiny`, which checks correctness and harness health, not speed.
 
 ## Refresh a skill
 
@@ -399,4 +414,7 @@ These exist on main and have no feature file and no formal check. Leave them out
 
 - A refused WAL append in a real browser. Chrome's `Storage.overrideQuotaForOrigin` refuses OPFS writes and lets IndexedDB commits through, so `drive quota` proves the reserve on a refused flush only. The retry of a refused append (`make-room`, the new connection) runs in `tests/wal-full.test.ts`, over a fake-indexeddb transaction that aborts the way Chromium and Firefox were measured to.
 - The reserve in Firefox and Safari. No drive runs there.
+- The staged writer in Safari. Every drive of it runs in Chrome, in a dedicated Worker of the testing build. A prototype of it ran in the SharedWorker of Safari 18.6, and the writer that ships has not.
+- The reserve with several hosts, as two SharedWorkers of two builds are. Each host posts its own offer and knows its own tabs' `reserveBytes` only ([reserve.md](reserve.md#several-hosts)). `tests/two-hosts.test.ts` pins both with `it.fails`: the handlers are called again before a flush holds what they wrote, and a handle that passes `reserveBytes` 0 on one host removes the reserve of another. Until one state of the reserve is shared, the host of a dedicated Worker writes no file.
+- A flush that waits for compaction, with several hosts. A host answers it when its run of compaction passes ends, and a run goes on while a request arrives during a pass. With several hosts every pass waits for the compaction lock, so the run lasts as long as the tabs keep writing. In Chrome 158, with two tabs writing at a `maxWalBytes` of 1 KiB, one SharedWorker answered 9 of 9 such flushes in 94 to 1082 ms, and two dedicated Worker hosts answered none of 9 in 20 s, then one in 51 to 105 ms once the tabs stopped. `dangerousDestroy` ends with such a flush. No test pins it.
 - A SharedWorker that never answers (its script did not load, or the browser killed it) stops writes at `memtableBytes`: a write at the limit waits for a flush that never ends, against design.md "Backpressure". `tests/dead-host-backpressure.test.ts` pins it with `it.fails` until the wait gets a deadline.
