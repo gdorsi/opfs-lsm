@@ -6,7 +6,8 @@
  *   pnpm --filter @opfs-lsm/kv fuzz:jazzer engine-merge 600
  *
  * Decoder targets: sst-read, sst-decode, manifest, wal-row (entries.ts), the
- * TypeScript decoders, which Jazzer instruments. Engine targets:
+ * TypeScript decoders, which Jazzer instruments; sst-read scans blocks in
+ * the shipped wasm engine, as a tab does. Engine targets:
  * engine-encode, engine-scan, engine-merge (engine-entries.ts), the wasm
  * engine, whose checked twin counts its own coverage.
  * The run starts from `fuzz/corpus/<target>/` (the committed `seed-*` files
@@ -45,12 +46,14 @@ mkdirSync(out, { recursive: true });
 async function decoderBundle(): Promise<string[]> {
   const bundle = join(out, "entries.cjs");
   // One CommonJS file, so Jazzer instruments every decoder line it loads.
+  // CommonJS has no `import.meta`: the engine bridge finds the .wasm from its own source path.
   await build({
     entryPoints: [join(fuzzDir, "jazzer/entries.ts")],
     bundle: true,
     platform: "node",
     format: "cjs",
     outfile: bundle,
+    define: { "import.meta.url": JSON.stringify(pathToFileURL(join(fuzzDir, "../src/store/engine.ts")).href) },
     logLevel: "error",
   });
   return [bundle, "--includes", ".build/"];

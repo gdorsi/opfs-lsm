@@ -2,7 +2,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { containsAll } from "../src/bytes.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
-import { useBlockScanner } from "../src/store/block-scan.js";
 import { RunLevel } from "../src/store/read.js";
 import type { SstEntry } from "../src/store/sst.js";
 import type { SstReader } from "../src/store/sst-reader.js";
@@ -64,30 +63,6 @@ describe("SstReader.scanContains", () => {
         const forward = await keys(reader.scanContains(patterns, bounds));
         expect(await keys(reader.scanContains(patterns, bounds, true))).toEqual([...forward].reverse());
       }
-    }
-  });
-
-  it("gives the forward hits backward without the wasm scanner", async () => {
-    const reader = readerOfBytes((await encodeRun(entries)).body);
-    const prev = useBlockScanner(undefined);
-    try {
-      for (const bounds of allBounds) {
-        const forward = await keys(reader.scanContains(pats(" w3", " c0"), bounds));
-        expect(forward).toEqual(await expected(reader, pats(" w3", " c0"), bounds));
-        expect(await keys(reader.scanContains(pats(" w3", " c0"), bounds, true))).toEqual([...forward].reverse());
-      }
-    } finally {
-      useBlockScanner(prev);
-    }
-  });
-
-  it("falls back to the cursor when no wasm scanner is installed", async () => {
-    const reader = readerOfBytes((await encodeRun(entries)).body);
-    const prev = useBlockScanner(undefined);
-    try {
-      expect(await keys(reader.scanContains(pats(" w3", " c0")))).toEqual(await expected(reader, pats(" w3", " c0")));
-    } finally {
-      useBlockScanner(prev);
     }
   });
 

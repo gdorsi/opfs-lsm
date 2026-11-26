@@ -67,11 +67,17 @@ export function repairSst(buf: Uint8Array, how: Repair): void {
   if (how !== "none") fixSstCrc(buf);
 }
 
-/** Rewrite a manifest's trailing CRC. */
+/**
+ * Rewrite a manifest's CRC. It ends the head, whose size the u32 at byte 24
+ * records; the runs' block indexes follow it. A size past the bytes rewrites
+ * the last four.
+ */
 export function fixManifestCrc(buf: Uint8Array): void {
   if (buf.byteLength < 4) return;
-  const at = buf.byteLength - 4;
-  new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setUint32(at, crc32(buf.subarray(0, at)), true);
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const head = buf.byteLength >= 28 ? view.getUint32(24, true) : 0;
+  const at = (head >= 4 && head <= buf.byteLength ? head : buf.byteLength) - 4;
+  view.setUint32(at, crc32(buf.subarray(0, at)), true);
 }
 
 type Footer = { entryCount: number; blockCount: number; dataLen: number; hashCount: number; indexStart: number };

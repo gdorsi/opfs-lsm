@@ -8,17 +8,14 @@ import { BlockEntry, NO_PREFIX } from "./cursor.js";
  */
 type BlockScanner = (block: Uint8Array, patterns: Uint8Array) => Uint8Array;
 
-/** Set once the wasm engine loads. Without it a run is scanned through its cursor. */
-let wasmScanner: BlockScanner | undefined;
+/** Set once the wasm engine loads, which `openDb` waits for before any read. */
+let wasmScanner!: BlockScanner;
 
-/** Returns the scanner it replaced. */
-export function useBlockScanner(scanner: BlockScanner | undefined): BlockScanner | undefined {
-  const prev = wasmScanner;
+export function useBlockScanner(scanner: BlockScanner): void {
   wasmScanner = scanner;
-  return prev;
 }
 
-export function blockScanner(): BlockScanner | undefined {
+export function blockScanner(): BlockScanner {
   return wasmScanner;
 }
 
