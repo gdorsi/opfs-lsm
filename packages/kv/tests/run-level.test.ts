@@ -1,5 +1,5 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes, containsAll } from "../src/bytes.js";
 import { Miss, untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
 import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
@@ -10,6 +10,10 @@ import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { entries, loadsDone, ownedEntry, readerOfBytes, runGet } from "./runs.js";
 import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
+import { ensureEngine } from "../src/store/engine.js";
+
+// `valueContains` scans a run's blocks in the wasm engine.
+beforeAll(ensureEngine);
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

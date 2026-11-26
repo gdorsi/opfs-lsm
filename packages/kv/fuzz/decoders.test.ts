@@ -19,7 +19,7 @@ import {
   type Repair,
   type RowOp,
 } from "./targets.js";
-import { loadWasm, withoutWasm } from "./wasm.js";
+import { loadWasm } from "./wasm.js";
 import { NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 
 /**
@@ -76,7 +76,7 @@ const extraKeys = fc.array(fc.string({ unit: fc.constantFrom(..."ab/0129".split(
 
 describe("decoder properties (fast-check)", () => {
   it(
-    "a tab reads an intact run exactly, with and without the wasm block scan",
+    "a tab reads an intact run exactly",
     async () => {
       await expect(
         fc.assert(
@@ -85,7 +85,6 @@ describe("decoder properties (fast-check)", () => {
             const probe = probeOf(buf, r.entries, extra);
             const want = expectedRead(r.entries, probe);
             expect(await checkRunRead(buf, probe)).toEqual(want);
-            expect(await withoutWasm(() => checkRunRead(buf, probe))).toEqual(want);
           }),
           { ...params, numRuns: Math.ceil(RUNS / 10) },
         ),
@@ -99,12 +98,12 @@ describe("decoder properties (fast-check)", () => {
     async () => {
       await expect(
         fc.assert(
-          fc.asyncProperty(runArb, runArb, mutationsArb, repairArb, fc.boolean(), extraKeys, async (r, o, ms, repair, wasm, extra) => {
+          fc.asyncProperty(runArb, runArb, mutationsArb, repairArb, extraKeys, async (r, o, ms, repair, extra) => {
             const orig = await encodeRun(r);
             const probe = probeOf(orig, r.entries, extra);
             const buf = applyMutations(orig, ms, await encodeRun(o));
             repairSst(buf, repair);
-            const got = await (wasm ? checkRunRead(buf, probe) : withoutWasm(() => checkRunRead(buf, probe)));
+            const got = await checkRunRead(buf, probe);
             // A file of another size than the manifest records answers no read from its bytes.
             if (buf.byteLength !== orig.byteLength) expect(got.scan).toEqual(r.entries.length ? "error" : []);
           }),
