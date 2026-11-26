@@ -3,8 +3,11 @@
  * runs one entry under libFuzzer; a `RuleBroken` (or any other throw) is a
  * finding. The checks are the ones the fast-check properties run
  * (`../targets.ts`). These cover the TypeScript decoders; the wasm engine
- * has its own targets (`engine-entries.ts`).
+ * has its own targets (`engine-entries.ts`). `sstRead` loads the shipped
+ * engine, which scans a tab's blocks.
  */
+import { readFile } from "node:fs/promises";
+import { engineMemory, ensureEngine, readEngineWith } from "../../src/store/engine.js";
 import { decodeIndex } from "../../src/store/sst.js";
 import {
   checkDecodeSst,
@@ -15,7 +18,12 @@ import {
   footerOf,
   repairSst,
   type Repair,
+  watchWasmMemory,
 } from "../targets.js";
+
+readEngineWith((url) => readFile(url));
+watchWasmMemory(() => engineMemory().wasmBytes);
+let engine: Promise<void> | undefined;
 
 const REPAIRS: readonly Repair[] = ["none", "crc", "trailer", "trailer"];
 const PATTERN = new TextEncoder().encode(" hot");
@@ -66,6 +74,7 @@ export async function sstRead(data: Uint8Array): Promise<void> {
   if (!run) return;
   const { blockStart, sepEnd } = decodeIndex(run.index, run.bytes);
   if (blockStart[sepEnd.length]! > buf.byteLength) return;
+  await (engine ??= ensureEngine());
   const keys = [...indexKeys(buf), ...(run.range ? [run.range.smallest, run.range.largest] : []), ...FIXED_KEYS];
   await checkRunRead(buf, { keys, run: { ...run, bytes: buf.byteLength }, pattern: PATTERN });
 }

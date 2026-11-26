@@ -183,7 +183,7 @@ describe("wasm traps", () => {
     } finally {
       spy.mockRestore();
     }
-    const scanBlock = scan.blockScanner()!;
+    const scanBlock = scan.blockScanner();
     const block = blocksOf(encodeSstRef([{ kind: "put", key: utf("big"), value: new Uint8Array(3 << 20).fill(7), seq: 1 }]))[0]!;
     // A scan with no hit leaves the block's input region in place, then the memory takes every page wasm32 allows.
     expect(scanBlock(block, packPatterns([utf("absent")]))).toHaveLength(0);

@@ -3,7 +3,7 @@ import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
 import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomHash, bloomMightContain, type BloomFilter } from "./bloom.js";
-import { filterCursor, Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
+import { Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   blockBytes,
@@ -99,12 +99,11 @@ export class SstReader {
   /**
    * The puts in `bounds` whose value holds every pattern, in key order or
    * with `reverse` from the largest key down.
-   * With the wasm engine each block is decoded and matched there and only
-   * hits cross back. Without it the cursor does the same work key by key.
+   * Each block is decoded and matched in the wasm engine, and only hits
+   * cross back.
    */
   scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
     const scan = blockScanner();
-    if (!scan) return filterCursor(this.cursor(bounds, reverse), patterns);
     const packed = packPatterns(patterns);
     const outside = reverse ? isAtOrAbove : isBelow;
     return this.blocks(bounds, reverse, (block, seek) => {
