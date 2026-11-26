@@ -42,7 +42,9 @@ export function encodeKey(key: StorageKey): Uint8Array {
   const parts: Uint8Array[] = [];
   let total = 0;
   for (const segment of key) {
-    rejectLoneSurrogate(segment);
+    if (!segment.isWellFormed()) {
+      throw new Error("lone surrogate in storage key segment");
+    }
     const bytes = textEncoder.encode(segment);
     if (bytes.byteLength > MAX_SEGMENT_BYTES) {
       throw new ConstraintError("storage key segment longer than 65535 bytes");
@@ -85,21 +87,4 @@ export function decodeKey(bytes: Uint8Array): StorageKey {
     offset += length;
   }
   return key;
-}
-
-function rejectLoneSurrogate(segment: string): void {
-  for (let i = 0; i < segment.length; i++) {
-    const code = segment.charCodeAt(i);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = segment.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        i++;
-        continue;
-      }
-      throw new Error("lone surrogate in storage key segment");
-    }
-    if (code >= 0xdc00 && code <= 0xdfff) {
-      throw new Error("lone surrogate in storage key segment");
-    }
-  }
 }
