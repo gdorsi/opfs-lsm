@@ -15,7 +15,7 @@ export type DocChange<T extends JsonDoc> = {
 
 export type CollectionChange<T extends JsonDoc> =
   | { readonly kind: "append"; readonly seq: number; readonly changes: readonly DocChange<T>[] }
-  /** What the listener holds may be stale: read again. Sent for kv's `gap`, and when the collection was cleared or dropped (its catalog id changed). */
+  /** What the listener holds may be stale: read again. Sent for kv's `gap`, when the collection was cleared or dropped, and for any range delete over its documents. */
   | { readonly kind: "gap" }
   /** The last event. `reason` is kv's: "close" for the kv handle's `close()`, "destroyed" when its database was removed. */
   | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };
@@ -93,6 +93,14 @@ export function followCollection<T extends JsonDoc>(
     let changes: DocChange<T>[] = [];
     let puts: Uint8Array[] = [];
     let docs = lazyDocs(puts);
+    /** Send the changes so far, then a gap. */
+    const gap = () => {
+      if (changes.length > 0) emit({ kind: "append", seq, changes });
+      changes = [];
+      puts = [];
+      docs = lazyDocs(puts);
+      emit({ kind: "gap" });
+    };
     for (const op of ops) {
       switch (op.type) {
         case "put":
@@ -103,20 +111,18 @@ export function followCollection<T extends JsonDoc>(
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
             const next = op.type === "put" ? collectionIdIn(op.value, name) : undefined;
             if (next === id) continue;
-            if (changes.length > 0) emit({ kind: "append", seq, changes });
-            changes = [];
-            puts = [];
-            docs = lazyDocs(puts);
             follow(next);
-            emit({ kind: "gap" });
+            gap();
           }
           break;
-        case "deleteRange":
-          // The op says which rows are gone only by their seqs, which the feed does not keep.
-          if (!touches(op, CATALOG_KEY) && !(prefix && touches(op, prefix))) break;
-          if (changes.length > 0) emit({ kind: "append", seq, changes });
-          emit({ kind: "gap" });
-          return resync();
+        case "deleteRange": {
+          const catalog = touches(op, CATALOG_KEY);
+          // A clear, or another layer's delete. The op says which rows are gone only by their seqs, which the feed does not keep.
+          if (catalog || (prefix && touches(op, prefix))) gap();
+          // Where the collection is now, the next catalog read says.
+          if (catalog) return resync();
+          break;
+        }
       }
     }
     if (changes.length > 0) emit({ kind: "append", seq, changes });
