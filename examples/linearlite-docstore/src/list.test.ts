@@ -21,22 +21,29 @@ before(async () => {
 });
 after(() => Promise.all(dbs.map((db) => db.close())));
 
-/** Every change this tab's feed reports from now on. */
-function listen(store: Store): IssueChange[] {
-  const heard: IssueChange[] = [];
-  store.issues.changes((event) => event.kind === "append" && heard.push(...event.changes));
-  return heard;
+/** The seq of the last event this tab's listener handled. Every write in these tests is to the issues. */
+let seen = 0;
+
+/** Follow this tab's feed with `apply` until the test ends, noting each event's seq once `apply` handled it. */
+function follow(t: { after(fn: () => void): void }, apply: (changes: readonly IssueChange[]) => void): void {
+  const stop = here.issues.changes((event) => {
+    if (event.kind !== "append") return;
+    apply(event.changes);
+    seen = event.seq;
+  });
+  t.after(stop);
 }
 
-/** Waits until this tab has applied every write the other tab made. */
+/** Waits until this tab's listener has handled every write the other tab made. */
 async function caughtUp(): Promise<void> {
-  await here.db.sync();
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  const head = await there.db.view((snap) => snap.seq);
+  while (seen < head) await new Promise((resolve) => setTimeout(resolve, 1));
 }
 
 describe("placeBefore", () => {
-  it("gives where an issue was before another tab's write: none for a new one, its old values for an edit and a delete", async () => {
-    const heard = listen(here);
+  it("gives where an issue was before another tab's write: none for a new one, its old values for an edit and a delete", async (t) => {
+    const heard: IssueChange[] = [];
+    follow(t, (changes) => heard.push(...changes));
     const [issue] = [...generate(1, 99)] as [Issue];
     await there.issues.put(issue);
     await there.issues.modify(issue.id, (i) => ({ ...i, title: "Renamed", status: 3, priority: 0, modified: i.modified + 1 }));
@@ -57,16 +64,15 @@ describe("the list", () => {
   ];
 
   for (const [label, filter] of filters) {
-    it(`follows another tab's edits, creates and deletes without reading again, ${label}`, async () => {
+    it(`follows another tab's edits, creates and deletes without reading again, ${label}`, async (t) => {
       const list = createList(here);
       list.scroll(0, ROW * 30);
       const shown = list.show(filter);
       await shown.rows;
       await shown.total;
       let reads = 0;
-      here.issues.changes((event) => {
-        if (event.kind !== "append") return;
-        if (list.apply(event.changes.map((c) => ({ before: placeBefore(c), after: c.doc }))) === undefined) reads++;
+      follow(t, (changes) => {
+        if (list.apply(changes.map((c) => ({ before: placeBefore(c), after: c.doc }))) === undefined) reads++;
       });
 
       const ids = (await here.issues.queryIds({})).ids;

@@ -33,9 +33,9 @@ export type DocChange<T extends JsonDoc, Ix = any> = {
    * read. `index` is a sorted or multi index that is not unique and includes
    * no field: a write can replace the value of any other entry in place, and
    * the key of a unique entry does not name its document. Throws
-   * DocStoreError "schema" or "index-failed" when the catalog of the change
-   * holds the index otherwise than this handle declares it, as a query does,
-   * but not while it builds.
+   * DocStoreError "query" for any other index, and "schema" or
+   * "index-failed" when the catalog of the change holds the index otherwise
+   * than this handle declares it, as a query does, but not while it builds.
    */
   before<I extends KeyOnlyIndex<Ix>>(index: I): EntryOf<T, Ix, I>[];
 };
@@ -58,7 +58,8 @@ type EntryOps = Map<string, { readonly removed: Uint8Array[]; readonly added: Ui
  */
 class Run {
   readonly puts: Uint8Array[] = [];
-  readonly entries: ChangeOp[] = [];
+  /** The record's other puts and dels: `group` keeps an index's by its prefix. */
+  readonly entries: Exclude<ChangeOp, { readonly type: "deleteRange" }>[] = [];
   private docs: (StoredDoc | undefined)[] | undefined;
   private coll: BoundCollection | undefined;
   private readonly byIndex = new Map<string, EntryOps>();
@@ -100,7 +101,7 @@ class Run {
   private group(plan: IndexPlan): EntryOps {
     const out: EntryOps = new Map();
     for (const op of this.entries) {
-      if (op.type === "deleteRange" || !hasPrefix(op.key, plan.target.prefix)) continue;
+      if (!hasPrefix(op.key, plan.target.prefix)) continue;
       const id = keyId(plan.target, op.key);
       let mine = out.get(id);
       if (!mine) out.set(id, (mine = { removed: [], added: [] }));
@@ -112,10 +113,11 @@ class Run {
 
 class Change<T extends JsonDoc> implements DocChange<T, any> {
   readonly deleted: boolean;
+  declare readonly doc: T | undefined;
   readonly #slot: number | undefined;
   readonly #run: Run;
 
-  /** `slot` is the change's place in the run's rows. */
+  /** `slot` is the change's place in the run's rows. `doc` is an own getter, so a copy of the change, such as `postMessage` makes, keeps it. */
   constructor(
     readonly id: string,
     slot: number | undefined,
@@ -124,20 +126,15 @@ class Change<T extends JsonDoc> implements DocChange<T, any> {
     this.deleted = slot === undefined;
     this.#slot = slot;
     this.#run = run;
-  }
-
-  get doc(): T | undefined {
-    return this.#slot === undefined ? undefined : (this.#run.doc(this.#slot) as unknown as T);
+    Object.defineProperty(this, "doc", {
+      enumerable: true,
+      get: () => (slot === undefined ? undefined : (run.doc(slot) as unknown as T)),
+    });
   }
 
   before(index: string): any[] {
     return this.#run.before(index, this.id, this.#slot);
   }
-}
-
-/** Whether `key` is an index entry of the collection whose rows start with `rows`: it starts with the collection's prefix and an index id. */
-function isEntryOf(key: Uint8Array, rows: Uint8Array): boolean {
-  return key.length > rows.length && key[0] === rows[0] && key[1] === rows[1] && key[2] === rows[2] && key[3] !== rows[3];
 }
 
 /** The id of collection `name` in catalog `bytes`, or undefined when the catalog lacks it or this library cannot read it. */
@@ -215,8 +212,6 @@ export function followCollection<T extends JsonDoc, Ix>(
           if (prefix && hasPrefix(op.key, prefix)) {
             const slot = op.type === "put" ? run.puts.push(op.value) - 1 : undefined;
             changes.push(new Change<T>(idOf(op.key, prefix.length), slot, run));
-          } else if (prefix && isEntryOf(op.key, prefix)) {
-            run.entries.push(op);
           } else if (bytesEqual(op.key, CATALOG_KEY)) {
             // Copied: the bytes are a view of a memtable chunk.
             const bytes = op.type === "put" ? op.value.slice() : undefined;
@@ -228,6 +223,8 @@ export function followCollection<T extends JsonDoc, Ix>(
             }
             follow(next, bytes);
             gap();
+          } else if (prefix) {
+            run.entries.push(op);
           }
           break;
         case "deleteRange": {

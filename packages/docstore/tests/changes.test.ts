@@ -53,6 +53,18 @@ describe("changes", () => {
     expect(seqs.at(-1)).toBe(await kv.view((snap) => snap.seq));
   });
 
+  it("keeps id, deleted and doc in a copy of a change, as postMessage or JSON makes one", async () => {
+    const { c } = await handle();
+    const { events } = listen(c);
+    await c.put({ id: "1", a: 1 });
+    await c.delete("1");
+    await settled(() => expect(events).toHaveLength(2));
+    const changes = events.flatMap((e) => (e.kind === "append" ? e.changes : []));
+    const want = [{ id: "1", deleted: false, doc: { id: "1", a: 1 } }, { id: "1", deleted: true, doc: undefined }];
+    expect(changes.map((ch) => structuredClone({ ...ch }))).toEqual(want);
+    expect(JSON.parse(JSON.stringify(changes[0]))).toEqual(want[0]);
+  });
+
   it("reports a write of its own handle before the write resolves, once the listener has started", async () => {
     const { c } = await handle();
     const { events } = listen(c);

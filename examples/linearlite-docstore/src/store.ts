@@ -1,4 +1,4 @@
-import { openDocStore, type Cursor, type DocChange, type DocStore } from "@opfs-lsm/docstore";
+import { openDocStore, type Cursor, type DocChange, type DocStore, type IndexesOf } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { CODES, schema, type Code, type Detail, type Filter, type Issue } from "./model.ts";
 import type { SeedMessage, SeedRequest } from "./seed-worker.ts";
@@ -45,7 +45,7 @@ export function matches(filter: Filter): (issue: Issue) => boolean {
   return (i) => keep(i) && (needle === "" || i.title.toLowerCase().includes(needle));
 }
 
-export type IssueChange = DocChange<Issue, (typeof schema)["collections"]["issues"]["indexes"]>;
+export type IssueChange = DocChange<Issue, IndexesOf<typeof schema, "issues">>;
 
 /**
  * Where an issue was before a write, from the index entries the write replaced. Every issue has one entry in
@@ -145,7 +145,7 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean, pat
 function scanView(issues: Issues, filter: Filter): View {
   const index = filter.sort === "created" ? "byCreated" : "byModified";
   const keep = keeps(filter);
-  const matches: Issue[] = [];
+  const kept: Issue[] = [];
   let after: Cursor | undefined;
   let done = false;
   let step = 256;
@@ -153,9 +153,9 @@ function scanView(issues: Issues, filter: Filter): View {
 
   const scanTo = (rows: number) =>
     (scanning = scanning.then(async () => {
-      while (!done && matches.length < rows) {
+      while (!done && kept.length < rows) {
         const { docs, next } = await issues.query({ index, limit: step, reverse: filter.dir === "desc", ...(after !== undefined && { after }) });
-        for (const doc of docs) if (keep(doc)) matches.push(doc);
+        for (const doc of docs) if (keep(doc)) kept.push(doc);
         after = next;
         done = next === undefined;
         step = Math.min(4096, step * 2);
@@ -168,7 +168,7 @@ function scanView(issues: Issues, filter: Filter): View {
     total: () => Promise.all(counted.map((r) => issues.count(r))).then(sum),
     async read(offset, n) {
       await scanTo(offset + n);
-      return matches.slice(offset, offset + n);
+      return kept.slice(offset, offset + n);
     },
   };
 }

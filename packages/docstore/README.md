@@ -663,16 +663,14 @@ await todos.modify("t1", (t) => ({ ...t, done: true }));
 ```
 
 ```ts
-let open = await todos.count({ index: "open", eq: [false] });
-todos.changes((event) => {
-	if (event.kind !== "append") return;
-	for (const c of event.changes) {
-		// [done, createdAt] before the change, or none
-		const [was] = c.before("open");
-		if (was?.values[0] === false) open--;
-		if (c.doc?.done === false) open++;
-	}
-});
+// open: counted in a snapshot, then kept by each append above its
+// seq, as following the feed shows below
+for (const c of event.changes) {
+	// [done, createdAt] before the change, or none
+	const [was] = c.before("open");
+	if (was?.values[0] === false) open--;
+	if (c.doc?.done === false) open++;
+}
 ```
 
 **Note.** `before` reads nothing, and a write stores nothing for it. It takes the index entries the write removed and added, which kv's record already holds, and the document after the change for an index the write left alone. It takes a sorted or multi index that is not unique and includes no field. A write replaces the value of a text entry or of an entry with included fields in place, and the key of a unique entry does not name its document, so their ops cannot say what the document was. Every todo has `done` and `createdAt`, so an empty `before("open")` means the write created it. Follow the feed from a snapshot, as below, so that no change is counted twice.
