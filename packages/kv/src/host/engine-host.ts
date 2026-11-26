@@ -1,5 +1,5 @@
 import { checkDbName, type DbName } from "../check.js";
-import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
+import { ClosedError, codeOfError, isQuota, StorageUnavailableError } from "../errors.js";
 import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../idb/wal.js";
 import type { AsyncFs, FileWrites } from "../opfs/async-fs.js";
 import { fileWrites } from "../opfs/browser-fs.js";
@@ -638,7 +638,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     try {
       return await write();
     } catch (err) {
-      if (codeOfError(err) !== "quota" || !(await refused())) throw err;
+      if (!isQuota(err) || !(await refused())) throw err;
       return write();
     }
   }

@@ -19,7 +19,7 @@ import {
   CorruptDatabaseError,
   StorageFullError,
   StorageUnavailableError,
-  codeOfError,
+  isQuota,
   unavailable,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
@@ -394,7 +394,7 @@ export async function openOn(
   } catch (cause) {
     // What is left raw is a browser API that is there and refused: OPFS, the SharedWorker or IndexedDB.
     if (!(cause instanceof DOMException)) throw cause;
-    throw codeOfError(cause) === "quota" ? new StorageFullError("the origin's storage is full", { cause }) : unavailable("the browser's storage", cause);
+    throw isQuota(cause) ? new StorageFullError("the origin's storage is full", { cause }) : unavailable("the browser's storage", cause);
   }
 }
 

@@ -77,6 +77,11 @@ export function codeOfError(err: unknown): ErrorCode | undefined {
   return undefined;
 }
 
+/** Whether the browser refused a write for lack of space. */
+export function isQuota(err: unknown): boolean {
+  return codeOfError(err) === "quota";
+}
+
 const ERROR_OF_CODE: Record<ErrorCode, new (message: string) => OpfsLsmError> = {
   commit: CommitError,
   closed: ClosedError,

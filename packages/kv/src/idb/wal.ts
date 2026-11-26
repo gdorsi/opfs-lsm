@@ -8,7 +8,7 @@ import {
   type ResolvedOp,
   type ResolvedSeq,
 } from "../check.js";
-import { ClosedError, codeOfError, CommitError, StorageFullError, unavailable } from "../errors.js";
+import { ClosedError, CommitError, isQuota, StorageFullError, unavailable } from "../errors.js";
 import {
   asGeneration,
   asSeq,
@@ -453,10 +453,6 @@ async function readTail(tx: IDBTransaction, since: Seq, held?: Generation, start
 function passKeyGenerator(wal: IDBObjectStore, head: Seq): void {
   wal.add(EMPTY_RECORD, head);
   wal.delete(head);
-}
-
-function isQuota(err: unknown): boolean {
-  return codeOfError(err) === "quota";
 }
 
 function storageFull(cause: unknown): StorageFullError {
