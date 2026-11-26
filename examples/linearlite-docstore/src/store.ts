@@ -1,4 +1,4 @@
-import { openDocStore, type Cursor, type DocStore } from "@opfs-lsm/docstore";
+import { openDocStore, type Cursor, type DocChange, type DocStore } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
 import { CODES, schema, type Code, type Detail, type Filter, type Issue } from "./model.ts";
 import type { SeedMessage, SeedRequest } from "./seed-worker.ts";
@@ -11,8 +11,10 @@ type Issues = ReturnType<typeof issuesOf>;
 
 export type Store = { readonly db: Db; readonly issues: Issues; readonly details: ReturnType<typeof detailsOf> };
 
-export async function openStore(name: string): Promise<Store> {
-  const db = await openDb({ name });
+export const openStore = async (name: string): Promise<Store> => storeOn(await openDb({ name }));
+
+/** The app's collections in the kv database `db`. */
+export async function storeOn(db: Db): Promise<Store> {
   const docs = await openDocStore(db, schema);
   return { db, issues: issuesOf(docs), details: detailsOf(docs) };
 }
@@ -28,16 +30,36 @@ export type View = {
   read(offset: number, n: number): Promise<Issue[]>;
 };
 
-/** Whether the list under `filter` holds `issue`. */
-export function keeps(filter: Filter): (issue: Issue) => boolean {
-  const needle = filter.q.toLowerCase();
-  return (i) =>
-    (filter.status.length === 0 || filter.status.includes(i.status)) &&
-    (filter.priority.length === 0 || filter.priority.includes(i.priority)) &&
-    (needle === "" || i.title.toLowerCase().includes(needle));
+/** What sets an issue's place in a list, the title aside: the codes the filters test and the values the sorts read. */
+export type Place = Pick<Issue, "id" | "status" | "priority" | "created" | "modified">;
+
+/** Whether the list under `filter`, its search aside, holds the issue at `place`. */
+export function keeps(filter: Filter): (place: Place) => boolean {
+  return (i) => (filter.status.length === 0 || filter.status.includes(i.status)) && (filter.priority.length === 0 || filter.priority.includes(i.priority));
 }
 
-const SORT_KEY: Record<Filter["sort"], (i: Issue) => number> = {
+/** Whether the list under `filter` holds `issue`, its search included. */
+export function matches(filter: Filter): (issue: Issue) => boolean {
+  const keep = keeps(filter);
+  const needle = filter.q.toLowerCase();
+  return (i) => keep(i) && (needle === "" || i.title.toLowerCase().includes(needle));
+}
+
+export type IssueChange = DocChange<Issue, (typeof schema)["collections"]["issues"]["indexes"]>;
+
+/**
+ * Where an issue was before a write, from the index entries the write replaced. Every issue has one entry in
+ * `byStatus` and one in `byCreated`, so none means the write created it. No entry holds the title.
+ */
+export function placeBefore(change: IssueChange): Place | undefined {
+  const [codes] = change.before("byStatus");
+  if (!codes) return undefined;
+  const [status, priority, modified] = codes.values;
+  const [created] = change.before("byCreated")[0]!.values;
+  return { id: change.id, status, priority, modified, created };
+}
+
+const SORT_KEY: Record<Filter["sort"], (i: Place) => number> = {
   modified: (i) => i.modified,
   created: (i) => i.created,
   status: (i) => i.status * 1e15 + i.priority * 1e14 + i.modified,
@@ -45,7 +67,7 @@ const SORT_KEY: Record<Filter["sort"], (i: Issue) => number> = {
 };
 
 /** The list's order, the one its index gives: the sort's values, then the id. Negative when `a` comes first. */
-export function orderOf(filter: Filter): (a: Issue, b: Issue) => number {
+export function orderOf(filter: Filter): (a: Place, b: Place) => number {
   const key = SORT_KEY[filter.sort];
   const sign = filter.dir === "desc" ? -1 : 1;
   return (a, b) => sign * (key(a) - key(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -160,7 +182,7 @@ function searchView(issues: Issues, filter: Filter): View {
   const rows = () =>
     (found ??= issues
       .query({ index: "byModified", match: filter.q })
-      .then(({ docs }) => docs.filter(keeps(filter)).sort(orderOf(filter))));
+      .then(({ docs }) => docs.filter(matches(filter)).sort(orderOf(filter))));
   return { path: "search", total: () => rows().then((r) => r.length), read: async (offset, n) => (await rows()).slice(offset, offset + n) };
 }
 
