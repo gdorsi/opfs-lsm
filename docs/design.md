@@ -361,30 +361,27 @@ same flush, because each run reads the WAL as it stands; the rest wait for the n
 
 For each run, under the exclusive section for the database, the host:
 
-1. Reconciles (see [Recovery](#recovery)). The recorded generation is `G`, and the highest
-   manifest number in use is `top`.
+1. Reconciles (see [Recovery](#recovery)). The recorded generation is `G`, and the highest manifest number in use is `top`.
 2. Reads the WAL records above `ingestedThrough`, oldest first, up to `flushRunBytes`. A run
    takes at least one record, and counts its records as the trigger does.
 3. Folds them to the last op per key, in key order, keeping the seq of each op, and drops each
    op that a range delete of the same records covers.
 4. Writes `l0/<first>-<last>.sst`, unless no op is left.
-5. Writes manifest `top + 1` with `through = <last>`, listing the new run in front of the runs
-   of manifest `G`, and the marks of `G` joined with those of the records (see
-   [Range deletes](#range-deletes)).
-6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to
-   `top + 1` and truncates the WAL.
+5. Writes manifest `top + 1` with `through = <last>`, listing the new run in front of the runs of manifest `G`,
+   and the marks of `G` joined with those of the records (see [Range deletes](#range-deletes)).
+6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to `top + 1` and truncates the WAL.
 7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim lock.
 
 The exclusive section is a promise chain in the host plus the Web Lock `opfs-lsm-ingest/<name>`,
-which covers two SharedWorkers that serve the same database. A compaction install can take the
-section between two runs.
+which covers several hosts that serve the same database, as two SharedWorkers of two builds do.
+A compaction install can take the section between two runs.
 
 ### L0 stop
 
 At `l0StopRuns` L0 runs, a flush publishes nothing and waits for the next compaction step to
 install. The stop is one less than the source limit of a merge, so one step can take all of L0. If the compaction
 pass ends without an install, the flush publishes its run anyway. A compaction that cannot help
-delays a flush by one pass and never blocks it.
+delays a flush by one pass and never blocks it. While another host compacts, the flush waits for that host's pass to end.
 
 ## Compaction
 
@@ -492,8 +489,8 @@ that `openDb` refuses as corrupt.
 For `dangerousDestroy`, the host:
 
 1. Takes the compaction lock, then the ingest lock: the order a compaction pass takes them in.
-   No flush or merge publishes while it holds them, and a merge already running stops after its
-   current step.
+   No flush or merge publishes while it holds them. A merge already running in this host stops
+   after its current step, and the pass of another host runs to its end first.
 2. Commits in one IndexedDB transaction at durability `"strict"`, which completes only once it
    is on disk. It drops every WAL record and records generation 0, with `ingestedThrough` one
    past every seq a manifest on disk names and past the head the transaction reads, so a tab that
@@ -675,10 +672,13 @@ of OPFS, independently.
 | Compaction merge, CRC check | SharedWorker | wasm session, pumped by TypeScript |
 
 A tab reads in TypeScript so that a `get` never posts a message. The wasm module is required:
-`openDb` rejects with `StorageUnavailableError` when it does not load. Without a SharedWorker,
-each handle runs the host in a dedicated Worker. Only a SharedWorker whose OPFS files have
-`createWritable()` writes run files, since several hosts flushing one database is not verified.
-Any other host answers a flush with the recorded generation and never compacts or keeps a reserve,
+`openDb` rejects with `StorageUnavailableError` when it does not load. A SharedWorker's host
+writes each file through `createWritable()`. Where OPFS has none, it writes `<name>.crswap`
+through a sync access handle, flushes it and renames it into place, provided a scratch file in
+`opfs-lsm/` written that way when the worker starts reads back. Without a SharedWorker, each
+handle runs the host in a dedicated Worker, which writes no file: several hosts keep a database
+consistent, and do not share one reserve ([reserve.md](reserve.md#several-hosts)). A host that
+writes no file answers a flush with the recorded generation and never compacts or keeps a reserve,
 so every record stays in the WAL ([costs](browser-support.md#where-the-host-cannot-write)).
 
 ## Assumptions about the platform
@@ -686,7 +686,7 @@ so every record stays in the WAL ([costs](browser-support.md#where-the-host-cann
 1. IndexedDB serializes `readwrite` transactions that share a store, across tabs and workers.
    An aborted transaction reverts the key generator of the store. An `add` at an explicit key
    moves the generator past that key, and deleting the record does not move it back.
-2. An OPFS `createWritable().close()` publishes the whole file atomically.
+2. OPFS publishes a file whole: at `createWritable().close()`, or at the rename of a staged file flushed before it.
 3. Each store keeps the order of its own completed writes across a power loss, so a prefix of
    them survives. Nothing orders IndexedDB against OPFS, or two IndexedDB databases, except that
    an IndexedDB transaction at durability `"strict"` completes only once it is on disk. A

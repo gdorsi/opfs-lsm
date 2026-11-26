@@ -1,5 +1,6 @@
 import { checkDbName, type DbName } from "../check.js";
 import { openExistingWal } from "../idb/wal.js";
+import type { FileWrites } from "../opfs/async-fs.js";
 import { CountingFs, emptyIoCounters, type IoCounters } from "../opfs/counting-fs.js";
 import { GENERATION_NONE, type Generation } from "../seq.js";
 import { engineMemoryBytes, watchEngine } from "../store/engine.js";
@@ -62,7 +63,12 @@ export class MeteredHost extends EngineHost {
   private readonly counted: Map<DbName, Counts>;
   private readonly folder: FsFactory;
 
-  constructor(fsFactory: FsFactory, overrides?: HostOptions) {
+  /** `fileWrites` is how the worker writes OPFS files, for `stats`. */
+  constructor(
+    fsFactory: FsFactory,
+    overrides?: HostOptions,
+    private readonly fileWrites?: FileWrites,
+  ) {
     const counted = new Map<DbName, Counts>();
     super(fsFactory, overrides, countingMeter(counted));
     this.counted = counted;
@@ -99,6 +105,7 @@ export class MeteredHost extends EngineHost {
     return structuredClone({
       fs: io,
       ...counts,
+      ...(this.fileWrites ? { fileWrites: this.fileWrites } : {}),
       generation: latest?.generation ?? GENERATION_NONE,
       layout: [...byLevel.values()].sort((a, b) => a.level - b.level),
       memory: engineMemory(),

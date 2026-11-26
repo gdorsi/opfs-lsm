@@ -12,6 +12,7 @@ import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { BrowserFs, findBrowserFs, findRemovableBrowserFs, openBrowserFs } from "../src/opfs/browser-fs.js";
 import { checkDbName } from "../src/check.js";
 import { compactHost } from "./compact-host.js";
+import { fakeOpfs, type FakeDir } from "./fake-opfs.js";
 
 const NAME = "file-holds";
 const enc = new TextEncoder();
@@ -222,52 +223,6 @@ describe("host boot sweep", () => {
   });
 });
 
-type Node = FakeDir | Uint8Array;
-
-/** Every entry a `FakeDir` removed, by name, in order. */
-const removals: string[] = [];
-
-class FakeDir {
-  readonly children = new Map<string, Node>();
-  async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
-    let child = this.children.get(name);
-    if (!child && opts?.create) this.children.set(name, (child = new FakeDir()));
-    if (!(child instanceof FakeDir)) throw new DOMException(name, "NotFoundError");
-    return child;
-  }
-  async getFileHandle(name: string, opts?: { create?: boolean }) {
-    if (!this.children.has(name) && opts?.create) this.children.set(name, new Uint8Array());
-    if (!(this.children.get(name) instanceof Uint8Array)) throw new DOMException(name, "NotFoundError");
-    return {
-      getFile: async () => {
-        const bytes = this.children.get(name);
-        if (!(bytes instanceof Uint8Array)) throw new DOMException(name, "NotFoundError");
-        return new File([bytes], name);
-      },
-      createWritable: async () => {
-        const chunks: Uint8Array[] = [];
-        return {
-          write: async (c: Uint8Array) => void chunks.push(c),
-          close: async () => void this.children.set(name, new Uint8Array(await new Blob(chunks).arrayBuffer())),
-          abort: async () => undefined,
-        };
-      },
-    };
-  }
-  async removeEntry(name: string, opts?: { recursive?: boolean }) {
-    const child = this.children.get(name);
-    if (child === undefined) throw new DOMException(name, "NotFoundError");
-    if (child instanceof FakeDir && child.children.size > 0 && !opts?.recursive) {
-      throw new DOMException(name, "InvalidModificationError");
-    }
-    this.children.delete(name);
-    removals.push(name);
-  }
-  async *entries(): AsyncIterableIterator<[string, unknown]> {
-    yield* this.children.entries();
-  }
-}
-
 let browserDbs = 0;
 const fsKinds: [string, () => AsyncFs][] = [
   ["MemoryFs", () => new MemoryFs()],
@@ -275,7 +230,7 @@ const fsKinds: [string, () => AsyncFs][] = [
     "BrowserFs",
     () =>
       new BrowserFs(
-        new FakeDir() as unknown as FileSystemDirectoryHandle,
+        fakeOpfs() as unknown as FileSystemDirectoryHandle,
         checkDbName(`holds-${++browserDbs}`),
       ),
   ],
@@ -331,7 +286,7 @@ describe.each(fsKinds)("%s open files", (_kind, makeFs) => {
 });
 
 describe("BrowserFs folder lookup and removal", () => {
-  const root = new FakeDir();
+  const root = fakeOpfs();
   beforeEach(() => vi.stubGlobal("navigator", { storage: { getDirectory: async () => root } }));
   afterEach(() => vi.unstubAllGlobals());
 
@@ -351,10 +306,10 @@ describe("BrowserFs folder lookup and removal", () => {
     expect([...(await (await findBrowserFs("present"))!.list(""))].sort()).toEqual(["l0", "l1", "m"]);
     const found = (await findRemovableBrowserFs(checkDbName("present")))!;
     expect([...(await found.list(""))].sort()).toEqual(["l0", "l1", "m"]);
-    removals.length = 0;
+    root.origin.removals.length = 0;
     await found.removeFolder();
 
-    expect(removals).toEqual(["m", "present"]);
+    expect(root.origin.removals).toEqual(["m", "present"]);
     expect([...lsm.children.keys()]).toEqual([]);
     await found.removeFolder();
     expect(await findBrowserFs("present")).toBeUndefined();

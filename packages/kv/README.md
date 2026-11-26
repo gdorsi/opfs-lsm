@@ -37,10 +37,10 @@ const db = await openDb({ name: "notes" });
 await openDb({ name: "my notes" });
 // throws ConstraintError. Names match /^[A-Za-z0-9_-]{1,64}$/.
 
-// Where the SharedWorker cannot write OPFS files, as in Safari 16
-// to 25, or where there is none, as in Samsung Internet or inside a
-// dedicated WebWorker, nothing is flushed: rows stay in the WAL and
-// in each tab's memory (see Browser support).
+// Where there is no SharedWorker, as in Samsung Internet or inside
+// a dedicated WebWorker, or where the SharedWorker cannot write OPFS
+// files, nothing is flushed: rows stay in the WAL and in each tab's
+// memory (see Browser support).
 
 // In Node, which has neither OPFS nor a Worker:
 await openDb({ name: "notes" });
@@ -362,7 +362,7 @@ await db.view(async (snap) => {
 
 ## Storage quota
 
-The WAL and the SST files count against the origin's storage quota. kv keeps a reserve file of `reserveBytes`. When the browser refuses a write, the SharedWorker deletes the file, the write runs again, and an `onStorageFull` handler is asked to free space. kv never removes a row itself. Where the SharedWorker cannot write OPFS files, there is no reserve: a refused write rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
+The WAL and the SST files count against the origin's storage quota. kv keeps a reserve file of `reserveBytes`. When the browser refuses a write, the SharedWorker deletes the file, the write runs again, and an `onStorageFull` handler is asked to free space. kv never removes a row itself. Where there is no SharedWorker, or it cannot write OPFS files, there is no reserve: a refused write rejects with `StorageFullError` after one more try, and `onStorageFull` is never called.
 
 ```ts
 // a 24 MiB reserve

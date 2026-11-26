@@ -39,6 +39,13 @@ export interface ReadFs {
   list(dir: string): Promise<readonly string[]>;
 }
 
+/**
+ * How a host writes a file. "writable": through `createWritable()`. "staged":
+ * where OPFS has none, through a sync access handle on `<name>.crswap`, then
+ * a rename. Undefined: the host writes no file.
+ */
+export type FileWrites = "writable" | "staged" | undefined;
+
 export interface AsyncFs extends ReadFs {
   remove(path: string): Promise<void>;
   /** Remove `path` unless some tab holds it open. True when it is gone. */
@@ -47,8 +54,12 @@ export interface AsyncFs extends ReadFs {
   create(path: string): Promise<FileWriter>;
 }
 
-/** A database folder `destroyDb` can remove. Kept off `AsyncFs`, so the fs of `openDb` and of the SharedWorker carries no removal. */
-export interface RemovableFs extends AsyncFs {
+/**
+ * A database folder `destroyDb` can remove. It reads the manifests and writes
+ * no file, so the page carries no file writer. Kept off `AsyncFs`, so the fs
+ * of `openDb` and of the SharedWorker carries no removal.
+ */
+export interface RemovableFolder extends ReadFs {
   /**
    * Remove every file and the database folder: `m/` first, so a crash part
    * way leaves no manifest to adopt. Ignores open holds: `destroyDb` calls it
@@ -57,3 +68,6 @@ export interface RemovableFs extends AsyncFs {
    */
   removeFolder(): Promise<void>;
 }
+
+/** A folder a test's host writes and its `destroyDb` removes. */
+export interface RemovableFs extends AsyncFs, RemovableFolder {}

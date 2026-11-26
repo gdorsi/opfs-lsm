@@ -3,7 +3,7 @@ import { CommitError } from "./errors.js";
 import { readDestroyed, recordDestroyed } from "./idb/destroyed.js";
 import { idbName, idbWal, openDatabase, type IdBWal } from "./idb/wal.js";
 import { compactLock, ingestLock, openLock, withLock } from "./locks.js";
-import type { RemovableFs } from "./opfs/async-fs.js";
+import type { RemovableFolder } from "./opfs/async-fs.js";
 import { floorOfFiles, recordEmpty } from "./recover.js";
 
 /**
@@ -26,7 +26,7 @@ import { floorOfFiles, recordEmpty } from "./recover.js";
  *
  * With neither store present it returns after step 2 and writes nothing.
  */
-export async function removeDatabase(name: DbName, findFiles: () => Promise<RemovableFs | undefined>): Promise<void> {
+export async function removeDatabase(name: DbName, findFiles: () => Promise<RemovableFolder | undefined>): Promise<void> {
   await withLock(openLock(name), () =>
     withLock(compactLock(name), () =>
       withLock(ingestLock(name), async () => {
