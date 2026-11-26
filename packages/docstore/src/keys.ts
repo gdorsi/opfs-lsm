@@ -4,21 +4,21 @@
  *     catalog   64 00 00                      -> catalog JSON
  *     row       64 CC CC 00 <id>              -> document JSON
  *     sorted    64 CC CC II <v1>..<vn> <id>   -> empty
- *     covering  64 CC CC II <v1>..<vn> <id>   -> {"f1":..,"fk":..} (UTF-8 JSON)
+ *     include   64 CC CC II <v1>..<vn> <id>   -> {"f1":..,"fk":..} (UTF-8 JSON)
  *     unique    64 CC CC II <v1>..<vn>        -> <id>
  *     text      64 CC CC II <v1>..<vn> <id>   -> "w1 w2 ..." (lowercased words)
  *
  * CC CC is a collection id (u16be, 1..65535) and II an index id (1..255);
  * index id 00 is the rows. <id> is raw UTF-8. A value <v> is one field of
  * the tuple encoding of `@opfs-lsm/kv/tuple`, which also owns the bounds of
- * every key that continues a prefix, an id included. A covering entry is a
- * sorted entry of an index that declares `include`: its value holds each
- * included field its document has.
+ * every key that continues a prefix, an id included. An entry of an index
+ * that declares `include` holds each included field its document has. A
+ * multi index lays out its entries as a sorted one does, one per element.
  */
 import type { ChangeOp, Range } from "@opfs-lsm/kv";
 import { asciiAt, decodeTuple, encodeTuple, skipTuple, stringPrefixBounds, tupleBounds } from "@opfs-lsm/kv/tuple";
 import { DocStoreError } from "./errors.js";
-import type { Cursor, QueryInput, Scalar } from "./schema.js";
+import type { Cursor, IndexInfo, QueryInput, Scalar } from "./schema.js";
 
 export const ROOT = 0x64;
 export const CATALOG_KEY: Uint8Array = Uint8Array.of(ROOT, 0x00, 0x00);
@@ -190,25 +190,19 @@ export function textValue(text: string): Uint8Array {
   return idBytes(wordsOf(text).join(" "));
 }
 
-/** kv keeps an entry iff its value contains every pattern: every typed word occurs inside a word of the text. */
-function matchPatterns(match: string): Uint8Array[] {
+/**
+ * kv keeps an entry iff its value contains every pattern: every typed word
+ * occurs inside a word of the text. A match with no words is no filter.
+ */
+function matchPatterns(match: string): Uint8Array[] | undefined {
   const words = wordsOf(match);
-  if (words.length === 0) badQuery("match has no words");
-  return words.map(idBytes);
+  return words.length === 0 ? undefined : words.map(idBytes);
 }
 
-export type ScanTarget =
-  | { readonly kind: "rows"; readonly prefix: Uint8Array }
-  | {
-      readonly kind: "sorted" | "unique" | "text" | "covering";
-      readonly prefix: Uint8Array;
-      readonly rowPrefix: Uint8Array;
-      readonly arity: number;
-      /** The first component is an array field: one document holds several entries. */
-      readonly multi?: boolean;
-    };
+/** An index as declared, and where its entries and rows are. */
+export type IndexTarget = IndexInfo & { readonly prefix: Uint8Array; readonly rowPrefix: Uint8Array };
 
-export type IndexTarget = Exclude<ScanTarget, { readonly kind: "rows" }>;
+export type ScanTarget = { readonly kind: "rows"; readonly prefix: Uint8Array } | IndexTarget;
 
 /** The most combinations of listed values one query reads. */
 const MAX_RANGES = 64;
@@ -241,7 +235,7 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
   }
   const eq = q.eq ?? [];
   const rows = target.kind === "rows";
-  const arity = rows ? 1 : target.arity;
+  const arity = rows ? 1 : target.by.length;
   if (!Array.isArray(eq) || eq.length > arity) badQuery(`eq takes at most ${arity} values`);
   if (eq.length === arity && (bounded || startsWith !== undefined)) {
     badQuery("eq fixes every component, so no bound can follow");
@@ -250,7 +244,7 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
 
   const lists = eq.some(Array.isArray);
   // There, two entries equal after `eq` are two documents.
-  if (lists && (rows || target.kind === "unique")) badQuery("a unique index and the rows take no list in eq");
+  if (lists && (rows || target.unique)) badQuery("a unique index and the rows take no list in eq");
   let heads: Uint8Array[];
   let repeats = false;
   if (!lists) heads = [rows ? target.prefix : encodeTuple(eq.map(checkQueryValue), target.prefix)];
@@ -258,7 +252,7 @@ export function scanPlan(target: ScanTarget, q: QueryInput): ScanPlan {
     const slots = eq.map(slotValues);
     if (slots.reduce((n, s) => n * s.length, 1) > MAX_RANGES) badQuery(`eq takes at most ${MAX_RANGES} combinations`);
     heads = slots.reduce((hs, s) => hs.flatMap((h) => s.map((b) => concat(h, b))), [target.prefix]);
-    repeats = target.kind !== "rows" && target.multi === true && slots[0]!.length > 1;
+    repeats = target.kind === "multi" && slots[0]!.length > 1;
   }
   const bounds = heads.map((head) => (rows ? rowBounds(head, q, eq) : indexBounds(head, q)));
   // An empty list reads nothing, and its bound is still checked.
@@ -323,12 +317,12 @@ function rowBounds(prefix: Uint8Array, q: QueryInput, eq: readonly unknown[]): [
 
 /** Where the id starts in an entry's key. A unique entry's id is its value. */
 function idStart(target: ScanTarget, key: Uint8Array): number {
-  return target.kind === "rows" ? target.prefix.length : skipTuple(key, target.arity, target.prefix.length);
+  return target.kind === "rows" ? target.prefix.length : skipTuple(key, target.by.length, target.prefix.length);
 }
 
 /** The key of the row an index entry points at. */
 export function entryRowKey(target: IndexTarget, key: Uint8Array, value: Uint8Array): Uint8Array {
-  return target.kind === "unique" ? concat(target.rowPrefix, value) : concat(target.rowPrefix, key, idStart(target, key));
+  return target.unique ? concat(target.rowPrefix, value) : concat(target.rowPrefix, key, idStart(target, key));
 }
 
 /** The id an entry's key ends in. A unique entry's key holds none. */
@@ -336,7 +330,7 @@ export function keyId(target: ScanTarget, key: Uint8Array): string {
   return idOf(key, idStart(target, key));
 }
 
-/** `value` is what `queryEntries` decoded of the entry's value: the id of a unique entry, the fields of a covering one. */
+/** `value` is what `queryEntries` decoded of the entry's value: the id of a unique entry, the fields of one with `include`. */
 export function decodeEntries(
   target: ScanTarget,
   entries: readonly { readonly key: Uint8Array; readonly value: unknown }[],
@@ -351,9 +345,9 @@ export function decodeEntries(
   if (entries.length === 0) return [];
   const { values: eqValues, end: from } = decodeTuple(entries[0]!.key, eqLength, target.prefix.length);
   return entries.map(({ key, value }) => {
-    const { values, end } = decodeTuple(key, target.arity - eqLength, from);
-    const id = target.kind === "unique" ? (value as string) : idOf(key, end);
-    return target.kind === "covering" ? { id, values: eqValues.concat(values), fields: value } : { id, values: eqValues.concat(values) };
+    const { values, end } = decodeTuple(key, target.by.length - eqLength, from);
+    const id = target.unique ? (value as string) : idOf(key, end);
+    return target.include ? { id, values: eqValues.concat(values), fields: value } : { id, values: eqValues.concat(values) };
   });
 }
 

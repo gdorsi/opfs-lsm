@@ -68,7 +68,7 @@ describe("entries come from the stored JSON", () => {
   });
 });
 
-describe("covering index", () => {
+describe("an index with include", () => {
   const fieldsOf = (c: BoundCollection, doc: JsonDoc) => entries(c, doc).map((e) => JSON.parse(new TextDecoder().decode(e.value)) as unknown);
 
   it("holds the JSON of the included fields the document has, in the order `include` lists them", () => {

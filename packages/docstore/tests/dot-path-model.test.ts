@@ -30,12 +30,12 @@ const schema = defineSchema({
 });
 
 const MODEL: Record<string, ModelIndex> = {
-  ma: { kind: "sorted", on: ["m.a"] },
-  deep: { kind: "sorted", on: ["m.d.e", "b"] },
-  mtags: { kind: "multi", on: ["m.tags", "b"] },
-  mu: { kind: "unique", on: ["m.u"] },
-  search: { kind: "text", on: ["m.a"], text: "m.t" },
-  cov: { kind: "sorted", on: ["b", "m.a"], include: ["m", "b"] },
+  ma: { kind: "sorted", paths: ["m.a"] },
+  deep: { kind: "sorted", paths: ["m.d.e", "b"] },
+  mtags: { kind: "multi", paths: ["m.tags", "b"] },
+  mu: { kind: "unique", paths: ["m.u"] },
+  search: { kind: "text", paths: ["m.a"], text: "m.t" },
+  cov: { kind: "sorted", paths: ["b", "m.a"], include: ["m", "b"] },
 };
 
 const innerArb: fc.Arbitrary<Inner> = fc.record(

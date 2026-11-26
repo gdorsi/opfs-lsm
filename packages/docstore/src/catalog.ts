@@ -9,11 +9,11 @@
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { isObject } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { collectionPrefix, fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
+import { collectionPrefix, fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type IndexTarget, type ScanTarget } from "./keys.js";
 import type { IndexInfo, Schema } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
-const FORMAT = 3;
+const FORMAT = 4;
 const MAX_COLLECTION_ID = 0xffff;
 const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
@@ -41,23 +41,8 @@ type StoredCollection = {
   readonly indexes: { readonly [name: string]: StoredIndex };
 };
 
-type StoredIndex = { readonly id: number; readonly spec: IndexSpec; readonly state: IndexState };
-
-export type IndexSpec =
-  | {
-      readonly kind: "sorted";
-      readonly on: readonly string[];
-      readonly unique: boolean;
-      /** The first path holds an array: one entry per distinct element. */
-      readonly multi: boolean;
-      /** Top-level fields each entry's value holds. Absent: the value is empty. */
-      readonly include?: readonly string[];
-    }
-  | {
-      readonly kind: "text";
-      readonly on: readonly string[];
-      readonly text: string;
-    };
+/** `spec` is the index as `indexes` describes it. */
+type StoredIndex = { readonly id: number; readonly spec: IndexInfo; readonly state: IndexState };
 
 /**
  * building: written by every writer, read by nobody, filled by backfill.
@@ -79,7 +64,7 @@ export type Edit = { readonly catalog: StoredCatalog; readonly drop: readonly Ui
 
 export type DeclaredSchema = {
   readonly version: number;
-  readonly collections: ReadonlyMap<string, ReadonlyMap<string, IndexSpec>>;
+  readonly collections: ReadonlyMap<string, ReadonlyMap<string, IndexInfo>>;
   /** Collections whose documents and indexes a higher version deletes. */
   readonly drop: ReadonlySet<string>;
 };
@@ -118,12 +103,12 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
   // A literal `__proto__` key sets the prototype instead of declaring a collection.
   const proto: unknown = isObject(decl.collections) && Object.getPrototypeOf(decl.collections);
   if (proto !== Object.prototype && proto !== null) badSchema("collections must be a plain object: a __proto__ key is not a collection name");
-  const collections = new Map<string, Map<string, IndexSpec>>();
+  const collections = new Map<string, Map<string, IndexInfo>>();
   for (const [name, coll] of Object.entries(decl.collections)) {
     checkName(name, `collection "${name}"`);
     const indexes: unknown = coll?.indexes;
     if (!isObject(indexes)) badSchema(`collection "${name}" was not made by collection()`);
-    const specs = new Map<string, IndexSpec>();
+    const specs = new Map<string, IndexInfo>();
     for (const [index, d] of Object.entries(indexes)) {
       const where = `index "${index}" of "${name}"`;
       checkName(index, where);
@@ -136,17 +121,18 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
       if (by.length === 0 || by.length > MAX_FIELDS) badSchema(`${where}: by takes 1 to ${MAX_FIELDS} fields`);
       const first = by[0];
       const multi = typeof first === "string" && first.endsWith(ARRAY_MARK);
-      const on = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
-      if (new Set(on).size !== on.length) badSchema(`${where}: by repeats a field`);
+      const paths = by.map((f, i) => checkField(multi && i === 0 ? first.slice(0, -ARRAY_MARK.length) : f, where));
+      if (new Set(paths).size !== paths.length) badSchema(`${where}: by repeats a field`);
       const { unique = false, text, include } = d;
       if (typeof unique !== "boolean") badSchema(`${where}: unique is a boolean`);
+      const fields = paths.map((p, i) => (multi && i === 0 ? p + ARRAY_MARK : p));
       if (text === undefined) {
         // A unique entry's value is its id, so it has no room for fields.
         if (unique && include !== undefined) badSchema(`${where}: a unique index cannot include fields`);
-        specs.set(index, { kind: "sorted", on, unique, multi, ...(include === undefined ? {} : { include: checkInclude(include, where) }) });
+        specs.set(index, { kind: multi ? "multi" : "sorted", by: fields, unique, ...(include === undefined ? {} : { include: checkInclude(include, where) }) });
       } else {
         if (unique || multi || include !== undefined) badSchema(`${where}: a text index cannot be unique, start with an array field or include fields`);
-        specs.set(index, { kind: "text", on, text: checkField(text, where) });
+        specs.set(index, { kind: "text", by: fields, unique, text: checkField(text, where) });
       }
     }
     collections.set(name, specs);
@@ -157,34 +143,10 @@ export function normalizeSchema(decl: Schema): DeclaredSchema {
   return { version: decl.version, collections, drop: new Set(drop) };
 }
 
-export function describeIndexes(specs: ReadonlyMap<string, IndexSpec>): ReadonlyMap<string, IndexInfo> {
-  const out = new Map<string, IndexInfo>();
-  for (const [name, s] of specs) {
-    out.set(
-      name,
-      s.kind === "text"
-        ? { kind: "text", by: s.on, unique: false, text: s.text }
-        : {
-            kind: s.multi ? "multi" : "sorted",
-            by: s.multi ? [s.on[0] + ARRAY_MARK, ...s.on.slice(1)] : s.on,
-            unique: s.unique,
-            ...(s.include && { include: s.include }),
-          },
-    );
-  }
-  return out;
-}
-
 const sameList = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every((p, i) => p === b[i]);
 
-function sameSpec(a: IndexSpec, b: IndexSpec): boolean {
-  if (!sameList(a.on, b.on)) return false;
-  switch (a.kind) {
-    case "sorted":
-      return b.kind === "sorted" && a.unique === b.unique && a.multi === b.multi && sameList(a.include, b.include);
-    case "text":
-      return b.kind === "text" && a.text === b.text;
-  }
+function sameSpec(a: IndexInfo, b: IndexInfo): boolean {
+  return a.kind === b.kind && sameList(a.by, b.by) && a.unique === b.unique && a.text === b.text && sameList(a.include, b.include);
 }
 
 /** A catalog of another format is a "schema" error: this library cannot read it. A wrong shape is corruption. */
@@ -228,12 +190,13 @@ function isCollection(c: unknown): boolean {
 }
 
 function isSpec(s: unknown): boolean {
-  if (!isObject(s) || !isStrings(s["on"])) return false;
-  if (s["kind"] === "sorted") {
-    const include = s["include"];
-    return typeof s["unique"] === "boolean" && typeof s["multi"] === "boolean" && (include === undefined || (isStrings(include) && !s["unique"]));
-  }
-  return s["kind"] === "text" && typeof s["text"] === "string";
+  if (!isObject(s) || !isStrings(s["by"]) || typeof s["unique"] !== "boolean") return false;
+  const { kind, text, include } = s;
+  const by = s["by"] as readonly string[];
+  // `kind` and the `[]` mark say the same thing: only a multi index marks a field, and only its first.
+  if (by.length === 0 || by.length > MAX_FIELDS || !by.every((f, i) => f.endsWith("[]") === (kind === "multi" && i === 0))) return false;
+  if (kind === "text") return typeof text === "string" && include === undefined && !s["unique"];
+  return (kind === "sorted" || kind === "multi") && text === undefined && (include === undefined || (isStrings(include) && !s["unique"]));
 }
 
 function isState(s: unknown): boolean {
@@ -371,22 +334,16 @@ export function clearCollection(c: StoredCatalog, collection: string): Edit {
 
 export type Path = readonly string[];
 
-export type CompiledSpec =
-  | {
-      readonly kind: "sorted";
-      readonly on: readonly Path[];
-      readonly unique: boolean;
-      readonly multi: boolean;
-      readonly include: readonly string[] | undefined;
-    }
-  | { readonly kind: "text"; readonly on: readonly Path[]; readonly text: Path };
-
 export type IndexPlan = {
   readonly name: string;
   readonly id: IndexId;
   readonly state: IndexState;
-  readonly spec: CompiledSpec;
-  readonly target: Extract<ScanTarget, { readonly rowPrefix: Uint8Array }>;
+  /** The stored definition, and where its entries are. */
+  readonly target: IndexTarget;
+  /** `by` as paths, without the array mark. */
+  readonly paths: readonly Path[];
+  /** The field a text index reads its words from. */
+  readonly text: Path | undefined;
 };
 
 export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Exclude<IndexState, { kind: "ready" }>;
@@ -450,12 +407,8 @@ export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: Declar
 }
 
 function compile(collection: CollectionId, rows: Uint8Array, name: string, i: StoredIndex): IndexPlan {
-  const on = i.spec.on.map((p) => p.split("."));
-  const spec: CompiledSpec =
-    i.spec.kind === "sorted"
-      ? { kind: "sorted", on, unique: i.spec.unique, multi: i.spec.multi, include: i.spec.include }
-      : { kind: "text", on, text: i.spec.text.split(".") };
-  const kind = spec.kind === "text" ? "text" : spec.unique ? "unique" : spec.include ? "covering" : "sorted";
-  const prefix = indexPrefix(collection, i.id as IndexId);
-  return { name, id: i.id as IndexId, state: i.state, spec, target: { kind, prefix, rowPrefix: rows, arity: on.length, multi: spec.kind === "sorted" && spec.multi } };
+  const { spec } = i;
+  const paths = spec.by.map((f) => (f.endsWith(ARRAY_MARK) ? f.slice(0, -ARRAY_MARK.length) : f).split("."));
+  const target = { ...spec, prefix: indexPrefix(collection, i.id as IndexId), rowPrefix: rows };
+  return { name, id: i.id as IndexId, state: i.state, target, paths, text: spec.text?.split(".") };
 }

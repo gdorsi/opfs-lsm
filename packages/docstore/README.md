@@ -316,14 +316,14 @@ await todos.queryIds({ index: "search", match: "MOM ca" });
 await todos.queryIds({ index: "search", gte: 2, match: "m" });
 // => { ids: ["c", "a"] }
 await todos.queryIds({ index: "search", match: " - " });
-// throws DocStoreError "query", no words
+// => { ids: ["b", "c", "a"] }, no words is no filter
 await todos.queryIds({ // type error, open is not a text index
 	index: "open",
 	match: "milk"
 });
 ```
 
-A document whose text field is `null` has an entry with no words, which a query without `match` reads and a `match` never finds. A document without the field has no entry.
+A document whose text field is `null` has an entry with no words, which a query without words in `match` reads and a `match` with words never finds. A document without the field has no entry.
 
 ### Unique
 
@@ -343,6 +343,15 @@ await users.put({ id: "u5", email: "\uD800" });
 ## Queries
 
 A query names an index and a range in it. Without `index`, it reads the documents in id order.
+
+`index` can be a union, such as a sort the user picks. The query then type-checks if it suits every index in the union.
+
+```ts
+declare const sort: "open" | "search";
+await todos.queryIds({ index: sort, reverse: true, limit: 20 });
+await todos.queryIds({ index: sort, match: "milk" }); // type error,
+// open is not a text index
+```
 
 ### Bounds
 

@@ -93,9 +93,9 @@ describe("two handles on one database", () => {
             await kvB.sync();
 
             const docs = [...model.values()];
-            expect((await b.queryIds({ index: "byB" })).ids).toEqual(ids(expected(docs, { kind: "sorted", on: ["b", "a"] }, {})));
-            expect((await b.queryIds({ index: "byTag" })).ids).toEqual(ids(expected(docs, { kind: "multi", on: ["tags"] }, {})));
-            expect((await b.queryIds({ index: "byCode" })).ids).toEqual(ids(expected(docs, { kind: "multi", on: ["codes"] }, {})));
+            expect((await b.queryIds({ index: "byB" })).ids).toEqual(ids(expected(docs, { kind: "sorted", paths: ["b", "a"] }, {})));
+            expect((await b.queryIds({ index: "byTag" })).ids).toEqual(ids(expected(docs, { kind: "multi", paths: ["tags"] }, {})));
+            expect((await b.queryIds({ index: "byCode" })).ids).toEqual(ids(expected(docs, { kind: "multi", paths: ["codes"] }, {})));
           } finally {
             await kvA.close();
             await kvB.close();

@@ -157,7 +157,7 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
   async queryIds(q: Query<T, Ix>): Promise<IdPage> {
     const plan = this.plan(q, 1);
     const { target, limit } = plan;
-    const unique = target.kind === "unique";
+    const unique = target.kind !== "rows" && target.unique;
     const page = await this.scan(plan, unique ? idOf : nothing);
     const next = trimPage(page, (h) => h.key, limit);
     return { ids: page.map((h) => (unique ? (h.value as string) : keyId(target, h.key))), ...next };
@@ -170,9 +170,9 @@ export class SnapshotReader<T extends JsonDoc, Ix> implements CollectionSnapshot
     const { target, limit, range } = plan;
     // As in `query`, the entry past `limit` is not decoded.
     let left = limit ?? Number.POSITIVE_INFINITY;
-    const fields = target.kind === "covering" ? new JsonBatch<Record<string, unknown>>() : undefined;
-    // A covering entry's fields are parsed in a batch, a unique entry holds its id, and any other entry has no value to read.
-    const decode: Decode<unknown> = fields ? fields.add : target.kind === "unique" ? idOf : nothing;
+    const fields = target.kind !== "rows" && target.include ? new JsonBatch<Record<string, unknown>>() : undefined;
+    // Included fields are parsed in a batch, a unique entry holds its id, and any other entry has no value to read.
+    const decode: Decode<unknown> = fields ? fields.add : target.kind !== "rows" && target.unique ? idOf : nothing;
     const page = await this.scan(plan, (bytes) => (left-- > 0 ? decode(bytes) : undefined));
     const next = trimPage(page, (h) => h.key, limit);
     if (fields) {

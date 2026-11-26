@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   bind,
   clearCollection,
-  describeIndexes,
   encodeCatalog,
   normalizeSchema,
   parseCatalog,
@@ -148,8 +147,8 @@ describe("reconcile", () => {
       c = next;
     });
     expect(codeOf(() => reconcile(c, declare(6, { c: { x: { by: "a", include: ["t"] } } })))).toBe("schema");
-    const covering = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
-    expect(parseCatalog(encodeCatalog(covering))).toEqual(covering);
+    const including = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
+    expect(parseCatalog(encodeCatalog(including))).toEqual(including);
   });
 
   it("refuses a schema that needs an index id above 255", () => {
@@ -168,10 +167,28 @@ describe("stored bytes", () => {
   it("refuses a catalog of another format with schema, and a wrong shape as corrupt", () => {
     const c = open(undefined, 1, v1);
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 2 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 4 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(() => parseCatalog(encodeCatalog({ format: 3 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 5 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(() => parseCatalog(encodeCatalog({ format: 4 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
+  });
+
+  it("refuses as corrupt a stored index whose kind and fields disagree", () => {
+    const c = open(undefined, 1, { c: { x: { by: "a" }, m: { by: ["t[]", "a"] } } });
+    const withSpec = (name: "x" | "m", spec: object) => {
+      const i = c.collections["c"]!.indexes[name]!;
+      return { ...c, collections: { c: { ...c.collections["c"]!, indexes: { ...c.collections["c"]!.indexes, [name]: { ...i, spec: { ...i.spec, ...spec } } } } } };
+    };
+    expect(() => parseCatalog(encodeCatalog(withSpec("m", {}) as StoredCatalog))).not.toThrow();
+    for (const bad of [
+      withSpec("x", { by: ["t[]"] }),
+      withSpec("m", { by: ["t"] }),
+      withSpec("m", { by: ["a", "t[]"] }),
+      withSpec("x", { by: [] }),
+      withSpec("x", { by: Array.from({ length: 9 }, (_, i) => `f${i}`) }),
+    ]) {
+      expect(() => parseCatalog(encodeCatalog(bad as StoredCatalog))).toThrow(CorruptDatabaseError);
+    }
   });
 
   it("refuses as corrupt a stored unique index that includes fields", () => {
@@ -321,24 +338,18 @@ describe("normalizeSchema", () => {
     expect(() => normalizeSchema({ version: 1, collections: { a: coll } } as never)).toThrow(/not made by collection\(\)/);
   });
 
-  it("stores an array field without its mark, as the first field of a multi index", () => {
-    const declared = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "tags" } } });
-    expect(declared.collections.get("c")!.get("tags")).toEqual({ kind: "sorted", on: ["tags", "at"], unique: false, multi: true });
-    expect(declared.collections.get("c")!.get("one")).toEqual({ kind: "sorted", on: ["tags"], unique: false, multi: false });
-  });
-
-  it("describes a multi index by its declared fields, the mark on the first", () => {
+  it("keeps the declared fields, the array mark on the first field of a multi index", () => {
     const specs = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: ["a", "b"], unique: true }, s: { by: "a", text: "t" } } }).collections.get("c")!;
-    expect([...describeIndexes(specs)]).toEqual([
+    expect([...specs]).toStrictEqual([
       ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false }],
       ["one", { kind: "sorted", by: ["a", "b"], unique: true }],
       ["s", { kind: "text", by: ["a"], unique: false, text: "t" }],
     ]);
   });
 
-  it("describes the fields an index includes, and only on an index that includes some", () => {
+  it("keeps the fields an index includes, and only on an index that includes some", () => {
     const specs = declare(1, { c: { tags: { by: ["tags[]", "at"], include: ["title", "n"] }, one: { by: "a" } } }).collections.get("c")!;
-    expect([...describeIndexes(specs)]).toStrictEqual([
+    expect([...specs]).toStrictEqual([
       ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false, include: ["title", "n"] }],
       ["one", { kind: "sorted", by: ["a"], unique: false }],
     ]);
@@ -346,26 +357,12 @@ describe("normalizeSchema", () => {
 
   it("accepts 16 included fields", () => {
     const include = Array.from({ length: 16 }, (_, i) => `f${i}`);
-    expect(describeIndexes(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!).get("x")?.include).toEqual(include);
+    expect(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!.get("x")?.include).toEqual(include);
   });
 
-  it("opens a catalog stored before by existed without writing it again", () => {
-    const stored = encodeCatalog({
-      format: 3,
-      version: 1,
-      nextCollectionId: 2,
-      collections: {
-        c: {
-          id: 1,
-          nextIndexId: 3,
-          indexes: {
-            tags: { id: 1, spec: { kind: "sorted", on: ["tags", "at"], unique: false, multi: true }, state: { kind: "ready" } },
-            one: { id: 2, spec: { kind: "sorted", on: ["a"], unique: true, multi: false }, state: { kind: "ready" } },
-          },
-        },
-      },
-    });
-    const catalog = parseCatalog(stored);
-    expect(reconcile(catalog, declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "a", unique: true } } }))).toBeUndefined();
+  it("stores each index as the handle's indexes describe it", () => {
+    const decl = { c: { tags: { by: ["tags[]", "at"], include: ["n"] }, one: { by: "a", unique: true }, s: { by: "a", text: "t" } } };
+    const stored = parseCatalog(encodeCatalog(open(undefined, 1, decl))).collections["c"]!.indexes;
+    expect(Object.fromEntries(Object.entries(stored).map(([name, i]) => [name, i.spec]))).toEqual(Object.fromEntries(declare(1, decl).collections.get("c")!));
   });
 });

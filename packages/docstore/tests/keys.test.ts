@@ -33,10 +33,11 @@ type Stored = { readonly values: Scalar[]; readonly id: string };
 type Ix = { readonly kind: "sorted" | "unique" | "text"; readonly arity: number; readonly entries: Stored[] };
 
 const indexTarget = (ix: Ix): IndexTarget => ({
-  kind: ix.kind,
+  kind: ix.kind === "unique" ? "sorted" : ix.kind,
+  by: Array.from({ length: ix.arity }, (_, i) => `f${i}`),
+  unique: ix.kind === "unique",
   prefix: indexPrefix(COLLECTION, INDEX),
   rowPrefix: rowPrefix(COLLECTION),
-  arity: ix.arity,
 });
 
 function entryOf(ix: Ix, e: Stored): { key: Uint8Array; value: Uint8Array } {
@@ -186,7 +187,7 @@ describe("scanPlan", () => {
     );
   });
 
-  const two: ScanTarget = { kind: "sorted", prefix: indexPrefix(COLLECTION, INDEX), rowPrefix: rowPrefix(COLLECTION), arity: 2 };
+  const two: IndexTarget = { kind: "sorted", by: ["a", "b"], unique: false, prefix: indexPrefix(COLLECTION, INDEX), rowPrefix: rowPrefix(COLLECTION) };
   const code = (f: () => unknown) => {
     try {
       f();
@@ -229,7 +230,7 @@ describe("scanPlan", () => {
   });
 
   it("flags repeats only for a list on the array field of a multi index", () => {
-    const multi: ScanTarget = { ...two, multi: true };
+    const multi: ScanTarget = { ...two, kind: "multi", by: ["a[]", "b"] };
     expect(scanPlan(multi, { eq: [["a", "b"]] }).repeats).toBe(true);
     expect(scanPlan(multi, { eq: [["a", "a"], [1, 2]] }).repeats).toBe(false);
     expect(scanPlan(multi, { eq: ["a", [1, 2]] }).repeats).toBe(false);
@@ -240,17 +241,17 @@ describe("scanPlan", () => {
     const rows: ScanTarget = { kind: "rows", prefix: rowPrefix(COLLECTION) };
     const many = (n: number) => Array.from({ length: n }, (_, i) => i);
     expect(code(() => scanPlan(rows, { eq: [["a"]] }))).toBe("query");
-    expect(code(() => scanPlan({ ...two, kind: "unique" }, { eq: [[1]] }))).toBe("query");
+    expect(code(() => scanPlan({ ...two, unique: true }, { eq: [[1]] }))).toBe("query");
     expect(code(() => scanPlan(two, { eq: [[[1]]] as never }))).toBe("query");
     expect(code(() => scanPlan(two, { eq: [many(65)] }))).toBe("query");
     expect(code(() => scanPlan(two, { eq: [many(9), many(8)] }))).toBe("query");
     expect(code(() => scanPlan(two, { eq: [many(8), many(8)] }))).toBe("no error");
   });
 
-  it("rejects match with no words on a text index with code query", () => {
-    const text: ScanTarget = { ...two, kind: "text" };
-    expect(code(() => scanPlan(text, { match: "  ,. " }))).toBe("query");
-    expect(code(() => scanPlan(text, { match: "x" }))).toBe("no error");
+  it("reads a match with no words as no filter", () => {
+    const text: ScanTarget = { ...two, kind: "text", text: "t" };
+    expect(scanPlan(text, { match: "  ,. " })).toEqual(scanPlan(text, {}));
+    expect(scanPlan(text, { match: "x" }).ranges[0]!.range.valueContains).toEqual([utf8.encode("x")]);
   });
 
   it("rejects a cursor from another eq group, past the upper bound, from another collection id, or not a cursor, with code cursor", () => {
