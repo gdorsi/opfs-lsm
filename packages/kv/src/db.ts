@@ -31,7 +31,7 @@ import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from
 import { reconcileOpen } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from "./seq.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
-import { Miss, ReadSet, type Maybe } from "./store/cursor.js";
+import { Miss, ReadSet, type Entry, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { OpenFile, ReadFs, RemovableFolder } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
@@ -44,6 +44,7 @@ import { SstReader } from "./store/sst-reader.js";
 import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
 import type { ChangeEvent, ChangeListener } from "./changes.js";
 
+export type { Entry } from "./store/cursor.js";
 export type { Decode, ViewSnapshot } from "./view.js";
 export type { StorageFull } from "./host/protocol.js";
 export type { ChangeEvent, ChangeListener, ChangeKind, ChangeOp } from "./changes.js";
@@ -135,9 +136,6 @@ export type Range = {
    */
   readonly valueContains?: readonly Uint8Array[];
 };
-
-/** Copies, as `Db.get` hands them out: one of 65 bytes to 1 KiB, key or value, is a view of a shared buffer. */
-export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
 /** `start` inclusive, `endExclusive` exclusive, either open. `prefixBound` returns one. */
 export type KeyBounds = {

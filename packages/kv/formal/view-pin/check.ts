@@ -12,7 +12,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CheckedKey, CheckedOp, CheckedValue } from "../../src/check.js";
+import type { CheckedKey, CheckedValue, ResolvedOp, ResolvedSeq } from "../../src/check.js";
 import { asSeq, type Seq } from "../../src/seq.js";
 import { Memtable, type MemRow, type MemRows } from "../../src/store/memtable.js";
 import type { Marks } from "../../src/store/marks.js";
@@ -31,7 +31,7 @@ const WRITES: Write[] = ["overwrite", "insertLow", "insertHigh", "delete", "dele
 const PROBES = [0, 1, 2, 3, 5, 150, 2 * 511, 2 * 512, 2 * (FULL_CHUNK - 1), 2 * FULL_CHUNK + 1, 2 * FULL_CHUNK + 3].map(keyOf);
 
 /** The record a write appends at `seq`, or undefined for an install. */
-function recordOf(write: Write, seq: Seq, n: number): CheckedOp[] | undefined {
+function recordOf(write: Write, seq: Seq, n: number): ResolvedOp[] | undefined {
   const value = enc.encode(`v${seq}`) as CheckedValue;
   switch (write) {
     case "overwrite":
@@ -43,7 +43,7 @@ function recordOf(write: Write, seq: Seq, n: number): CheckedOp[] | undefined {
     case "delete":
       return [{ type: "del", key: keyOf(2) }];
     case "deleteRange":
-      return [{ type: "deleteRange", start: keyOf(100), endExclusive: keyOf(200), through: asSeq(seq - 1) }];
+      return [{ type: "deleteRange", start: keyOf(100), endExclusive: keyOf(200), through: (seq - 1) as ResolvedSeq }];
     case "install":
       return undefined;
   }
@@ -81,7 +81,7 @@ function explore(Table: Table): string | undefined {
     const writes = sequences[i]!;
     if (writes.length < MAX_STEPS) for (const w of WRITES) sequences.push([...writes, w]);
     const mem = new Table();
-    const fill: CheckedOp[] = [];
+    const fill: ResolvedOp[] = [];
     for (let k = 0; k < FULL_CHUNK; k++) fill.push({ type: "put", key: keyOf(2 * k), value: enc.encode("v1") as CheckedValue });
     mem.apply({ seq: asSeq(1), ops: fill });
     const pins: Taken[] = [];

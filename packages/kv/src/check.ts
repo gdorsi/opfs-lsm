@@ -20,22 +20,33 @@ export type WriterId = string & { readonly __brand: "WriterId" };
 export type CheckedKey = Uint8Array & { readonly __brand: "CheckedKey" };
 export type CheckedValue = Uint8Array & { readonly __brand: "CheckedValue" };
 
-export type CheckedOp =
+/**
+ * A range delete's `through` resolved against the seq of the record that
+ * holds it: always below that seq, so a batch never removes its own writes.
+ */
+export type ResolvedSeq = Seq & { readonly __resolved: true };
+
+type DeleteRangeOp<Through extends Seq> = {
+  readonly type: "deleteRange";
+  /** Empty: from the first key. */
+  readonly start: CheckedKey;
+  readonly endExclusive?: CheckedKey;
+  readonly through: Through;
+};
+
+type KeyOp =
   | { readonly type: "put"; readonly key: CheckedKey; readonly value: CheckedValue }
-  | { readonly type: "del"; readonly key: CheckedKey }
-  | {
-      readonly type: "deleteRange";
-      /** Empty: from the first key. */
-      readonly start: CheckedKey;
-      readonly endExclusive?: CheckedKey;
-      /**
-       * As the caller asked, `Number.MAX_SAFE_INTEGER` for every row written
-       * before this batch. In a committed record it is resolved against the
-       * record's seq and always below it, so a batch never removes its own
-       * writes.
-       */
-      readonly through: Seq;
-    };
+  | { readonly type: "del"; readonly key: CheckedKey };
+
+/**
+ * An op as the caller asked it: a range delete's `through` is
+ * `Number.MAX_SAFE_INTEGER` for every row written before this batch. The
+ * WAL row stores it so.
+ */
+export type CheckedOp = KeyOp | DeleteRangeOp<Seq>;
+
+/** An op of a committed record, whose range deletes are resolved against the record's seq. */
+export type ResolvedOp = KeyOp | DeleteRangeOp<ResolvedSeq>;
 
 /** An op as `BatchTx` collects it, before `CheckedBatch` checks it. */
 export type BatchOp =

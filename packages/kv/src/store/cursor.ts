@@ -1,5 +1,4 @@
 import { compareFrom, containsAll, copyOut, sharedPrefix } from "../bytes.js";
-import type { Entry } from "../db.js";
 import { asSeq, type Seq } from "../seq.js";
 
 type Version = {
@@ -164,6 +163,9 @@ export function valueOf(e: LayerEntry): Uint8Array {
 export function keyOf(e: LayerEntry): Uint8Array {
   return e.block ? e.key : copyOut(e.key);
 }
+
+/** Copies, as `Db.get` hands them out: one of 65 bytes to 1 KiB, key or value, is a view of a shared buffer. */
+export type Entry = { readonly key: Uint8Array; readonly value: Uint8Array };
 
 /** A put as a read hands it out: copies of its key and its value. */
 export function entryOf(e: LayerEntry): Entry {

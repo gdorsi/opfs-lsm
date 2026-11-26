@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { beforeAll, describe, expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import type { CheckedKey, CheckedOp, CheckedValue } from "../src/check.js";
+import type { CheckedKey, CheckedValue, ResolvedOp, ResolvedSeq } from "../src/check.js";
 import { asSeq } from "../src/seq.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { foldRecords } from "../src/store/fold.js";
@@ -39,14 +39,14 @@ const draftArb: fc.Arbitrary<Draft> = fc.oneof(
 function toRecords(batches: Draft[][]): WalRecord[] {
   return batches.map((drafts, i) => {
     const seq = i + 1;
-    const ops: CheckedOp[] = drafts.map((d) => {
+    const ops: ResolvedOp[] = drafts.map((d) => {
       if (d.type !== "deleteRange") return d;
       const [start, end] = d.end && compareBytes(d.end, d.start) < 0 ? [d.end, d.start] : [d.start, d.end];
       return {
         type: "deleteRange",
         start,
         ...(end && compareBytes(start, end) < 0 ? { endExclusive: end } : {}),
-        through: asSeq(Math.min(d.through, seq - 1)),
+        through: Math.min(d.through, seq - 1) as ResolvedSeq,
       };
     });
     return { seq: asSeq(seq), ops };

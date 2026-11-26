@@ -1,8 +1,8 @@
 import { checkKey } from "./check.js";
 import { ClosedError, ConstraintError } from "./errors.js";
-import type { Entry, Range } from "./db.js";
+import type { Range } from "./db.js";
 import type { MemRow, MemRows } from "./store/memtable.js";
-import { entryCursor, entryOf, keyOf, Miss, untilHit, valueOf, type LayerEntry, type ScanBounds } from "./store/cursor.js";
+import { entryCursor, entryOf, keyOf, Miss, untilHit, valueOf, type Entry, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,

@@ -1,5 +1,5 @@
 import { compareBytes } from "../bytes.js";
-import { ROW_OVERHEAD, type CheckedOp } from "../check.js";
+import { ROW_OVERHEAD, type ResolvedOp } from "../check.js";
 import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
 import { NO_MARKS, type Marks } from "./marks.js";
@@ -14,7 +14,7 @@ export type MemRow = {
 
 export type WalRecord = {
   readonly seq: Seq;
-  readonly ops: readonly CheckedOp[];
+  readonly ops: readonly ResolvedOp[];
 };
 
 /** Reads over rows in key order, live or pinned. */

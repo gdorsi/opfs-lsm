@@ -1,5 +1,13 @@
 import { compareBytes } from "../bytes.js";
-import { flushBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
+import {
+  flushBytes,
+  type CheckedKey,
+  type CheckedOp,
+  type CheckedValue,
+  type DbName,
+  type ResolvedOp,
+  type ResolvedSeq,
+} from "../check.js";
 import { ClosedError, codeOfError, CommitError, StorageFullError, unavailable } from "../errors.js";
 import {
   asGeneration,
@@ -111,8 +119,8 @@ export function rowValid(validAt: Seq | undefined, seq: Seq): boolean {
 }
 
 /** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
-function resolveThrough(asked: Seq, seq: Seq): Seq {
-  return asSeq(Math.max(0, Math.min(asked, prevSeq(seq))));
+function resolveThrough(asked: Seq, seq: Seq): ResolvedSeq {
+  return Math.max(0, Math.min(asked, prevSeq(seq))) as ResolvedSeq;
 }
 
 /**
@@ -164,8 +172,9 @@ export function encodeOps(ops: readonly CheckedOp[], validAt?: Seq): ArrayBuffer
 }
 
 /** The ops of `record` with each range delete's `through` resolved against `seq`. */
-export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly CheckedOp[] {
-  if (!ops.some((op) => op.type === "deleteRange")) return ops;
+export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly ResolvedOp[] {
+  // With no range delete, the ops are resolved as they are.
+  if (!ops.some((op) => op.type === "deleteRange")) return ops as readonly ResolvedOp[];
   return ops.map((op) => (op.type === "deleteRange" ? { ...op, through: resolveThrough(op.through, seq) } : op));
 }
 
@@ -176,11 +185,11 @@ export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly Checke
  * buffer, which nothing else holds. Exported for the decoder fuzz tests
  * (`packages/kv/fuzz/`).
  */
-export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
+export function decodeOps(raw: unknown, seq: Seq): ResolvedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
-  const ops: CheckedOp[] = [];
+  const ops: ResolvedOp[] = [];
   let at = 0;
   const take = (length: number): Uint8Array => {
     if (at + length > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");
@@ -364,15 +373,21 @@ async function readRecords(
   for (let lo = after + 1; lo <= head; lo += TAIL_CHUNK) {
     const hi = Math.min(head, lo + TAIL_CHUNK - 1);
     chunks.push(
-      reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi))).then((values) => {
-        if (values.length !== hi - lo + 1) {
-          throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
-        }
-        return values.map((value, i) => ({ seq: asSeq(lo + i), ops: decodeOps(value, asSeq(lo + i)) }));
-      }),
+      readRange(wal, lo, hi).then((values) =>
+        values.map((value, i) => ({ seq: asSeq(lo + i), ops: decodeOps(value, asSeq(lo + i)) })),
+      ),
     );
   }
   return (await Promise.all(chunks)).flat();
+}
+
+/** The values of seqs `lo..hi`. Committed seqs are gapless above ingestedThrough, so a short range is a gap and throws. */
+async function readRange(wal: IDBObjectStore, lo: number, hi: number): Promise<unknown[]> {
+  const values = await reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi)));
+  if (values.length !== hi - lo + 1) {
+    throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
+  }
+  return values;
 }
 
 /**
@@ -393,10 +408,7 @@ async function readRecordsUpTo(
   let span = 1;
   for (let lo = after + 1; lo <= head; ) {
     const hi = Math.min(head, lo + span - 1);
-    const values = await reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi)));
-    if (values.length !== hi - lo + 1) {
-      throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
-    }
+    const values = await readRange(wal, lo, hi);
     for (const [i, value] of values.entries()) {
       const at = asSeq(lo + i);
       const ops = decodeOps(value, at);
@@ -907,6 +919,21 @@ export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
 }
 
 /**
+ * The oldest records with seq > ingestedThrough whose `flushBytes` fit in
+ * `maxBytes`, and at least one, read in one transaction, with the head
+ * that transaction read.
+ */
+async function readUningested(wal: IdBWal, maxBytes: number): Promise<{ readonly records: WalRecord[]; readonly head: Seq }> {
+  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
+  const done = txDone(tx);
+  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
+  const head = await headOf(tx, through);
+  const records = await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes);
+  await done;
+  return { records, head };
+}
+
+/**
  * `flushBytes` of the records above ingestedThrough, read from the records.
  * The read stops once the next record would pass `cap`. The
  * answer is then at least `cap`: the bytes already read, when those
@@ -914,13 +941,7 @@ export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
  * with `maxWalBytes`, so a long WAL still trips the limit.
  */
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
-  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
-  const done = txDone(tx);
-  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
-  const head = await headOf(tx, through);
-  const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, cap);
-  await done;
+  const { records, head } = await readUningested(wal, cap);
   let bytes = 0;
   for (const record of records) bytes += flushBytes(record.ops);
   const last = records[records.length - 1]?.seq ?? head;
@@ -933,15 +954,7 @@ export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number>
  * than the cap comes alone.
  */
 export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
-  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
-  const done = txDone(tx);
-  const meta = tx.objectStore(META_STORE);
-  const through = await metaSeq(meta, META_INGESTED);
-  const head = await headOf(tx, through);
-  const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
-  await done;
-  return records;
+  return (await readUningested(wal, limit.maxBytes)).records;
 }
 
 /**
