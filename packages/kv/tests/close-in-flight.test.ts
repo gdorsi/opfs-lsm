@@ -73,6 +73,7 @@ function installBrowser(): void {
       }
     },
   );
+  vi.stubGlobal("Worker", class {});
   Object.defineProperty(navigator, "storage", { value: { getDirectory: async () => root }, configurable: true });
 }
 

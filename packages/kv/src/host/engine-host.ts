@@ -51,6 +51,16 @@ export type Meter = {
 
 const UNMETERED: Meter = { fs: (_name, inner) => inner, flushed() {}, compacted() {} };
 
+/** How a host is built. */
+export type HostOptions = HostOverrides & {
+  /**
+   * False where the host cannot write run files (design.md, "Where code
+   * runs"): it folds nothing, compacts nothing and keeps no reserve, so every
+   * record stays in the WAL. Default true.
+   */
+  readonly writes?: boolean;
+};
+
 /** The two stores of one database, opened for one operation. */
 type Stores = { readonly wal: IdBWal; readonly fs: AsyncFs };
 
@@ -100,10 +110,10 @@ type IngestWatch = {
 export class EngineHost {
   private readonly dbs = new Map<DbName, HostedDb>();
 
-  /** `overrides` replace figures of the budget, for tests that need a small flush run or no L0 stop. */
+  /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     private readonly fsFactory: FsFactory,
-    private readonly overrides: HostOverrides = {},
+    private readonly overrides: HostOptions = {},
     private readonly meter: Meter = UNMETERED,
   ) {}
 
@@ -124,14 +134,16 @@ export class EngineHost {
 
   /**
    * Flush the WAL into L0 runs, then start compaction in the background.
-   * With `waitForCompaction`, also wait until the levels are in shape.
+   * With `waitForCompaction`, also wait until the levels are in shape. A
+   * host that writes no run file flushes and compacts nothing.
    */
   async ingest(name: string, waitForCompaction = false): Promise<{ generation: Generation }> {
     return this.db(name).ingest(waitForCompaction);
   }
 
   /**
-   * Ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
+   * Ignored by a host that writes no run file. Otherwise:
+   * ingest `name` on the host's own once its WAL passes `policy.maxWalBytes`,
    * with no tab asking. Reads up to `maxWalBytes` of the waiting records in the
    * background and ingests when a reopened database is already over the limit.
    * The host holds `name` to the smallest `compactionMemoryBytes` any tab passed,
@@ -176,7 +188,8 @@ export class EngineHost {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, meter: Meter) {
+function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, meter: Meter) {
+  const writes = overrides.writes !== false;
   const publishTurn = serial();
   const foldTurn = serial();
   /** A flush waits on a full L0 for the next compaction install. */
@@ -236,14 +249,27 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, 
     }
   }
 
+  /**
+   * A host that writes no run file answers with the recorded generation.
+   * With `waitForCompaction` it first removes the files no generation
+   * needs, as a compaction pass does at its end: `dangerousDestroy` asks so
+   * once its tab let go of its runs, and no pass of this host follows.
+   */
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
-    const { generation } = await fold();
-    const compaction = compact();
-    if (!waitForCompaction) {
-      compaction.catch(() => undefined);
-      return { generation };
+    if (writes) {
+      const { generation } = await fold();
+      const compaction = compact();
+      if (!waitForCompaction) {
+        compaction.catch(() => undefined);
+        return { generation };
+      }
+      await compaction;
+    } else if (waitForCompaction) {
+      await withLock(compactLock(name), async () => {
+        const fs = await folder();
+        if (fs) await exclusive(() => withWal((wal) => reclaim(fs, wal), () => undefined));
+      });
     }
-    await compaction;
     return {
       generation: await withWal(
         async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
@@ -354,7 +380,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOverrides, 
     return Promise.race([installed.then(() => "installed" as const), ended]);
   }
 
+  /** Ignored by a host that writes no run file: it has nothing to flush and no reserve to keep. */
   function addWatcher(policy: WatchPolicy): void {
+    if (!writes) return;
     const watch = watching ?? startWatch(policy);
     watch.watchers += 1;
     watch.maxWalBytes = Math.min(watch.maxWalBytes, policy.maxWalBytes);
@@ -789,10 +817,22 @@ function isClosedDatabase(err: unknown): boolean {
   );
 }
 
-/** Serve `host` to every tab that connects to this SharedWorker. */
-export function serveSharedWorker(host: EngineHost): void {
+/**
+ * Serve the host `build` makes to every tab that connects to this
+ * SharedWorker, or, in a dedicated Worker, to the page that started it. It
+ * writes run files only in a SharedWorker whose OPFS files have
+ * `createWritable()`: each handle starts its own dedicated Worker, and several
+ * hosts flushing one database is not verified.
+ */
+export function serveWorker(build: (writes: boolean) => EngineHost): void {
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
-  const scope = globalThis as unknown as { onconnect: ((ev: MessageEvent) => void) | null };
+  const scope = globalThis as unknown as MessagePort & { onconnect?: ((ev: MessageEvent) => void) | null };
+  const shared = "onconnect" in scope;
+  const host = build(shared && !!globalThis.FileSystemFileHandle?.prototype.createWritable);
+  if (!shared) {
+    attachEngineHostPort(scope, host);
+    return;
+  }
   scope.onconnect = (ev) => {
     const port = (ev as MessageEvent & { ports: MessagePort[] }).ports[0];
     if (port) attachEngineHostPort(port, host);

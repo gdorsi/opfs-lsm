@@ -15,7 +15,7 @@ opfs-lsm helps most when your app keeps its data in the browser and reads it on 
 
 Use another store in these cases:
 
-- **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView do not run it.
+- **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Safari 16 to 25, Samsung Internet and Android WebView run it without SST files, so it never compacts and keeps the whole database in each tab's memory.
 - **Your app stores little and writes one record at a time.** IndexedDB writes a single awaited record about as fast, and it loads no SharedWorker and no wasm engine.
 - **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
 

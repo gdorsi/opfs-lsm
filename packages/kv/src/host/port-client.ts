@@ -1,8 +1,14 @@
 import { ClosedError, errorOfCode } from "../errors.js";
 import type { ClientToHost, HostToClient, IngestClient } from "./protocol.js";
 
-/** Tab-side client over a MessagePort. */
-export function createPortIngestClient(port: MessagePort): IngestClient {
+/** What the client talks over: a SharedWorker's port, or a dedicated Worker, which it terminates at `close`. */
+type Port = Pick<MessagePort, "addEventListener" | "removeEventListener" | "postMessage"> & {
+  start?(): void;
+  terminate?(): void;
+};
+
+/** Tab-side client over a port. */
+export function createPortIngestClient(port: Port): IngestClient {
   let nextId = 1;
   const pending = new Map<
     number,
@@ -57,6 +63,7 @@ export function createPortIngestClient(port: MessagePort): IngestClient {
     close() {
       closed = true;
       port.removeEventListener("message", listener);
+      port.terminate?.();
       for (const [, p] of pending) p.reject(new ClosedError("database is closed"));
       pending.clear();
     },

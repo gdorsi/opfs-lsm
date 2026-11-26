@@ -9,21 +9,20 @@ const NAME = "open-policy";
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-type Snap = {
-  document: unknown;
-  SharedWorker: unknown;
-  navigator: Navigator;
-};
+const GLOBALS = ["document", "SharedWorker", "Worker", "navigator"] as const;
+type Global = (typeof GLOBALS)[number];
+type Snap = Record<Global, unknown>;
 
 function snap(): Snap {
   return {
     document: globalThis.document,
     SharedWorker: globalThis.SharedWorker,
+    Worker: globalThis.Worker,
     navigator: globalThis.navigator,
   };
 }
 
-function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknown): void {
+function putGlobal(key: Global, value: unknown): void {
   Object.defineProperty(globalThis, key, {
     value,
     configurable: true,
@@ -32,7 +31,7 @@ function putGlobal(key: "document" | "SharedWorker" | "navigator", value: unknow
 }
 
 function restore(prev: Snap): void {
-  for (const key of ["document", "SharedWorker", "navigator"] as const) {
+  for (const key of GLOBALS) {
     const value = prev[key];
     if (value === undefined) {
       Reflect.deleteProperty(globalThis, key);
@@ -55,9 +54,57 @@ function installCaps(getDirectory: () => Promise<never>): void {
       port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
     },
   );
+  putGlobal("Worker", class Worker {});
   putGlobal("navigator", {
     storage: { getDirectory },
   });
+}
+
+/** An OPFS folder held in memory: what a tab's open needs of one. */
+class FakeDir {
+  readonly children = new Map<string, FakeDir>();
+  async getDirectoryHandle(name: string, opts?: { create?: boolean }) {
+    let child = this.children.get(name);
+    if (!child && opts?.create) this.children.set(name, (child = new FakeDir()));
+    if (!child) throw new DOMException(name, "NotFoundError");
+    return child;
+  }
+  async *entries(): AsyncIterableIterator<[string, unknown]> {
+    yield* this.children.entries();
+  }
+}
+
+function installFolder(): void {
+  const root = new FakeDir();
+  putGlobal("navigator", { locks: (saved.navigator as Navigator).locks, storage: { getDirectory: async () => root } });
+}
+
+/** Worker and SharedWorker stand-ins that count what the page does with them. */
+function countWorkers(): { shared: number; dedicated: number; terminated: number } {
+  const count = { shared: 0, dedicated: 0, terminated: 0 };
+  putGlobal(
+    "SharedWorker",
+    class {
+      port = Object.assign(new EventTarget(), { start() {}, postMessage() {}, close() {} });
+      constructor() {
+        count.shared++;
+      }
+    },
+  );
+  putGlobal(
+    "Worker",
+    class extends EventTarget {
+      constructor() {
+        super();
+        count.dedicated++;
+      }
+      postMessage() {}
+      terminate() {
+        count.terminated++;
+      }
+    },
+  );
+  return count;
 }
 
 async function deleteIdb(): Promise<void> {
@@ -83,10 +130,37 @@ describe("openDb storage policy", () => {
     await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
   });
 
-  it("rejects in a context with OPFS and no SharedWorker, as in a dedicated WebWorker", async () => {
+  it("rejects in a context with OPFS and no worker of either kind", async () => {
     installCaps(() => Promise.reject(new Error("opfs-getDirectory")));
     Reflect.deleteProperty(globalThis, "SharedWorker");
+    Reflect.deleteProperty(globalThis, "Worker");
     await expect(openDb({ name: NAME })).rejects.toBeInstanceOf(StorageUnavailableError);
+  });
+
+  it("starts a dedicated Worker where there is no SharedWorker, as in Samsung Internet, and terminates it at close", async () => {
+    installDocument();
+    installFolder();
+    const workers = countWorkers();
+    Reflect.deleteProperty(globalThis, "SharedWorker");
+
+    const db = await openDb({ name: NAME });
+    await db.put(enc.encode("k"), enc.encode("v"));
+    const got = await db.get(enc.encode("k"));
+    expect(got && dec.decode(got)).toBe("v");
+    expect(workers).toEqual({ shared: 0, dedicated: 1, terminated: 0 });
+
+    await db.close();
+    expect(workers).toEqual({ shared: 0, dedicated: 1, terminated: 1 });
+  });
+
+  it("starts the SharedWorker and no dedicated Worker where both exist", async () => {
+    installDocument();
+    installFolder();
+    const workers = countWorkers();
+
+    const db = await openDb({ name: NAME });
+    await db.close();
+    expect(workers).toEqual({ shared: 1, dedicated: 0, terminated: 0 });
   });
 
   it("throws StorageUnavailableError on a page that cannot open OPFS", async () => {
@@ -157,6 +231,26 @@ describe("openDb where an API it needs is there and fails", () => {
     const cause = insecure("The operation is insecure.");
     putGlobal(
       "SharedWorker",
+      class {
+        constructor() {
+          throw cause;
+        }
+      },
+    );
+    putGlobal("Worker", class {});
+    const folder = { getDirectoryHandle: async () => folder };
+    putGlobal("navigator", { storage: { getDirectory: async () => folder } });
+
+    const failed = await failure(openDb({ name: NAME }));
+
+    expect(failed).toBeInstanceOf(StorageUnavailableError);
+    expect((failed as StorageUnavailableError).cause).toBe(cause);
+  });
+
+  it("rejects with StorageUnavailableError when new Worker() throws where there is no SharedWorker", async () => {
+    const cause = insecure("The operation is insecure.");
+    putGlobal(
+      "Worker",
       class {
         constructor() {
           throw cause;
