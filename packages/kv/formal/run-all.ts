@@ -16,6 +16,7 @@ const checks = [
   "formal/compact-preserve/check.ts",
   "formal/update-exact/check.ts",
   "formal/reclaim-hold/check.ts",
+  "formal/gen-switch/check.ts",
   "formal/power-loss/check.ts",
   "formal/crash-table/check.ts",
 ] as const;
