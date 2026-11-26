@@ -175,6 +175,20 @@ describe("a host that stages its files", () => {
     expect(dec.decode(await again.get(key(299)))).toBe("v5");
   });
 
+  it("writes over the staged manifest, and removes the staged run, that a dead host left", async () => {
+    const at = folder();
+    const db = await open(at);
+    await db.put(key(0), utf("v"));
+    const { generation } = await ingest(db);
+    await leave(at.dir, `m/${String(generation + 1).padStart(16, "0")}.mft.crswap`, "half a manifest");
+    await leave(at.dir, "l1/c9.0.sst.crswap", "half a run");
+
+    await db.put(key(1), utf("v"));
+    expect((await ingest(db)).generation).toBe(generation + 1);
+    expect(Object.keys(at.dir.files()).filter((path) => path.endsWith(".crswap"))).toEqual([]);
+    expect(await db.count()).toBe(2);
+  });
+
   it.each([
     ["throws QuotaExceededError", false],
     ["writes part of the bytes", true],
