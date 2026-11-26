@@ -43,7 +43,7 @@ import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
+import { ViewSnapshotImpl, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
 import type { ChangeEvent, ChangeListener } from "./changes.js";
 
 export type { Entry } from "./store/cursor.js";
@@ -1240,12 +1240,11 @@ class DbImpl implements Db {
 
   async count(range?: Range): Promise<number> {
     this.ensureOpen();
-    const bounds = boundsOf(range);
     const layers = this.installed;
-    const at = this.point();
+    const step = scanStep(this.mem, layers.levels, this.point(), range);
     this.retain(layers);
     try {
-      return await countOf(scanStep(this.mem.range(bounds), layers.levels, at, bounds, range));
+      return await countOf(step);
     } catch (err) {
       this.ensureOpen();
       throw err;
@@ -1258,9 +1257,8 @@ class DbImpl implements Db {
     return rangeScan({
       start: () => {
         this.ensureOpen();
-        const bounds = boundsOf(range);
         const layers = this.installed;
-        const step = scanStep(this.mem.range(bounds), layers.levels, this.point(), bounds, range);
+        const step = scanStep(this.mem, layers.levels, this.point(), range);
         this.retain(layers);
         return { step, release: () => this.release(layers) };
       },

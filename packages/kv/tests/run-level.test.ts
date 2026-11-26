@@ -257,8 +257,8 @@ describe("the layers a view reads", () => {
     const { paths, readers } = layout();
     const levels = runLevels(paths, readers);
     const marks: Marks = [{ start: key(0), endExclusive: key(60), through: 1, at: 2 }];
-    const bounds: ScanBounds = { start: key(10), endExclusive: key(50) };
-    for (const range of [undefined, { valueContains: [enc.encode("l1")] }]) {
+    const bounds = { start: key(10), endExclusive: key(50) };
+    for (const range of [bounds, { ...bounds, valueContains: [enc.encode("l1")] }]) {
       const seen: (Marks | undefined)[] = [];
       const spied = levels.map((level) =>
         Object.assign(Object.create(level) as RunLevel, {
@@ -266,7 +266,7 @@ describe("the layers a view reads", () => {
           scanContains: (p: readonly Uint8Array[], b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.scanContains(p, b, r, m)),
         }),
       );
-      await entries(scanStep([], spied, marks, bounds, range));
+      await entries(scanStep({ get: () => undefined, range: () => [] }, spied, marks, range));
       expect(seen.length).toBeGreaterThan(0);
       expect(seen.every((m) => m === marks)).toBe(true);
     }

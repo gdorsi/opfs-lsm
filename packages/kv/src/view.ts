@@ -1,7 +1,7 @@
 import { checkKey } from "./check.js";
 import { ClosedError, ConstraintError } from "./errors.js";
 import type { Range } from "./db.js";
-import type { MemRow, MemRows } from "./store/memtable.js";
+import type { MemRows } from "./store/memtable.js";
 import { entryCursor, entryOf, keyOf, Miss, untilHit, valueOf, type Entry, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
@@ -51,25 +51,21 @@ export interface ViewSnapshot {
   rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode: Decode<T>): Promise<Joined<T>[]>;
 }
 
-export function boundsOf(range?: Range): ScanBounds | undefined {
+function boundsOf(range?: Range): ScanBounds | undefined {
   const start = range?.start ? checkKey(range.start) : undefined;
   const endExclusive = range?.endExclusive ? checkKey(range.endExclusive) : undefined;
   return start || endExclusive ? { start, endExclusive } : undefined;
 }
 
 /**
- * `range` over memtable `rows` already cut to `bounds` and the levels under
- * them, one entry at a time: every live put, or with `valueContains` only
- * the matching ones, past the first `offset` and no more than `limit`. It is a sync step and not an
+ * `range` over memtable `mem` and the levels under it, one entry at a time:
+ * every live put, or with `valueContains` only the matching ones, past the
+ * first `offset` and no more than `limit`. It is a sync step and not an
  * async iterator, so `range`, `count` and `rangeJoin` wait only on a miss.
  */
-export function scanStep(
-  rows: readonly MemRow[],
-  levels: readonly RunLevel[],
-  at: Marks,
-  bounds: ScanBounds | undefined,
-  range: Range | undefined,
-): ScanStep {
+export function scanStep(mem: MemRows, levels: readonly RunLevel[], at: Marks, range: Range | undefined): ScanStep {
+  const bounds = boundsOf(range);
+  const rows = mem.range(bounds);
   const patterns = range?.valueContains;
   const reverse = range?.reverse ?? false;
   const step =
@@ -253,29 +249,35 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     return first instanceof Miss ? untilHit(read, first) : first;
   }
 
-  /**
-   * What `each` makes of every entry of `range`, in scan order and once each, then what `after`
-   * makes of that. Holds the readers until `after` settles.
-   */
-  private async scan<R, O = R[]>(range: Range, each: (e: LayerEntry) => R, after?: (out: R[]) => Promise<O>): Promise<O> {
+  /** What `read` makes of the scan of `range`. Holds the readers until it settles. */
+  private async withScan<R>(range: Range | undefined, read: (step: ScanStep) => Promise<R>): Promise<R> {
     this.ensureOpen();
-    const bounds = boundsOf(range);
+    const step = scanStep(this.rows, this.levels, this.at, range);
     const release = this.hold();
     try {
-      const out: R[] = [];
-      const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
-      for (;;) {
-        let e = step();
-        if (e instanceof Miss) e = await untilHit(step, e);
-        if (!e) return await (after ? after(out) : (out as O));
-        out.push(each(e));
-      }
+      return await read(step);
     } catch (err) {
       this.handleOpen();
       throw err;
     } finally {
       release();
     }
+  }
+
+  /**
+   * What `each` makes of every entry of `range`, in scan order and once each, then what `after`
+   * makes of that. Holds the readers until `after` settles.
+   */
+  private scan<R, O = R[]>(range: Range, each: (e: LayerEntry) => R, after?: (out: R[]) => Promise<O>): Promise<O> {
+    return this.withScan(range, async (step) => {
+      const out: R[] = [];
+      for (;;) {
+        let e = step();
+        if (e instanceof Miss) e = await untilHit(step, e);
+        if (!e) return await (after ? after(out) : (out as O));
+        out.push(each(e));
+      }
+    });
   }
 
   rangeJoin<T>(range: Range, keyOf: (entry: Entry) => Uint8Array | undefined, decode?: Decode<T>): Promise<Joined<T>[]> {
@@ -304,26 +306,15 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     return this.scan(range, (e) => ({ key: keyOf(e), value: decode(valueOf(e)) }));
   }
 
-  async count(range?: Range): Promise<number> {
-    this.ensureOpen();
-    const bounds = boundsOf(range);
-    const release = this.hold();
-    try {
-      return await countOf(scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range));
-    } catch (err) {
-      this.handleOpen();
-      throw err;
-    } finally {
-      release();
-    }
+  count(range?: Range): Promise<number> {
+    return this.withScan(range, countOf);
   }
 
   range(range?: Range): AsyncIterable<Entry> {
     return rangeScan({
       start: () => {
         this.ensureOpen();
-        const bounds = boundsOf(range);
-        const step = scanStep(this.rows.range(bounds), this.levels, this.at, bounds, range);
+        const step = scanStep(this.rows, this.levels, this.at, range);
         return { step, release: this.hold() };
       },
       check: () => this.ensureOpen(),
