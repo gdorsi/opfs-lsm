@@ -49,7 +49,7 @@ export type Plan =
   | { readonly kind: "scan" };
 
 /** One read of a load: the rows `plan` reaches that pass `where`. */
-export type Read = { readonly where: BasicExpression<boolean> | undefined; readonly plan: Plan };
+type Read = { readonly where: BasicExpression<boolean> | undefined; readonly plan: Plan };
 
 /** Past this many ranges, an index pins fewer of its components. */
 export const MAX_RANGES = 64;

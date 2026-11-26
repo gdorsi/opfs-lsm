@@ -346,7 +346,7 @@ export type IndexPlan = {
   readonly text: Path | undefined;
 };
 
-export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Extract<IndexState, { kind: "failed" }>;
+type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Extract<IndexState, { kind: "failed" }>;
 
 export type BoundCollection = {
   readonly name: string;
