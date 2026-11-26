@@ -64,9 +64,9 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   /** One transaction. Returns how many of the distinct ids existed. */
   deleteMany(ids: readonly string[]): Promise<number>;
   /**
-   * Remove every document with one catalog write: the collection gets a new
-   * id, so every reader and writer stops seeing the old keys at once. The old
-   * keys are deleted in the background. The cost does not depend on the size.
+   * Remove every document and index entry with one kv range delete, in the
+   * batch that writes the catalog, so every reader and writer stops seeing
+   * them at once. The cost does not depend on the size.
    */
   clear(): Promise<void>;
 
@@ -130,7 +130,7 @@ type Prior = {
  * ready, a row's unique entries are its own.
  */
 const buildingUnique = (coll: BoundCollection) =>
-  coll.maintained.some((p) => p.target.kind === "unique" && p.state.kind === "building");
+  coll.maintained.some((p) => p.target.unique && p.state.kind === "building");
 
 function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc: StoredDoc | undefined): Prior {
   if (!bytes) return { bytes, before: NONE, owned: NONE };
@@ -339,7 +339,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     const idbs = docIds.map(idBytes);
     return this.store.write(this.name, async (coll): Promise<WritePlan<readonly Slot[]>> => {
       const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-      if (!coll.maintained.some((p) => p.target.kind === "unique")) {
+      if (!coll.maintained.some((p) => p.target.unique)) {
         return {
           keys: rowKeys,
           apply: (olds, tx) => {

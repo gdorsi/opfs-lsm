@@ -10,7 +10,7 @@ Every browser ships IndexedDB, and most libraries that keep data in the browser 
 
 The Origin Private File System (OPFS) gives each site private files in the browser. It has two ways to write them.
 
-The synchronous API, `createSyncAccessHandle()`, exists only in a dedicated WebWorker, a script that a page starts with `new Worker()`. [Only one tab can open a file with it at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, run only in Chrome and Edge. A database on this API makes one tab own the file and serve every other tab. Browsers freeze and throttle background tabs, so that owner can stop answering at any time. Handing a file to another tab also works differently in each browser. In [our probes](research/opfs-worker-probes.md), a stopped dedicated WebWorker released its lock after about 2 s in Chrome, and in under 40 ms in Safari and Firefox.
+The spec gives the synchronous API, `createSyncAccessHandle()`, to a dedicated WebWorker only, a script that a page starts with `new Worker()`. Safari also gives it to a SharedWorker. [Only one tab can open a file with it at a time](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle/createSyncAccessHandle). The modes that lift this limit, `read-only` and `readwrite-unsafe`, run only in Chrome and Edge. A database on this API makes one tab own the file and serve every other tab. Browsers freeze and throttle background tabs, so that owner can stop answering at any time. Handing a file to another tab also works differently in each browser. In [our probes](research/opfs-worker-probes.md), a stopped dedicated WebWorker released its lock after about 2 s in Chrome, and in under 40 ms in Safari and Firefox.
 
 The asynchronous API, `createWritable()`, also works in a SharedWorker, but it publishes whole files. A write shows up only when the file closes, and it replaces the whole file. A database that changes a file in place cannot run on it.
 
@@ -19,7 +19,7 @@ The asynchronous API, `createWritable()`, also works in a SharedWorker, but it p
 kv is a log-structured merge tree (LSM), the design of LevelDB and RocksDB. An LSM keeps its data in sorted files, called SST files, that it writes once and never changes. That fits an API that publishes whole files. kv splits the work this way:
 
 - **A write is one row in IndexedDB.** Each write appends a row to the write-ahead log (WAL), a list of writes that kv keeps in IndexedDB. The committed row is the ack. IndexedDB already puts the transactions of every tab in one order, so tabs need no other coordination to write.
-- **One SharedWorker writes the files.** A SharedWorker is a worker that every tab of a site shares, and each database has one. It moves the WAL into new SST files in OPFS, then merges SST files in the background. No other code writes to OPFS.
+- **One SharedWorker writes the files.** A SharedWorker is a worker that every tab of a site shares, and each database has one. It moves the WAL into new SST files in OPFS, then merges SST files in the background. No other code writes to OPFS. Where a browser has no `createWritable()`, the SharedWorker writes each file under another name through the synchronous API and renames it, which also publishes it whole.
 - **Each tab reads by itself.** A tab keeps in memory the writes that are not in an SST file yet, and it reads the SST files directly. A read sends no message to a worker.
 - **Tabs announce their writes.** After a write commits, its tab posts it on a BroadcastChannel, and the other tabs apply it.
 
@@ -32,13 +32,13 @@ The split makes reads and batched writes fast. It also costs something:
 - **Opening has more to load.** The first `openDb` loads the SharedWorker and a wasm engine. A cold open of 100,000 entries takes 9.1 ms. IndexedDB, with nothing to load, takes 24.5 ms for the same data.
 - **A single write costs what it costs in IndexedDB.** Every ack waits for an IndexedDB commit, so one awaited write at a time runs at the speed of IndexedDB. kv gains when writes come in groups.
 - **Other tabs see a write a moment later.** The BroadcastChannel message arrives after the ack. `db.sync()` reads the WAL to catch up.
-- **It needs SharedWorker and `createWritable()` to compact.** Safari 16 to 25, Samsung Internet and Android WebView run kv without writing SST files: every row stays in the WAL and in each tab's memory ([Browser support](browser-support.md#where-the-host-cannot-write)).
+- **It needs a SharedWorker that can write files to compact.** Samsung Internet and Android WebView have no SharedWorker, and run kv without writing SST files: every row stays in the WAL and in each tab's memory ([Browser support](browser-support.md#where-the-host-cannot-write)). Safari 16 to 25 has no `createWritable()`, and writes SST files only where its SharedWorker can write them [another way](browser-support.md#without-createwritable).
 
 For an app that reads its data on every screen, the faster reads outweigh these costs. For an app that stores little and opens often, IndexedDB is the better trade.
 
 ## Consistent, not durable
 
-When a write's promise resolves, the write is in IndexedDB, and it survives a crash of its tab. It may not be on the disk yet. kv commits in IndexedDB's default mode, which since Chrome 121 [completes once the data reaches the operating system](https://developer.chrome.com/blog/indexeddb-durability-mode-now-defaults-to-relaxed/). The operating system usually writes it to disk within a few seconds. The `strict` mode does not promise an immediate disk write either, and neither does `createWritable()`, which kv writes its OPFS files with. A power loss can therefore lose the last writes.
+When a write's promise resolves, the write is in IndexedDB, and it survives a crash of its tab. It may not be on the disk yet. kv commits in IndexedDB's default mode, which since Chrome 121 [completes once the data reaches the operating system](https://developer.chrome.com/blog/indexeddb-durability-mode-now-defaults-to-relaxed/). The operating system usually writes it to disk within a few seconds. The `strict` mode does not promise an immediate disk write either, and neither does `createWritable()`, which kv writes its OPFS files with where the browser has it. A power loss can therefore lose the last writes.
 
 What kv does promise is consistency. After a power loss, it opens with every write up to some point and none after it. No write goes missing from the middle, and a batch is there whole or not at all.
 

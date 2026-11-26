@@ -7,8 +7,9 @@
  * `/src/*.js` is served from `dist/`, so `checkDatabase` (tests/sim) and
  * the engine share one module graph and one wasm instance.
  */
+import { terminateHosts } from "./host-modes.ts";
 import { OpfsLsmError } from "../src/index.js";
-import { openBrowserFs, openHarnessDb, ingest, ensureEngine } from "../src/testing.js";
+import { openBrowserFs, openHarnessDb, ingest, ensureEngine, readStats } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
 import { decodeGeneration, listRuns } from "../src/store/generation.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
@@ -186,15 +187,16 @@ type CheckResult = {
   before?: Snapshot;
   range?: [string, string][];
   gets?: Record<string, string | null>;
-  restart?: { generationBefore: number; generationAfter: number; probe: string | null; ms: number };
+  /** `writes`: how the host that ingested wrote its files, as its stats say. */
+  restart?: { generationBefore: number; generationAfter: number; probe: string | null; ms: number; writes: string | null };
   after?: Snapshot;
   error?: ReturnType<typeof errorInfo>;
 };
 
 /**
  * Open the database (recovery runs here), check the files, read every key
- * through the handle, then prove the SharedWorker works: write, ingest,
- * read back, and check the files again.
+ * through the handle, then prove the host works: write, ingest, read back,
+ * and check the files again.
  */
 async function check(cfg: CheckConfig): Promise<CheckResult> {
   await ensureEngine();
@@ -227,6 +229,7 @@ async function check(cfg: CheckConfig): Promise<CheckResult> {
       generationAfter,
       probe: probe ? dec.decode(probe) : null,
       ms: Math.round(performance.now() - t0),
+      writes: (await readStats(db)).host.fileWrites ?? null,
     };
     out.after = await withTimeout(snapshot(cfg.name), 30_000, "checkDatabase after ingest");
   } catch (err) {
@@ -260,6 +263,26 @@ async function holdLocks(wanted: HeldLock[]): Promise<void> {
         }),
     ),
   );
+}
+
+let lockWorker: Worker | undefined;
+
+/** Start a dedicated Worker that takes each lock and never releases it. Resolves once all are granted. */
+async function holdLocksInWorker(wanted: HeldLock[]): Promise<void> {
+  const source = `onmessage = async (ev) => {
+    await Promise.all(ev.data.map((l) => new Promise((granted) => {
+      navigator.locks.request(l.name, { mode: l.mode }, () => { granted(); return new Promise(() => {}); });
+    })));
+    postMessage("held");
+  };`;
+  const worker = (lockWorker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" }))));
+  const held = new Promise<void>((resolve) => (worker.onmessage = () => resolve()));
+  worker.postMessage(wanted);
+  await held;
+}
+
+function terminateLockWorker(): void {
+  lockWorker?.terminate();
 }
 
 /** True when an exclusive request for `name` is granted at once. */
@@ -415,6 +438,9 @@ Object.assign(globalThis, {
     check,
     locks,
     holdLocks,
+    holdLocksInWorker,
+    terminateLockWorker,
+    terminateHosts,
     lockFree,
     writeProbe,
     writeProbeOpen,

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { EngineExports } from "../src/store/engine.js";
 import { checkedFile, openChecked, openShipped, takeCheckedReports, type CheckedEngine } from "../checked/engine-under-test.ts";
-import { blocksOf, fixSstCrc, footerOf } from "./targets.js";
+import { blocksOf, fixIndexCrc } from "./targets.js";
 import {
   blockFields,
   concat,
@@ -19,12 +19,16 @@ import {
   mergeCase,
   NEED,
   pack,
+  packIndex,
   patternFields,
   randomEntries,
   scanCase,
+  sourceRecord,
   u32s,
+  unpackIndex,
   xorshift,
   type MergeCase,
+  type Run,
   type Transcript,
 } from "./engine-drive.js";
 
@@ -88,40 +92,31 @@ function disagreements(what: string, want: Transcript, got: Transcript, mayTrap:
   return twin.largestAllocation() > LIMIT ? [`${what}: asked for a block of ${twin.largestAllocation()} bytes`] : [];
 }
 
-function withCrc(run: Uint8Array): Uint8Array {
-  fixSstCrc(run);
-  return run;
+function withCrc(index: Uint8Array): Uint8Array {
+  fixIndexCrc(index);
+  return index;
 }
 
-const FOOTER = 40;
+const FOOTER = 24;
 
-/** `run` with its block index replaced by `index`, of `rows` rows. */
-function withIndex(run: Uint8Array, index: Uint8Array, rows: number): Uint8Array {
-  const footer = run.slice(run.byteLength - FOOTER);
-  const view = new DataView(footer.buffer);
-  view.setUint32(4, rows, true);
-  view.setUint32(24, index.byteLength, true);
-  return withCrc(concat([run.subarray(0, view.getUint32(20, true)), index, footer]));
+/** `index` with a second block so long that its end wraps to 0, a third block over all the data, and empty blocks after. */
+function wrapsDataOffset(index: Uint8Array): Uint8Array {
+  const { lengths, seps } = unpackIndex(index);
+  const first = lengths[0]![1];
+  const dataLen = lengths.reduce((n, [, block]) => n + block, 0);
+  return packIndex(lengths.map(([sep], b) => [sep, b === 0 ? first : b === 1 ? 2 ** 32 - first : b === 2 ? dataLen : 0]), seps);
 }
 
-/** `run` with a second block so long that its end wraps to 0, a third block over all the data, and empty blocks after. */
-function wrapsDataOffset(run: Uint8Array): Uint8Array {
-  const out = run.slice();
-  const view = new DataView(out.buffer);
-  const { dataLen } = footerOf(run)!;
-  const lengths = indexFields(run).filter((_, i) => i % 3 === 2);
-  const rewrite = (row: number, offset: number, length: number) => {
-    view.setUint32(lengths[row]!.at - 4, offset, true);
-    view.setUint32(lengths[row]!.at, length, true);
-  };
-  rewrite(1, view.getUint32(lengths[1]!.at - 4, true), 2 ** 32 - view.getUint32(lengths[1]!.at - 4, true));
-  rewrite(2, 0, dataLen);
-  for (let row = 3; row < lengths.length; row++) rewrite(row, dataLen, 0);
-  return withCrc(out);
+/** `index` with separator lengths that add up to the bytes it has only when the sum wraps at 2^32. */
+function wrapsSeparators(index: Uint8Array): Uint8Array {
+  const { lengths, seps } = unpackIndex(index);
+  return packIndex(lengths.map(([, block], b) => [b === 0 ? 2 ** 32 - 1 : b === 1 ? seps.byteLength + 1 : 0, block]), seps);
 }
 
-const merge = (run: Uint8Array): MergeCase => ({ sources: [[run]], marks: u32s([0]), badMarks: false, drop: 0, target: 1 << 20, chunk: 4096, tail: 4096, yieldBytes: 1 << 20, host: 1 });
+const merge = (run: Run): MergeCase => ({ sources: [[run]], marks: u32s([0]), badMarks: false, drop: 0, target: 1 << 20, chunk: 4096, tail: 4096, yieldBytes: 1 << 20, host: 1 });
 const status = (code: number) => (t: Transcript) => t.includes(`${code}:`);
+/** A session whose open refuses a run's index with `code` asks for nothing. */
+const refusedAtOpen = (code: number) => (t: Transcript) => t[0] === `${code}:`;
 /** A session that refuses a run's tail with `code` asks for the tail and no block. */
 const refusedAtTail = (code: number) => (t: Transcript) => {
   const at = t.indexOf(`${code}:`);
@@ -185,7 +180,7 @@ describe("the engine on its checked twin", () => {
     const es = randomEntries(xorshift(1), 100, 1).sort((a, b) => Buffer.compare(a.key, b.key));
     const input = pack(es);
     const run = encoded(shipped, es);
-    const block = blocksOf(run)[1]!;
+    const block = blocksOf(run.bytes)[1]!;
     const pats = concat([u32s([3]), Uint8Array.of(1, 2, 3), u32s([0]), u32s([1]), Uint8Array.of(9)]);
     const found: string[] = [];
     const refused = refuser(found);
@@ -193,30 +188,31 @@ describe("the engine on its checked twin", () => {
       for (const f of entryFields(input)) refused(`entry length at ${f.at} = ${value}`, { input: inflated(input, f, value) }, driveEncode, status(-5));
       for (const f of blockFields(block)) refused(`block length at ${f.at} = ${value}`, { block: inflated(block, f, value), patterns: pats }, driveScan, status(-5));
       for (const f of patternFields(pats)) refused(`pattern length at ${f.at} = ${value}`, { block, patterns: inflated(pats, f, value) }, driveScan, status(-11));
-      for (const f of indexFields(run)) refused(`index length at ${f.at} = ${value}`, merge(withCrc(inflated(run, f, value))), driveMerge, refusedAtTail(-5));
+      for (const f of indexFields(run.index)) refused(`index length at ${f.at} = ${value}`, merge({ ...run, index: withCrc(inflated(run.index, f, value)) }), driveMerge, refusedAtOpen(-5));
     }
-    // A check written `o + len > end` takes each of these: a length of 0xffffffff steps back to offset 3, where `ff 00 00 00` names the 255 bytes left.
+    // A check written `o + len > end` takes this: a length of 0xffffffff steps back to offset 3, where `ff 00 00 00` names the 255 bytes left.
     const stepsBack = concat([u32s([0xffffffff]), new Uint8Array(3), new Uint8Array(255).fill(7)]);
-    const { dataLen } = footerOf(run)!;
     refused("a pattern list whose first length steps back", { block, patterns: stepsBack }, driveScan, status(-11));
-    refused("an index whose first key length steps back", merge(withIndex(run, concat([stepsBack, u32s([0, dataLen])]), 1)), driveMerge, refusedAtTail(-5));
-    refused("an index whose block lengths wrap the data offset", merge(wrapsDataOffset(run)), driveMerge, refusedAtTail(-5));
+    refused("an index whose block lengths wrap the data offset", merge({ ...run, index: wrapsDataOffset(run.index) }), driveMerge, refusedAtOpen(-5));
+    refused("an index whose separator lengths wrap to its bytes", merge({ ...run, index: wrapsSeparators(run.index) }), driveMerge, refusedAtOpen(-5));
     expect({ found, reports: takeCheckedReports() }).toEqual({ found: [], reports: [] });
   });
 
   it("refuses a malformed run or block with the status Rust gave", () => {
     const es = randomEntries(xorshift(1), 100, 1).sort((a, b) => Buffer.compare(a.key, b.key));
     const run = encoded(shipped, es);
-    const { blockCount, indexStart } = footerOf(run)!;
-    const index = run.subarray(indexStart, run.byteLength - FOOTER);
-    const lastRow = indexFields(run).at(-3)!.at;
-    const block = blocksOf(run)[1]!;
+    const { lengths, seps } = unpackIndex(run.index);
+    const block = blocksOf(run.bytes)[1]!;
     const prefix = blockFields(block)[0]!;
     const found: string[] = [];
     const refused = refuser(found);
-    refused("a run shorter than a footer", merge(new Uint8Array(FOOTER - 1)), driveMerge, (t) => t[0] === "-1:");
-    refused("an index with a byte after its rows", merge(withIndex(run, concat([index, Uint8Array.of(0)]), blockCount)), driveMerge, refusedAtTail(-7));
-    refused("an index whose blocks stop short of the data", merge(withIndex(run, index.subarray(0, lastRow - indexStart), blockCount - 1)), driveMerge, refusedAtTail(-5));
+    const flipped = run.index.slice();
+    flipped[flipped.byteLength - 5]! ^= 1;
+    refused("a run shorter than a footer", merge({ ...run, bytes: new Uint8Array(FOOTER - 1) }), driveMerge, refusedAtOpen(-1));
+    refused("an index of another run", merge({ ...run, index: encoded(shipped, es.slice(0, 50)).index }), driveMerge, refusedAtTail(-5));
+    refused("an index with a changed separator", merge({ ...run, index: flipped }), driveMerge, refusedAtOpen(-4));
+    refused("an index with a byte after its separators", merge({ ...run, index: packIndex(lengths, concat([seps, Uint8Array.of(0)])) }), driveMerge, refusedAtOpen(-5));
+    refused("an index whose blocks stop short of the data", merge({ ...run, index: packIndex(lengths.slice(0, -1), seps.subarray(0, seps.byteLength - lengths.at(-1)![0])) }), driveMerge, refusedAtTail(-5));
     refused("a varint of six bytes", { block: concat([block.subarray(0, prefix.at), Uint8Array.of(0x80, 0x80, 0x80, 0x80, 0x80, 0), block.subarray(prefix.at + prefix.width)]), patterns: new Uint8Array(0) }, driveScan, (t) => t[0] === "-9:");
     expect({ found, reports: takeCheckedReports() }).toEqual({ found: [], reports: [] });
   });
@@ -224,7 +220,7 @@ describe("the engine on its checked twin", () => {
   it("refuses what it cannot allocate with the shipped build's status", () => {
     const huge = 0xffffffff;
     const run = encoded(shipped, randomEntries(xorshift(SEED), 30, 1));
-    const list = concat([u32s([2, 1, run.byteLength, 1, run.byteLength]), u32s([0])]);
+    const list = concat([u32s([2]), sourceRecord([run]), sourceRecord([run]), u32s([0])]);
     const open = (ex: EngineExports) => {
       const ptr = ex.input_ptr(list.byteLength) >>> 0;
       new Uint8Array(ex.memory.buffer, ptr, list.byteLength).set(list);
@@ -257,7 +253,7 @@ describe("the engine on its checked twin", () => {
     for (const chunk of [256, 10_000, 65_536]) {
       for (let n = 1; n <= 400; n++) {
         const ex = new WebAssembly.Instance(capped, {}).exports as unknown as EngineExports;
-        const list = concat([u32s([n]), ...Array.from({ length: n }, () => u32s([1, run.byteLength])), u32s([0])]);
+        const list = concat([u32s([n]), ...Array.from({ length: n }, () => sourceRecord([run])), u32s([0])]);
         const ptr = ex.input_ptr(list.byteLength) >>> 0;
         new Uint8Array(ex.memory.buffer, ptr, list.byteLength).set(list);
         statuses.add(ex.merge_open(ptr, list.byteLength, 0, 1 << 20, chunk, 4096, 1 << 20));

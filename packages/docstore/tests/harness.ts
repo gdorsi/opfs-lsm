@@ -95,6 +95,7 @@ export function gate(kv: Db, method: "range" | "catalog-or-batch" | "update", fr
   };
 }
 
+/** `deletes` counts point deletes and range deletes. */
 export type UpdateRecord = { readonly reads: number; readonly puts: number; readonly deletes: number };
 
 /** What each `update` read and wrote, in the order they resolved. kv may run a body again, and only its last run counts. */
@@ -113,7 +114,10 @@ export function recording(kv: Db): { readonly db: Db; readonly updates: UpdateRe
           record.deletes++;
           tx.delete(k);
         },
-        deleteRange: (bounds, options) => tx.deleteRange(bounds, options),
+        deleteRange: (bounds, options) => {
+          record.deletes++;
+          tx.deleteRange(bounds, options);
+        },
       };
       const result = body(values, counted);
       last = record;

@@ -33,7 +33,7 @@ import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from ".
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Entry, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
-import type { OpenFile, ReadFs, RemovableFs } from "./opfs/async-fs.js";
+import type { OpenFile, ReadFs, RemovableFolder } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestNumbers, runsOfCopy, type GenerationMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
@@ -347,7 +347,7 @@ export async function destroyDb(name: string): Promise<void> {
 }
 
 /** `destroyDb` on a given folder: with `fs`, that fs is the folder to remove. */
-export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFs | undefined }): Promise<void> {
+export async function destroyDbWith(options: { readonly name: string; readonly fs?: RemovableFolder | undefined }): Promise<void> {
   const name = checkDbName(options.name);
   const fs = options.fs;
   const opfs = typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function";

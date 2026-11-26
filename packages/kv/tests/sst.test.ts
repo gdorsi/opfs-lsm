@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { untilHit } from "../src/store/cursor.js";
-import { decodeSst, encodeSstRef, sstGet, sstRunEnd, SST_BLOCK_TARGET } from "./oracle/sst-ref.js";
+import { decodeSst, encodeSstRef, sstBlockIndex, sstGet, sstRunEnd, SST_BLOCK_TARGET } from "./oracle/sst-ref.js";
 import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
@@ -28,12 +28,14 @@ describe("sst", () => {
     expect(await runGet(reader, utf("k00060000"))).toBeUndefined();
   });
 
-  it("writes the data first and the footer last", () => {
+  it("writes the data first and the footer last, with the Bloom filter and no index between them", () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
     expect(view.getUint32(0, true)).toBe(1); // first block's record count
-    expect(view.getUint32(body.byteLength - 8, true)).toBe(2); // version
+    expect(view.getUint32(body.byteLength - 8, true)).toBe(3); // version
     expect(view.getUint32(body.byteLength - 4, true)).toBe(0x4f4c5354); // magic
+    // One block, the 8 bytes of a one-key Bloom filter, and the footer.
+    expect(body.byteLength).toBe(sstBlockIndex(body).blockStart[1]! + 8 + SST_FOOTER_BYTES);
   });
 
   it("round-trips each entry's seq", async () => {
@@ -55,12 +57,12 @@ describe("sst", () => {
     expect((await drain(reader.cursor())).map((e) => e.seq)).toEqual(seqs);
   });
 
-  it("rejects a footer whose version is not 2, and a tab reads the run without its Bloom filter", async () => {
+  it("rejects a footer whose version is not 3, and a tab reads the run without its Bloom filter", async () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 7 }]);
     const end = sstRunEnd(body);
     const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    view.setUint32(body.byteLength - 8, 1, true);
-    expect(() => decodeSst(body)).toThrow(/unsupported sst version 1/);
+    view.setUint32(body.byteLength - 8, 2, true);
+    expect(() => decodeSst(body)).toThrow(/unsupported sst version 2/);
     const cache = new PageCache();
     const reader = new SstReader(bytesFile(body), cache, end);
     expect(await runGet(reader, utf("a"))).toEqual({ kind: "put", key: utf("a"), value: utf("1"), seq: 7 });
@@ -108,8 +110,7 @@ describe("sst", () => {
       seq: i + 1,
     }));
     const body = encodeSstRef(entries, 256);
-    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    expect(view.getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true)).toBeGreaterThan(1); // blockCount
+    expect(sstBlockIndex(body).sepEnd.length).toBeGreaterThan(1);
     expect(decodeSst(body)).toHaveLength(200);
   });
 

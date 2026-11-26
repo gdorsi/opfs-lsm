@@ -67,3 +67,24 @@ another handle held the lock. Only the holder answers: it calls its handlers in 
 away, posts nothing, and the next holder pulls the offer. A handle with no handler asks for the
 lock shared with `ifAvailable` on each offer. Granted, no handle has a handler: it warns once and
 posts `full-done`, so the file comes back when space frees elsewhere.
+
+## Several hosts
+
+Several hosts serve one database when two SharedWorkers do, as two builds whose worker URLs differ.
+They share the reserve file and nothing else: each host holds its own state of the table above, and
+knows the `reserveBytes` of its own tabs only. Every flush, fill and removal still runs alone, under
+the Web Lock `opfs-lsm-ingest/<name>`, so no acked write is lost and the file is written again once
+space is free. What the sections above promise for one host does not hold across hosts:
+
+- **Offers.** Each host whose write the browser refuses posts an offer. Hosts flush at the same
+  trigger, so a full origin refuses each of them, and the handlers can be called once per host
+  before a flush holds what they wrote.
+- **Fill.** A host that reaches the answered state writes the file at its settle, also when another
+  host wrote it already. The rewrite needs `reserveBytes` free next to the file, and a refusal
+  posts one more offer.
+- **Size.** A host whose tabs pass `reserveBytes` 0 removes the file another host keeps. That host
+  writes it again only after a tab opens the database or after a refused write.
+
+A handle with no SharedWorker starts a host of its own, so such hosts would be several by default.
+The host of a dedicated Worker therefore writes no file and keeps no reserve
+([Browser support](browser-support.md#where-the-host-cannot-write)).

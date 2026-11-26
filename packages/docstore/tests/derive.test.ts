@@ -12,7 +12,7 @@ const encodeDoc = (doc: JsonDoc) => docEncoder("c", undefined)([doc])[0]!;
 
 function coll(indexes: Record<string, object>): BoundCollection {
   const declared = normalizeSchema({ version: 1, collections: { c: { indexes } } } as never);
-  const catalog = reconcile(undefined, declared)!;
+  const { catalog } = reconcile(undefined, declared)!;
   return bind(encodeCatalog(catalog), catalog, declared).collections.get("c")!;
 }
 
@@ -68,7 +68,7 @@ describe("entries come from the stored JSON", () => {
   });
 });
 
-describe("covering index", () => {
+describe("an index with include", () => {
   const fieldsOf = (c: BoundCollection, doc: JsonDoc) => entries(c, doc).map((e) => JSON.parse(new TextDecoder().decode(e.value)) as unknown);
 
   it("holds the JSON of the included fields the document has, in the order `include` lists them", () => {

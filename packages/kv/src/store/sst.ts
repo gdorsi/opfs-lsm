@@ -1,4 +1,3 @@
-import { sharedPrefix } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import type { Seq } from "../seq.js";
 import { crc32 } from "./crc32.js";
@@ -6,8 +5,8 @@ import { BlockEntry, NO_PREFIX, seqIn } from "./cursor.js";
 
 /** Magic ASCII "OLST" (opfs-lsm SST). Version and magic sit in the last 8 bytes. */
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 2;
-export const SST_FOOTER_BYTES = 40;
+const VERSION = 3;
+export const SST_FOOTER_BYTES = 24;
 /**
  * The most Bloom hashes a footer may name. The encoder writes 7; a get
  * loops once per hash, so a corrupt count must not set its cost.
@@ -71,57 +70,18 @@ export type RunEnd = {
   readonly bytes: number;
   /** Undefined for an empty run, which has no keys. */
   readonly range?: KeyRange;
-  /** The run's block index as `encodeIndex` writes it. A reader checks it with `decodeIndex` when it first needs it. */
+  /**
+   * The run's block index, the only one there is: the run file holds none.
+   * It is u32 blocks, each block's separator length and byte length as
+   * varints, the separators, then a CRC-32 of all of it: `BlockIndex` less
+   * its prefix sums. A reader checks it with `decodeIndex` when it first
+   * needs it.
+   */
   readonly index: Uint8Array;
 };
 
 /**
- * The encoded index of a run, from its index rows as its encoder reports them
- * (per block: u32 len | first key, u32 len | last key, u32 offset, u32
- * length). Blocks sit back to back from offset 0, so a row's offset is not
- * read. The result is u32 blocks, each block's separator length and byte
- * length as varints, the separators, then a CRC-32 of all of it: `BlockIndex`
- * less its prefix sums.
- */
-export function encodeIndex(rows: Uint8Array): Uint8Array {
-  const view = new DataView(rows.buffer, rows.byteOffset, rows.byteLength);
-  const lens: number[] = [];
-  const seps: number[] = [];
-  // A length is a u32, so the shift keeps every bit of it.
-  const varint = (v: number): void => {
-    for (; v > 0x7f; v >>>= 7) lens.push((v & 0x7f) | 0x80);
-    lens.push(v);
-  };
-  let blocks = 0;
-  let o = 0;
-  let prevLast: Uint8Array | undefined;
-  const key = () => {
-    const len = view.getUint32(o, true);
-    o += 4 + len;
-    return rows.subarray(o - len, o);
-  };
-  for (; o < rows.byteLength; blocks++) {
-    const first = key();
-    const sep = prevLast ? first.subarray(0, sharedPrefix(prevLast, first) + 1) : first;
-    // A key is 8 KiB at most, so the spread stays far inside any engine's argument limit.
-    seps.push(...sep);
-    prevLast = key();
-    varint(sep.byteLength);
-    varint(view.getUint32(o + 4, true));
-    o += 8;
-  }
-  const end = 4 + lens.length + seps.length;
-  const out = new Uint8Array(end + 4);
-  const head = new DataView(out.buffer);
-  head.setUint32(0, blocks, true);
-  out.set(lens, 4);
-  out.set(seps, 4 + lens.length);
-  head.setUint32(end, crc32(out.subarray(0, end)), true);
-  return out;
-}
-
-/**
- * The `BlockIndex` of an index `encodeIndex` wrote for a run of `bytes`
+ * The `BlockIndex` of the index an encoder reported for a run of `bytes`
  * bytes. A manifest holds it as bytes it has not read, so every check is
  * here: the CRC, the block count the bytes can hold, varints, blocks that end
  * inside the run, and nothing after the separators. Throws
@@ -305,17 +265,16 @@ export class RecordWalker {
 }
 
 export type SstFooter = {
-  /** Data blocks are `[0, dataLen)`; the Bloom bits start here. */
+  /** Data blocks are `[0, dataLen)`; the Bloom bits run from here to the footer. */
   dataLen: number;
   bloomHashCount: number;
-  /** Where the Bloom bits end and the run's own index starts. */
-  indexStart: number;
 };
 
 /**
- * Where a run keeps its Bloom filter. The footer is 7 u32 fields, then CRC,
- * version, and magic. Rejects any other version. `tail` is the last
- * `tail.byteLength` bytes of a `fileSize`-byte run.
+ * Where a run keeps its Bloom filter. The footer is u32 entry count, data
+ * length and Bloom hash count, then CRC, version, and magic. Rejects any
+ * other version. `tail` is the last `tail.byteLength` bytes of a
+ * `fileSize`-byte run.
  */
 export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   if (tail.byteLength < SST_FOOTER_BYTES || fileSize < tail.byteLength) throw new CorruptDatabaseError("sst too short");
@@ -325,19 +284,12 @@ export function readFooter(tail: Uint8Array, fileSize: number): SstFooter {
   const version = view.getUint32(tail.byteLength - 8, true);
   if (version !== VERSION) throw new CorruptDatabaseError(`unsupported sst version ${version}`);
   const at = tail.byteLength - SST_FOOTER_BYTES;
-  // Fields 0 and 1, the entry and block counts, are for a reader of the run's own index.
-  const [dataLen, bloomLen, bloomHashCount, indexStart, indexLen] = [2, 3, 4, 5, 6].map((i) => view.getUint32(at + 4 * i, true)) as [
-    number,
-    number,
-    number,
-    number,
-    number,
-  ];
-  if (indexStart !== dataLen + bloomLen || indexStart + indexLen !== fileSize - SST_FOOTER_BYTES) {
-    throw new CorruptDatabaseError("sst footer sections OOB");
-  }
+  // The first field, the entry count, is for a merge, which reads every entry.
+  const dataLen = view.getUint32(at + 4, true);
+  const bloomHashCount = view.getUint32(at + 8, true);
+  if (dataLen > fileSize - SST_FOOTER_BYTES) throw new CorruptDatabaseError("sst footer sections OOB");
   if (bloomHashCount > MAX_BLOOM_HASHES) throw new CorruptDatabaseError(`sst bloom hash count ${bloomHashCount}`);
-  return { dataLen, bloomHashCount, indexStart };
+  return { dataLen, bloomHashCount };
 }
 
 /** One block's bytes: a u32 record count at `start`, then records up to `end`. */

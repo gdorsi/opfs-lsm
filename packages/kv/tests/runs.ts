@@ -3,12 +3,12 @@ import { MemoryFs } from "../src/opfs/memory-fs.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import type { Entry } from "../src/index.js";
 import { entryOf, Miss, untilHit, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
-import { openMerge, type MergeCore, type MergeSpec } from "../src/store/engine.js";
+import { openMerge, type MergeCore, type MergeInput, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
 import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { encodeIndex, type EncodedRun, type RecordWalker, type SstEntry } from "../src/store/sst.js";
-import { sstRunEnd } from "./oracle/sst-ref.js";
+import type { EncodedRun, RecordWalker, SstEntry } from "../src/store/sst.js";
+import { indexBlob, sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 
 export { bytesFile };
@@ -19,7 +19,12 @@ export function cacheUsage(cache: PageCache) {
 }
 
 /** The index of a manifest entry whose file no test reads: no blocks. */
-export const NO_BLOCKS = encodeIndex(new Uint8Array(0));
+export const NO_BLOCKS = indexBlob({ sepBytes: new Uint8Array(0), sepEnd: new Uint32Array(0), blockStart: new Uint32Array(1) });
+
+/** A run held in memory as a merge takes it: its size, and the index its manifest entry would record. */
+export function mergeInput(run: Uint8Array): MergeInput {
+  return { size: run.byteLength, index: sstRunEnd(run).index };
+}
 
 /** Resolves once `cache` has no load in flight. A get starts its run's Bloom filter load and does not wait for it. */
 export async function loadsDone(cache: PageCache): Promise<void> {
@@ -86,6 +91,7 @@ export async function publish(fs: AsyncFs, path: string, body: Uint8Array): Prom
  * Merge runs held in memory as a compaction step merges them: through the
  * driver (`pumpMerge`) and, unless `open` says otherwise, the session
  * `openMerge` picks. `sources` are newest first, each runs read back to back.
+ * A run goes in with the index its bytes give, unless `input` says otherwise.
  */
 export async function mergeRuns(
   sources: readonly (readonly Uint8Array[])[],
@@ -93,6 +99,7 @@ export async function mergeRuns(
     readonly dropTombstones?: boolean;
     readonly targetBytes?: number;
     readonly open?: (spec: MergeSpec) => MergeCore | Promise<MergeCore>;
+    readonly input?: (run: Uint8Array) => MergeInput;
   } = {},
 ): Promise<{ runs: EncodedRun[] }> {
   const fs = new MemoryFs();
@@ -100,7 +107,7 @@ export async function mergeRuns(
   for (const [i, runs] of sources.entries()) for (const [j, run] of runs.entries()) await publish(fs, paths[i]![j]!, run);
   const files = await Promise.all(paths.map((runs) => Promise.all(runs.map(async (p) => (await fs.open(p))!))));
   const core = await (options.open ?? openMerge)({
-    sources: sources.map((runs) => runs.map((run) => run.byteLength)),
+    sources: sources.map((runs) => runs.map(options.input ?? mergeInput)),
     dropTombstones: options.dropTombstones ?? false,
     marks: NO_MARKS,
     targetBytes: options.targetBytes ?? Number.MAX_SAFE_INTEGER,

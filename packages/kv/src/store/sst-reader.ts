@@ -13,6 +13,7 @@ import {
   findInBlock,
   readFooter,
   reverseBlockEntries,
+  SST_FOOTER_BYTES,
   type BlockBytes,
   type BlockIndex,
   type KeyRange,
@@ -214,15 +215,16 @@ export class SstReader {
    * again.
    */
   private bloom(): BloomFilter | undefined {
-    // One read of the rest of the file past the blocks: the filter, the index and the footer.
+    // One read of the rest of the file past the blocks: the filter and the footer.
     // Skips the CRC, which would cost a pass over the whole file: compaction checks it.
     const bloom = this.cache.lookup(metaKey(this.runId), "meta", async (): Promise<Sized<BloomFilter>> => {
       const { size } = this.file;
       const from = this.index.blockStart[this.index.sepEnd.length]!;
       const tail = await this.read(from, size - from);
-      const { dataLen, indexStart, bloomHashCount: hashCount } = readFooter(tail, size);
+      const { dataLen, bloomHashCount: hashCount } = readFooter(tail, size);
       if (dataLen !== from) throw new CorruptDatabaseError("sst bloom OOB");
-      const bits = tail.slice(0, indexStart - from);
+      // A copy: the read may share its buffer with blocks, which the filter would keep alive past their eviction.
+      const bits = tail.slice(0, tail.byteLength - SST_FOOTER_BYTES);
       return { value: { bits, hashCount }, bytes: bits.byteLength };
     });
     if (!(bloom instanceof Miss)) return bloom;

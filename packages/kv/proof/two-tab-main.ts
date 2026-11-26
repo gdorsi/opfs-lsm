@@ -12,7 +12,11 @@
  *   ?scenario=quota    databases with a reserve under an origin limit the script sets, with a handler in each tab and with none
  *   ?scenario=destroy  destroyDb with other tabs open: one live, one crashed, one frozen, one navigated away
  *   ?role=holder&tag=t&db=name  a tab that holds `name` open for the destroy scenario, read through DevTools
+ *   ?hosts=dedicated   each tab hosts its handles in dedicated Workers that write (host-modes.ts)
+ *   &staged=1          those hosts stage their files, as where OPFS has no createWritable
  */
+import { DEDICATED, STAGED, hostLabel } from "./host-modes.ts";
+
 const params = new URLSearchParams(location.search);
 const ROLE = params.get("role");
 const LOCAL = params.has("local");
@@ -565,7 +569,7 @@ async function report(payload: { error?: string; log: string }): Promise<void> {
 }
 
 function modeLabel(): string {
-  const base = LOCAL ? "local EngineHost" : "SharedWorker";
+  const base = LOCAL ? "local EngineHost" : hostLabel();
   return NOBC ? `${base} nobc` : base;
 }
 
@@ -765,7 +769,8 @@ async function twoDatabases(
 /**
  * Every other step opens through the harness, which starts the worker that
  * keeps a meter. This one opens through `openDb`, so the run also loads the
- * SharedWorker an app gets.
+ * worker an app gets: a SharedWorker that flushes, or, with no SharedWorker
+ * in the page, a dedicated Worker whose host writes no file.
  */
 async function shippedWorker(): Promise<void> {
   const mod = await import("../dist/index.js");
@@ -776,8 +781,13 @@ async function shippedWorker(): Promise<void> {
   try {
     await db.put(enc.encode("k"), enc.encode("v"));
     const { generation } = await testing.ingest(db);
-    must(generation > 0, `the shipped worker flushed nothing: generation ${generation}`);
-    must((await opfsFiles(name)).length > 0, `opfs-lsm/${name}/ holds no files`);
+    const files = await opfsFiles(name);
+    if (DEDICATED) {
+      must(generation === 0 && files.length === 0, `the shipped dedicated Worker wrote: generation ${generation}, files ${files}`);
+    } else {
+      must(generation > 0, `the shipped worker flushed nothing: generation ${generation}`);
+      must(files.length > 0, `opfs-lsm/${name}/ holds no files`);
+    }
     must(text(await db.get(enc.encode("k"))) === "v", "the shipped worker lost a write");
     const stats = await testing.readStats(db).then(
       () => "answered",
@@ -789,6 +799,20 @@ async function shippedWorker(): Promise<void> {
   }
   await mod.destroyDb(name);
   log("shipped-worker ok");
+}
+
+/**
+ * How this tab's host wrote its files, from the host itself: the mode the
+ * page asked for must be the one that ran. The other tab's host flushed too,
+ * or its ingests above would have raised no generation.
+ */
+async function hostWrites(self: Handle): Promise<void> {
+  const testing = await import("../dist/testing.js");
+  const { host } = await testing.readStats(self as unknown as Db);
+  const want = STAGED ? "staged" : "writable";
+  must(host.fileWrites === want, `this tab's host writes its files as ${host.fileWrites}, expected ${want}`);
+  must(host.flushes > 0, "this tab's host flushed nothing");
+  log(`host writes=${host.fileWrites} flushes=${host.flushes} compactions=${host.compactionSteps}`);
 }
 
 async function scenario(self: Handle, other: OtherTab, open: (name: string) => Promise<Handle>): Promise<void> {
@@ -859,7 +883,10 @@ async function scenario(self: Handle, other: OtherTab, open: (name: string) => P
   log("other tab saw gone/1 and gone/2 absent after the range delete");
 
   await twoDatabases(open, self, other);
-  if (!LOCAL) await shippedWorker();
+  if (!LOCAL) {
+    await shippedWorker();
+    await hostWrites(self);
+  }
 
   if (NOBC) {
     must(bcPosts > 0, "BroadcastChannel replacement was not used");

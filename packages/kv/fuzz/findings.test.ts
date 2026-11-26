@@ -5,10 +5,10 @@ import { encodeRunIn, scanBlockContainsIn } from "../src/store/engine.js";
 import { decodeGeneration, encodeGeneration } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
-import { readFooter, SST_FOOTER_BYTES } from "../src/store/sst.js";
+import { readFooter, SST_FOOTER_BYTES, type RunEnd } from "../src/store/sst.js";
 import { decodeSst, encodeSstRef, sstRunEnd } from "../tests/oracle/sst-ref.js";
 import { loadsDone, mergeRuns, NO_BLOCKS, runGet } from "../tests/runs.js";
-import { blocksOf, bounded, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
+import { blocksOf, bounded, fixIndexCrc, fixManifestCrc, fixSstCrc, RuleBroken } from "./targets.js";
 import { loadWasm, type FlatEngine } from "./wasm.js";
 import { NO_MARKS } from "../src/store/marks.js";
 
@@ -40,9 +40,9 @@ const recorded = sstRunEnd(encodeSstRef(entries));
  * again once the load of the Bloom filter has ended: the first get does not
  * wait for the footer, and the second asks the filter when it loaded.
  */
-async function tabGet(buf: Uint8Array, key: Uint8Array) {
+async function tabGet(buf: Uint8Array, key: Uint8Array, run: RunEnd = recorded) {
   const cache = new PageCache();
-  const reader = new SstReader(bytesFile(buf), cache, recorded);
+  const reader = new SstReader(bytesFile(buf), cache, run);
   await runGet(reader, key);
   await loadsDone(cache);
   return runGet(reader, key);
@@ -75,8 +75,8 @@ describe("decoder bugs the fuzzers found", () => {
   it("KT1: a corrupt bloom hash count does not make a get loop", async () => {
     const buf = encodeSstRef(entries);
     const f = readFooter(buf, buf.byteLength);
-    buf.fill(0xff, f.dataLen, f.indexStart);
-    footer(buf).setUint32(16, 5_000_000, true);
+    buf.fill(0xff, f.dataLen, buf.byteLength - SST_FOOTER_BYTES);
+    footer(buf).setUint32(8, 5_000_000, true);
     const t0 = performance.now();
     await tabGet(buf, utf("k0005")).catch(() => undefined);
     // A healthy get takes microseconds; this count cost ~0.3 s, 2^32 ~2 min.
@@ -84,25 +84,25 @@ describe("decoder bugs the fuzzers found", () => {
   });
 
   // KT2, tab path. A tab sized `sepEnd` and `blockStart` (Uint32Array) from
-  // the footer's block count before it read the index: a count of 2^24 cost
-  // 128 MiB, and one near 2^32 asked for 32 GiB. One flipped bit in the
-  // count's high byte was enough. A tab now reads no block count from a
-  // run: it takes the index from the manifest, whose decoder refuses a
-  // count its bytes cannot hold.
+  // a block count before it read the index: a count of 2^24 cost 128 MiB,
+  // and one near 2^32 asked for 32 GiB. One flipped bit in the count's high
+  // byte was enough. The count is in the run's index, which the manifest
+  // holds, and the index's decoder refuses a count its bytes cannot hold.
   it("KT2: a corrupt block count does not size an allocation", async () => {
     const buf = encodeSstRef(entries);
-    footer(buf).setUint32(4, 0x01000000, true);
-    await expect(corruptWithinBounds("SstReader.get", () => tabGet(buf, utf("k001")))).resolves.toBeUndefined();
+    const index = recorded.index.slice();
+    new DataView(index.buffer).setUint32(0, 0x01000000, true);
+    fixIndexCrc(index);
+    await expect(corruptWithinBounds("SstReader.get", () => tabGet(buf, utf("k001"), { ...recorded, index }))).resolves.toBeUndefined();
   });
 
-  // KT3, SharedWorker without wasm, past the CRC only: bytes written on
-  // purpose. `readBlockIndex` (decodeSst, sstKeyRange) read the index with
-  // no bounds checks, so a CRC-valid run with a bad index threw a
-  // RangeError from DataView instead of CorruptDatabaseError.
-  it("KT3: decodeSst throws CorruptDatabaseError on a CRC-valid run with a bad index", async () => {
+  // KT3, the whole-file decode, past the CRC only: bytes written on
+  // purpose. `decodeSst` and `sstKeyRange` read a run's structure with no
+  // bounds checks, so a CRC-valid run with a bad length threw a RangeError
+  // from DataView instead of CorruptDatabaseError.
+  it("KT3: decodeSst throws CorruptDatabaseError on a CRC-valid run with a bad block", async () => {
     const buf = encodeSstRef(entries);
-    const f = readFooter(buf, buf.byteLength);
-    new DataView(buf.buffer).setUint32(f.indexStart, 0x7fffffff, true);
+    new DataView(buf.buffer).setUint32(0, 0x7fffffff, true);
     fixSstCrc(buf);
     await expect(corruptWithinBounds("decodeSst", () => decodeSst(buf))).resolves.toBeUndefined();
   });
@@ -140,7 +140,8 @@ describe("decoder bugs the fuzzers found", () => {
   it("KW2: a compaction over a run with a bad CRC throws CorruptDatabaseError", async () => {
     const buf = encodeSstRef(entries);
     buf[5]! ^= 1;
-    await expect(corruptWithinBounds("merge session", () => mergeRuns([[buf]]))).resolves.toBeUndefined();
+    const input = () => ({ size: buf.byteLength, index: recorded.index });
+    await expect(corruptWithinBounds("merge session", () => mergeRuns([[buf]], { input }))).resolves.toBeUndefined();
   });
 });
 

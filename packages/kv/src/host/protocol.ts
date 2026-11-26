@@ -1,6 +1,7 @@
 import type { WriterId } from "../check.js";
 import type { ErrorCode } from "../errors.js";
 import { reclaimLock, webLocks, withLock } from "../locks.js";
+import type { FileWrites } from "../opfs/async-fs.js";
 import type { IoCounters } from "../opfs/counting-fs.js";
 import type { Generation, Seq } from "../seq.js";
 
@@ -17,6 +18,8 @@ export type HostStats = {
   /** Σ IngestResult.foldedBytes. */
   foldedBytes: number;
   generation: Generation;
+  /** How the worker writes its OPFS files. Unset for a host on another fs, and for one that writes none. */
+  fileWrites?: NonNullable<FileWrites>;
   /** From the latest manifest, levels with at least one run. */
   layout: { level: number; runs: number; bytes: number }[];
   /**

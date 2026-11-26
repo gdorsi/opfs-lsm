@@ -7,4 +7,4 @@ import { EngineHost, serveWorker } from "./engine-host.js";
  * The `@opfs-lsm/kv/shared-worker` export remains for bundlers that need an
  * explicit worker entry.
  */
-serveWorker((writes) => new EngineHost((name) => findBrowserFs(name), { writes }));
+serveWorker((writes) => new EngineHost((name) => findBrowserFs(name, writes), { writes: !!writes }));

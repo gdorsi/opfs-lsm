@@ -29,18 +29,18 @@ export const schema = defineSchema({
 });
 
 export const MODEL: Record<string, ModelIndex> = {
-  one: { kind: "sorted", on: ["a"] },
-  two: { kind: "sorted", on: ["a", "b"] },
-  tags: { kind: "multi", on: ["tags", "b"] },
-  uniq: { kind: "unique", on: ["u"] },
-  search: { kind: "text", on: ["a"], text: "t" },
-  covered: { kind: "sorted", on: ["b", "a"], include: ["t", "tags", "u"] },
+  one: { kind: "sorted", paths: ["a"] },
+  two: { kind: "sorted", paths: ["a", "b"] },
+  tags: { kind: "multi", paths: ["tags", "b"] },
+  uniq: { kind: "unique", paths: ["u"] },
+  search: { kind: "text", paths: ["a"], text: "t" },
+  covered: { kind: "sorted", paths: ["b", "a"], include: ["t", "tags", "u"] },
 };
 export const ARITY: Record<string, number> = { one: 1, two: 2, tags: 2, uniq: 1, search: 1, covered: 2 };
 
 /** A unique multi index, which gives a document one unique entry per distinct element of `ut`. */
 export const withUniqueTags = schema.collections.docs.unique("utags", "ut[]");
-export const UNIQUE_TAGS = { name: "utags", model: { kind: "multi", on: ["ut"] }, arity: 1 } as const;
+export const UNIQUE_TAGS = { name: "utags", model: { kind: "multi", paths: ["ut"] }, arity: 1 } as const;
 /** The unique indexes: `eq` takes no list on them. */
 const UNIQUE: ReadonlySet<string> = new Set(["uniq", UNIQUE_TAGS.name]);
 

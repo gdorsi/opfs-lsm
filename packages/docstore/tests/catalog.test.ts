@@ -3,17 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   bind,
   clearCollection,
-  describeIndexes,
   encodeCatalog,
   normalizeSchema,
   parseCatalog,
   reconcile,
-  removeDropped,
   settleIndex,
   type StoredCatalog,
 } from "../src/catalog.js";
 import { DocStoreError } from "../src/errors.js";
-import type { CollectionId, IndexId } from "../src/keys.js";
+import { collectionPrefix, indexPrefix, type CollectionId, type IndexId } from "../src/keys.js";
 
 type Collections = Record<string, Record<string, object>>;
 
@@ -25,8 +23,12 @@ const declare = (version: number, collections: Collections, drop?: string[]) =>
   normalize(drop ? { version, collections, drop } : { version, collections });
 
 function open(stored: StoredCatalog | undefined, version: number, collections: Collections, drop?: string[]): StoredCatalog {
-  return reconcile(stored, declare(version, collections, drop)) ?? stored!;
+  return reconcile(stored, declare(version, collections, drop))?.catalog ?? stored!;
 }
+
+/** The prefixes the open of `open` deletes in its batch. */
+const dropOf = (stored: StoredCatalog | undefined, version: number, collections: Collections, drop?: string[]) =>
+  reconcile(stored, declare(version, collections, drop))?.drop;
 
 function codeOf(f: () => unknown): string {
   try {
@@ -38,9 +40,9 @@ function codeOf(f: () => unknown): string {
   return "no error";
 }
 
-const markReady = (c: StoredCatalog, collection: CollectionId, index: IndexId) => settleIndex(c, collection, index, { kind: "ready" });
+const markReady = (c: StoredCatalog, collection: CollectionId, index: IndexId) => settleIndex(c, collection, index, { kind: "ready" })?.catalog;
 const markFailed = (c: StoredCatalog, collection: CollectionId, index: IndexId, reason: "unique" | "value", ids: string[]) =>
-  settleIndex(c, collection, index, { kind: "failed", reason, ids });
+  settleIndex(c, collection, index, { kind: "failed", reason, ids })?.catalog;
 
 const idOf = (c: StoredCatalog, coll: string, index: string) => c.collections[coll]!.indexes[index]!.id as IndexId;
 const collOf = (c: StoredCatalog, coll: string) => c.collections[coll]!.id as CollectionId;
@@ -56,7 +58,7 @@ describe("reconcile", () => {
     for (const coll of Object.values(c.collections)) {
       for (const i of Object.values(coll.indexes)) expect(i.state).toEqual({ kind: "ready" });
     }
-    expect(c.dropped).toEqual([]);
+    expect(dropOf(undefined, 1, v1)).toEqual([]);
   });
 
   it("writes nothing when the same schema opens again, at its version or a lower one", () => {
@@ -85,9 +87,9 @@ describe("reconcile", () => {
     expect(c2.collections["todos"]!.indexes["byD"]!.state).toEqual({ kind: "building" });
     const ids = Object.values(c2.collections["todos"]!.indexes).map((i) => i.id);
     expect(new Set([...ids, todos.indexes["byB"]!.id]).size).toBe(4);
-    expect(c2.dropped).toEqual([
-      { collection: todos.id, index: todos.indexes["byB"]!.id },
-      { collection: c1.collections["notes"]!.id, index: idOf(c1, "notes", "byC") },
+    expect(dropOf(c1, 2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } }, notes: {} })).toEqual([
+      indexPrefix(todos.id as CollectionId, todos.indexes["byB"]!.id as IndexId),
+      indexPrefix(collOf(c1, "notes"), idOf(c1, "notes", "byC")),
     ]);
     expect(reconcile(c2, declare(2, { todos: { byA: { by: "a" }, byB: { by: "x" }, byD: { by: "d" } }, notes: {} }))).toBeUndefined();
   });
@@ -96,20 +98,19 @@ describe("reconcile", () => {
     const c1 = open(undefined, 1, v1);
     const c2 = open(c1, 2, { todos: v1["todos"]! });
     expect(c2.collections["notes"]).toEqual(c1.collections["notes"]);
-    expect(c2.dropped).toEqual([]);
+    expect(dropOf(c1, 2, { todos: v1["todos"]! })).toEqual([]);
     const c3 = open(c2, 3, v1);
     expect(c3.collections["notes"]).toEqual(c1.collections["notes"]);
   });
 
-  it("at a higher version drops a collection it lists in drop, replacing its index prefixes with its collection prefix", () => {
+  it("at a higher version drops a collection it lists in drop, with its collection prefix", () => {
     const c1 = open(undefined, 1, v1);
-    const notes = c1.collections["notes"]!.id;
+    const notes = collOf(c1, "notes");
     const c2 = open(c1, 2, { todos: v1["todos"]!, notes: {} });
-    expect(c2.dropped).toEqual([{ collection: notes, index: idOf(c1, "notes", "byC") }]);
     const c3 = open(c2, 3, { todos: v1["todos"]! }, ["notes", "never"]);
     expect(c3.collections["notes"]).toBeUndefined();
     expect(c3.collections["todos"]).toEqual(c1.collections["todos"]);
-    expect(c3.dropped).toEqual([{ collection: notes }]);
+    expect(dropOf(c2, 3, { todos: v1["todos"]! }, ["notes", "never"])).toEqual([collectionPrefix(notes)]);
     expect(reconcile(c3, declare(3, { todos: v1["todos"]! }, ["notes"]))).toBeUndefined();
     const c4 = open(c3, 4, v1);
     expect(c4.collections["notes"]!.id).not.toBe(notes);
@@ -133,7 +134,7 @@ describe("reconcile", () => {
     const c3 = open(failed, 3, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } });
     expect(c3.collections["todos"]!.indexes["u"]!.state).toEqual({ kind: "building" });
     expect(idOf(c3, "todos", "u")).not.toBe(idOf(c1, "todos", "u"));
-    expect(c3.dropped).toEqual(failed.dropped);
+    expect(dropOf(failed, 3, { ...v1, todos: { ...v1["todos"], u: { by: "u", unique: true } } })).toEqual([]);
   });
 
   it("at a higher version redefines an index whose include was added, changed or removed, and keeps one whose include is the same", () => {
@@ -146,8 +147,8 @@ describe("reconcile", () => {
       c = next;
     });
     expect(codeOf(() => reconcile(c, declare(6, { c: { x: { by: "a", include: ["t"] } } })))).toBe("schema");
-    const covering = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
-    expect(parseCatalog(encodeCatalog(covering))).toEqual(covering);
+    const including = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
+    expect(parseCatalog(encodeCatalog(including))).toEqual(including);
   });
 
   it("refuses a schema that needs an index id above 255", () => {
@@ -167,8 +168,27 @@ describe("stored bytes", () => {
     const c = open(undefined, 1, v1);
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 1 } as unknown as StoredCatalog)))).toBe("schema");
     expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 3 } as unknown as StoredCatalog)))).toBe("schema");
-    expect(() => parseCatalog(encodeCatalog({ format: 2 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
+    expect(codeOf(() => parseCatalog(encodeCatalog({ ...c, format: 5 } as unknown as StoredCatalog)))).toBe("schema");
+    expect(() => parseCatalog(encodeCatalog({ format: 4 } as unknown as StoredCatalog))).toThrow(CorruptDatabaseError);
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
+  });
+
+  it("refuses as corrupt a stored index whose kind and fields disagree", () => {
+    const c = open(undefined, 1, { c: { x: { by: "a" }, m: { by: ["t[]", "a"] } } });
+    const withSpec = (name: "x" | "m", spec: object) => {
+      const i = c.collections["c"]!.indexes[name]!;
+      return { ...c, collections: { c: { ...c.collections["c"]!, indexes: { ...c.collections["c"]!.indexes, [name]: { ...i, spec: { ...i.spec, ...spec } } } } } };
+    };
+    expect(() => parseCatalog(encodeCatalog(withSpec("m", {}) as StoredCatalog))).not.toThrow();
+    for (const bad of [
+      withSpec("x", { by: ["t[]"] }),
+      withSpec("m", { by: ["t"] }),
+      withSpec("m", { by: ["a", "t[]"] }),
+      withSpec("x", { by: [] }),
+      withSpec("x", { by: Array.from({ length: 9 }, (_, i) => `f${i}`) }),
+    ]) {
+      expect(() => parseCatalog(encodeCatalog(bad as StoredCatalog))).toThrow(CorruptDatabaseError);
+    }
   });
 
   it("refuses as corrupt a stored unique index that includes fields", () => {
@@ -195,7 +215,8 @@ describe("transitions", () => {
   it("marks a building index failed once, with its reason and ids, and drops its prefix", () => {
     const failed = markFailed(c2, collOf(c2, "todos"), byD, "value", ["7"])!;
     expect(failed.collections["todos"]!.indexes["byD"]!.state).toEqual({ kind: "failed", reason: "value", ids: ["7"] });
-    expect(failed.dropped).toEqual([{ collection: c2.collections["todos"]!.id, index: byD }]);
+    expect(settleIndex(c2, collOf(c2, "todos"), byD, { kind: "failed", reason: "value", ids: ["7"] })!.drop).toEqual([indexPrefix(collOf(c2, "todos"), byD)]);
+    expect(settleIndex(c2, collOf(c2, "todos"), byD, { kind: "ready" })!.drop).toEqual([]);
     expect(markFailed(failed, collOf(failed, "todos"), byD, "value", ["7"])).toBeUndefined();
     expect(markReady(failed, collOf(failed, "todos"), byD)).toBeUndefined();
   });
@@ -209,27 +230,27 @@ describe("transitions", () => {
     expect(markReady(again, collOf(again, "todos"), byD)).toBeDefined();
   });
 
-  it("clears a collection under a new id with its indexes ready, failed ones kept, and drops the old prefix", () => {
+  it("clears a collection under its id with its indexes ready, failed ones kept, and drops its prefix", () => {
     const c3 = open(c2, 3, { ...v1, todos: { ...v1["todos"], byD: { by: "d" }, u: { by: "u", unique: true } } });
     const withFailed = markFailed(c3, collOf(c3, "todos"), idOf(c3, "todos", "u"), "unique", ["1", "2"])!;
     const old = withFailed.collections["todos"]!;
-    const cleared = clearCollection(withFailed, "todos");
+    const { catalog: cleared, drop } = clearCollection(withFailed, "todos");
     const todos = cleared.collections["todos"]!;
-    expect(todos.id).not.toBe(old.id);
+    expect(todos.id).toBe(old.id);
+    expect(todos.nextIndexId).toBe(old.nextIndexId);
     expect(todos.indexes["byD"]).toEqual({ ...old.indexes["byD"], state: { kind: "ready" } });
     expect(todos.indexes["u"]).toEqual(old.indexes["u"]);
-    expect(cleared.dropped.at(-1)).toEqual({ collection: old.id });
-    expect(clearCollection(cleared, "todos").collections["todos"]!.id).not.toBe(todos.id);
+    expect(cleared.collections["notes"]).toEqual(withFailed.collections["notes"]);
+    expect(cleared.nextCollectionId).toBe(withFailed.nextCollectionId);
+    expect(drop).toEqual([collectionPrefix(old.id as CollectionId)]);
+    expect(markReady(cleared, collOf(cleared, "todos"), byD)).toBeUndefined();
     expect(codeOf(() => clearCollection(cleared, "nope"))).toBe("schema");
   });
 
-  it("removes a swept prefix once, telling a collection prefix from its index prefixes", () => {
-    const cleared = clearCollection(markFailed(c2, collOf(c2, "todos"), byD, "value", ["7"])!, "todos");
-    const coll = c2.collections["todos"]!.id;
-    const once = removeDropped(cleared, { collection: coll })!;
-    expect(once.dropped).toEqual([{ collection: coll, index: byD }]);
-    expect(removeDropped(once, { collection: coll })).toBeUndefined();
-    expect(removeDropped(once, { collection: coll, index: byD })!.dropped).toEqual([]);
+  it("clears a collection whose id is the last one", () => {
+    const last = { ...c2, collections: { todos: { ...c2.collections["todos"]!, id: 0xffff } }, nextCollectionId: 0x10000 };
+    expect(clearCollection(last, "todos").drop).toEqual([collectionPrefix(0xffff as CollectionId)]);
+    expect(codeOf(() => reconcile(last, declare(3, { todos: {}, more: {} })))).toBe("schema");
   });
 });
 
@@ -317,24 +338,18 @@ describe("normalizeSchema", () => {
     expect(() => normalizeSchema({ version: 1, collections: { a: coll } } as never)).toThrow(/not made by collection\(\)/);
   });
 
-  it("stores an array field without its mark, as the first field of a multi index", () => {
-    const declared = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "tags" } } });
-    expect(declared.collections.get("c")!.get("tags")).toEqual({ kind: "sorted", on: ["tags", "at"], unique: false, multi: true });
-    expect(declared.collections.get("c")!.get("one")).toEqual({ kind: "sorted", on: ["tags"], unique: false, multi: false });
-  });
-
-  it("describes a multi index by its declared fields, the mark on the first", () => {
+  it("keeps the declared fields, the array mark on the first field of a multi index", () => {
     const specs = declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: ["a", "b"], unique: true }, s: { by: "a", text: "t" } } }).collections.get("c")!;
-    expect([...describeIndexes(specs)]).toEqual([
+    expect([...specs]).toStrictEqual([
       ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false }],
       ["one", { kind: "sorted", by: ["a", "b"], unique: true }],
       ["s", { kind: "text", by: ["a"], unique: false, text: "t" }],
     ]);
   });
 
-  it("describes the fields an index includes, and only on an index that includes some", () => {
+  it("keeps the fields an index includes, and only on an index that includes some", () => {
     const specs = declare(1, { c: { tags: { by: ["tags[]", "at"], include: ["title", "n"] }, one: { by: "a" } } }).collections.get("c")!;
-    expect([...describeIndexes(specs)]).toStrictEqual([
+    expect([...specs]).toStrictEqual([
       ["tags", { kind: "multi", by: ["tags[]", "at"], unique: false, include: ["title", "n"] }],
       ["one", { kind: "sorted", by: ["a"], unique: false }],
     ]);
@@ -342,27 +357,12 @@ describe("normalizeSchema", () => {
 
   it("accepts 16 included fields", () => {
     const include = Array.from({ length: 16 }, (_, i) => `f${i}`);
-    expect(describeIndexes(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!).get("x")?.include).toEqual(include);
+    expect(declare(1, { c: { x: { by: "b", include } } }).collections.get("c")!.get("x")?.include).toEqual(include);
   });
 
-  it("opens a catalog stored before by existed without writing it again", () => {
-    const stored = encodeCatalog({
-      format: 2,
-      version: 1,
-      nextCollectionId: 2,
-      collections: {
-        c: {
-          id: 1,
-          nextIndexId: 3,
-          indexes: {
-            tags: { id: 1, spec: { kind: "sorted", on: ["tags", "at"], unique: false, multi: true }, state: { kind: "ready" } },
-            one: { id: 2, spec: { kind: "sorted", on: ["a"], unique: true, multi: false }, state: { kind: "ready" } },
-          },
-        },
-      },
-      dropped: [],
-    });
-    const catalog = parseCatalog(stored);
-    expect(reconcile(catalog, declare(1, { c: { tags: { by: ["tags[]", "at"] }, one: { by: "a", unique: true } } }))).toBeUndefined();
+  it("stores each index as the handle's indexes describe it", () => {
+    const decl = { c: { tags: { by: ["tags[]", "at"], include: ["n"] }, one: { by: "a", unique: true }, s: { by: "a", text: "t" } } };
+    const stored = parseCatalog(encodeCatalog(open(undefined, 1, decl))).collections["c"]!.indexes;
+    expect(Object.fromEntries(Object.entries(stored).map(([name, i]) => [name, i.spec]))).toEqual(Object.fromEntries(declare(1, decl).collections.get("c")!));
   });
 });

@@ -156,6 +156,30 @@ export const noteQueries: NoteQuery[] = [
   { eq: [["a"]] },
 ];
 
+// An index picked at runtime: the query must suit each index it can be.
+declare const sortBy: "byOwnerUpdated" | "byTag" | "bySlug" | "search";
+declare const listed: "byOwnerUpdated" | "byTag";
+declare const prefix: readonly [string] | readonly [string, number];
+export const pickedQueries: NoteQuery[] = [
+  { index: sortBy, reverse: true, limit: 20 },
+  { index: sortBy, gte: "a" },
+  { index: listed, eq: ["ann"], gte: since },
+  { index: listed, eq: [["ann", "bob"]] },
+  { index: listed, eq: prefix },
+  { index: "byOwnerUpdated", eq: prefix },
+  // @ts-expect-error byOwnerUpdated is not a text index
+  { index: listed, match: "x" },
+  { index: "search", match: "x" },
+  // @ts-expect-error bySlug is unique: no lists
+  { index: sortBy, eq: [["ann", "bob"]] },
+  // @ts-expect-error bySlug has one component
+  { index: sortBy, eq: prefix },
+  // @ts-expect-error the first component of each is a string
+  { index: listed, gte: since },
+  // @ts-expect-error eq fixes every component of bySlug, so no bound follows
+  { index: "bySlug" as "bySlug" | "byTag", eq: ["a"], gte: since },
+];
+
 type Issue = { id: string; projectId: string; status: "todo" | "started" | "done"; updatedAt: number };
 const issueSchema = defineSchema({
   version: 1,
@@ -186,7 +210,7 @@ export async function entryValues(store: DocStore<typeof notesSchema>): Promise<
   return [byTag, bySlug, rows, search, wrong];
 }
 
-const coveringSchema = defineSchema({
+const includeSchema = defineSchema({
   version: 1,
   collections: {
     notes: collection<Note>()
@@ -196,7 +220,7 @@ const coveringSchema = defineSchema({
   },
 });
 
-export async function entryFields(store: DocStore<typeof coveringSchema>): Promise<unknown[]> {
+export async function entryFields(store: DocStore<typeof includeSchema>): Promise<unknown[]> {
   const notes = store.collection("notes");
   const list = (await notes.queryEntries({ index: "list", eq: ["ann"] })).entries;
   const fields: Pick<Note, "slug" | "tags">[] = list.map((e) => e.fields);
@@ -207,7 +231,11 @@ export async function entryFields(store: DocStore<typeof coveringSchema>): Promi
   (await notes.queryEntries({ index: "plain" })).entries.map((e) => e.fields);
   // @ts-expect-error the rows have no fields
   (await notes.queryEntries({})).entries.map((e) => e.fields);
-  return [fields, slugs];
+  const picked = await notes.queryEntries({ index: "list" as "list" | "plain", limit: 10 });
+  const first: string | undefined = picked.entries[0] && "fields" in picked.entries[0] ? picked.entries[0].fields.slug : undefined;
+  // @ts-expect-error plain has no fields, so a picked index of the two may have none
+  picked.entries.map((e) => e.fields);
+  return [fields, slugs, first];
 }
 
 // @ts-expect-error include takes fields of the document

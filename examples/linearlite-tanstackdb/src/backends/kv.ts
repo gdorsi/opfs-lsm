@@ -157,7 +157,6 @@ const SEARCH_PAGE = 256;
  * documents a page at a time and pauses between pages.
  */
 async function searched(snap: Snap, filter: IssueFilter, pause?: Pause): Promise<Issue[]> {
-  const words = wordsOf(filter.q);
   const needle = filter.q.toLowerCase();
   const out: Issue[] = [];
   for (let after: Cursor | undefined; ; ) {
@@ -165,7 +164,7 @@ async function searched(snap: Snap, filter: IssueFilter, pause?: Pause): Promise
       index: "search",
       eq: [false],
       limit: SEARCH_PAGE,
-      ...(words.length > 0 && { match: words.join(" ") }),
+      match: filter.q,
       ...(after !== undefined && { after }),
     });
     out.push(

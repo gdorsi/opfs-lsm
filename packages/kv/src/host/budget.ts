@@ -106,7 +106,7 @@ const SOURCE_BYTES = 16 * KiB;
 const MIN_CHUNK_BYTES = 64 * KiB;
 const MAX_CHUNK_BYTES = 256 * KiB;
 const CHUNK_STEP = 32 * KiB;
-/** Usually a run's whole footer, bloom and index, so one read opens it. */
+/** Usually a run's whole footer and bloom, so one read opens it. */
 const TAIL_BYTES = 128 * KiB;
 /**
  * The most sources a step reads. A step reads all of L1 with random keys, so
@@ -128,7 +128,9 @@ const YIELD_BYTES = 1 * MiB;
  *
  * with F the flush run size, S the sources of a step, C the window per
  * source (held in wasm, and read in JS before it is fed), and K the
- * per-source buffers. The figures follow from it.
+ * per-source buffers. The input region, which holds every input run's
+ * index, has no term: indexes are small next to C unless keys are long
+ * and share long prefixes. The figures follow from it.
  *
  * - F is 7/8 of min(T, B/16), T being the compaction output run (4 MiB). Wasm
  *   memory grows in steps at power-of-two input sizes, and a run's packed

@@ -16,7 +16,7 @@ Formal model checkers live under `verify-kv` and are not listed here.
 
 - Prefer the SharedWorker path (default). Opt into `two-tab-local` only when proving the in-page `EngineHost` path.
 - Treat harness stdout as the user-visible proof log (`#out` content posted to `/two-tab-results`, and the bench report tables).
-- Keep env flags literal: `TWO_TAB_NOBC=1`, `TWO_TAB_LOCAL=1`.
+- Keep env flags literal: `TWO_TAB_NOBC=1`, `TWO_TAB_LOCAL=1`, `TWO_TAB_HOSTS=dedicated`, `TWO_TAB_STAGED=1`.
 - Every harness closes its Chrome and uses a fresh temp profile, so there is no profile to clean up.
 - Do not delete `artifacts/` during cleanup.
 
@@ -27,7 +27,7 @@ Formal model checkers live under `verify-kv` and are not listed here.
 - The m1-smoke workflow runs `two-tab` and `bench:smoke`. It omits `two-tab-nobc`, `two-tab-local`, and the full bench families. [docs/verification.md](../../../../docs/verification.md) lists what CI runs.
 - Record the feature id and the helper command in `meta.txt` (the helper writes this).
 - Report an unreachable path with the unmet precondition (missing Chrome, missing dist).
-- Do not claim SharedWorker proof from a `TWO_TAB_LOCAL=1` or `MemoryFs` run.
+- Do not claim SharedWorker proof from a `TWO_TAB_LOCAL=1`, `TWO_TAB_HOSTS=dedicated` or `MemoryFs` run.
 
 ## Feature entry contract
 
@@ -39,5 +39,6 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior, 
 - [Benchmark suite](./bench.md) — `pnpm bench <family>/` for kv vs IndexedDB, docstore vs Dexie, the Automerge adapter, and Yjs `KvPersistence`, with every read checked; `bench-smoke` for all of them at size `tiny`.
 - [Two-tab without BroadcastChannel](./two-tab-nobc.md) — same scenario with BC silenced.
 - [Two-tab local EngineHost](./two-tab-local.md) — one page, two handles, no SharedWorker.
+- [Two-tab with a dedicated Worker host per tab](./two-tab-dedicated.md): no SharedWorker in the page, so several hosts write one database, and the same with the staged writer of a browser without `createWritable()`.
 - [Storage full: the reserve and `onStorageFull`](./quota.md): a real origin limit refuses a flush, the reserve takes it, one tab's handler answers, and the warning when no tab has one.
 - [destroyDb with other tabs open](./destroy.md) — every handle closes, both stores go, the next open starts past them, and crashed, frozen and back/forward-cached tabs.

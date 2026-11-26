@@ -209,7 +209,7 @@ A rank-sum test separates the two sets of 25 bench opens (z = −3.44). An earli
 with the base commit as both builds gave a per-round difference of +0.13 ms, quartiles −3.22 to
 +2.09, under a higher load. The first `get` after the open did not move past the spread: 2.47 and
 2.67 ms in the probe. The open is now IndexedDB's open and the two transactions after it. The
-change costs about 200 gzip bytes at import, and kv's import budget went from 19,300 to 19,500.
+change costs about 150 gzip bytes at import, and kv's import budget went from 19,300 to 19,500.
 
 Not measured: the M5 Max, where IndexedDB answered first and the change can only add one listing
 of `m/` beside the open, and Firefox and Safari.

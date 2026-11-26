@@ -25,7 +25,7 @@ import { decodeGeneration, type GenerationMeta } from "../src/store/generation.j
 import { PageCache } from "../src/store/page-cache.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
 import { decodeIndex, SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../src/store/sst.js";
-import { decodeSst } from "../tests/oracle/sst-ref.js";
+import { blockLength, decodeSst } from "../tests/oracle/sst-ref.js";
 import { loadsDone, ownedEntry } from "../tests/runs.js";
 
 export class RuleBroken extends Error {
@@ -61,7 +61,7 @@ export type Repair = "none" | "crc" | "trailer";
 export function repairSst(buf: Uint8Array, how: Repair): void {
   if (how === "trailer" && buf.byteLength >= SST_FOOTER_BYTES) {
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-    view.setUint32(buf.byteLength - 8, 2, true);
+    view.setUint32(buf.byteLength - 8, 3, true);
     view.setUint32(buf.byteLength - 4, 0x4f4c5354, true);
   }
   if (how !== "none") fixSstCrc(buf);
@@ -80,38 +80,28 @@ export function fixManifestCrc(buf: Uint8Array): void {
   view.setUint32(at, crc32(buf.subarray(0, at)), true);
 }
 
-type Footer = { entryCount: number; blockCount: number; dataLen: number; hashCount: number; indexStart: number };
-
-export function footerOf(buf: Uint8Array): Footer | undefined {
-  if (buf.byteLength < SST_FOOTER_BYTES) return undefined;
-  const at = buf.byteLength - SST_FOOTER_BYTES;
-  const f = (i: number) => u32(buf, at + 4 * i)!;
-  return { entryCount: f(0), blockCount: f(1), dataLen: f(2), hashCount: f(4), indexStart: f(5) };
+/** Rewrite the CRC a run's index ends with, so a decoder reaches the structure behind it. */
+export function fixIndexCrc(index: Uint8Array): void {
+  if (index.byteLength < 4) return;
+  const at = index.byteLength - 4;
+  new DataView(index.buffer, index.byteOffset, index.byteLength).setUint32(at, crc32(index.subarray(0, at)), true);
 }
 
 /**
- * The bytes of each block the index names, read without trusting it. A
- * block counts when it lies inside the file, as `blockBytes` checks it, even
- * past `dataLen`: `decodeSst` does not compare the two.
+ * The bytes of each block of a run's data, found front to back as a reader
+ * with no index finds them, without trusting them: the walk ends where the
+ * footer says the data does, or at the first block that does not parse.
  */
 export function blocksOf(buf: Uint8Array): Uint8Array[] {
-  const f = footerOf(buf);
-  if (!f) return [];
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const end = Math.min(u32(buf, buf.byteLength - SST_FOOTER_BYTES + 4) ?? 0, buf.byteLength);
   const out: Uint8Array[] = [];
-  let o = f.indexStart;
-  for (let i = 0; i < Math.min(f.blockCount, 4096); i++) {
-    const first = u32(buf, o);
-    if (first === undefined) break;
-    o += 4 + first;
-    const last = u32(buf, o);
-    if (last === undefined) break;
-    o += 4 + last;
-    const offset = u32(buf, o);
-    const length = u32(buf, o + 4);
-    if (offset === undefined || length === undefined) break;
-    o += 8;
-    if (offset + length > buf.byteLength) break;
-    out.push(buf.subarray(offset, offset + length));
+  try {
+    for (let o = 0; o < end && out.length < 4096; o += out[out.length - 1]!.byteLength) {
+      out.push(buf.subarray(o, o + blockLength(buf, view, o, end)));
+    }
+  } catch (err) {
+    if (!(err instanceof CorruptDatabaseError)) throw err;
   }
   return out;
 }

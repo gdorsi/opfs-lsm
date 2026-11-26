@@ -7,6 +7,8 @@
  *   TWO_TAB_REPEAT=3 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_QUOTA=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  *   TWO_TAB_DESTROY=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_HOSTS=dedicated pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
+ *   TWO_TAB_HOSTS=dedicated TWO_TAB_STAGED=1 pnpm --filter @opfs-lsm/kv exec tsx scripts/two-tab.ts
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -54,7 +56,20 @@ type RunOptions = {
   quota: boolean;
   /** Run the destroyDb scenario, which asks this script to open, crash, freeze and navigate tabs. */
   destroy: boolean;
+  /** No SharedWorker in the pages: each handle's host is a dedicated Worker that writes (proof/host-modes.ts). */
+  dedicated: boolean;
+  /** Those hosts stage their files, as where OPFS has no `createWritable()`. */
+  staged: boolean;
 };
+
+/** The query every page of the run carries for its host mode, and the mode line a page logs for it. */
+function hostMode(options: RunOptions): { query: Record<string, string>; label: string } {
+  if (options.local) return { query: {}, label: "mode=local EngineHost" };
+  if (!options.dedicated) return { query: {}, label: "mode=SharedWorker" };
+  return options.staged
+    ? { query: { hosts: "dedicated", staged: "1" }, label: "mode=dedicated Worker staged" }
+    : { query: { hosts: "dedicated" }, label: "mode=dedicated Worker" };
+}
 
 function chromePath(): string {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
@@ -433,6 +448,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   }
 
   const hub = new PeerHub();
+  const mode = hostMode(options);
   let resolveResults!: (body: string) => void;
   let settled = false;
   const resultsPromise = new Promise<string>((resolve) => {
@@ -467,7 +483,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     const op = q.get("op");
     const tag = q.get("tag") ?? "";
     if (op === "open") {
-      const url = `http://127.0.0.1:${port}/proof/two-tab.html?${new URLSearchParams({ role: "holder", tag, db: q.get("db") ?? "" })}`;
+      const url = `http://127.0.0.1:${port}/proof/two-tab.html?${new URLSearchParams({ role: "holder", tag, db: q.get("db") ?? "", ...mode.query })}`;
       holders.set(tag, { targetId: await openTarget(wsUrl!, url) });
       await Promise.race([latch(tag).promise, sleep(30_000).then(() => Promise.reject(new Error(`tab ${tag} did not get ready`)))]);
       return "ready";
@@ -625,7 +641,7 @@ async function runOnce(options: RunOptions): Promise<number> {
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "opfs-two-tab-"));
 
-  const query = new URLSearchParams({ auto: "1", name: "two-tab" });
+  const query = new URLSearchParams({ auto: "1", name: "two-tab", ...mode.query });
   if (options.nobc) query.set("nobc", "1");
   if (options.quota) query.set("scenario", "quota");
   if (options.destroy) query.set("scenario", "destroy");
@@ -636,6 +652,7 @@ async function runOnce(options: RunOptions): Promise<number> {
     auto: "1",
     name: "two-tab",
     role: "b",
+    ...mode.query,
   });
   if (options.nobc) tabBQuery.set("nobc", "1");
   if (options.quota) tabBQuery.set("scenario", "quota");
@@ -690,11 +707,8 @@ async function runOnce(options: RunOptions): Promise<number> {
     } else if (!options.local && !options.quota && !options.destroy && !parsed.log.includes("shipped-worker ok")) {
       console.error("missing the shipped-worker ok line");
       exitCode = 1;
-    } else if (!options.local && !parsed.log.includes("mode=SharedWorker")) {
-      console.error("missing SharedWorker mode");
-      exitCode = 1;
-    } else if (options.local && !parsed.log.includes("mode=local EngineHost")) {
-      console.error("missing local EngineHost mode");
+    } else if (!parsed.log.split("\n").some((line) => line === mode.label || line === `${mode.label} nobc`)) {
+      console.error(`missing the line ${mode.label}`);
       exitCode = 1;
     }
   } catch (err) {
@@ -729,7 +743,13 @@ async function main(): Promise<number> {
     nobc: flag("TWO_TAB_NOBC"),
     quota: flag("TWO_TAB_QUOTA"),
     destroy: flag("TWO_TAB_DESTROY"),
+    dedicated: process.env.TWO_TAB_HOSTS === "dedicated",
+    staged: flag("TWO_TAB_STAGED"),
   };
+  if (options.staged && !options.dedicated) {
+    console.error("TWO_TAB_STAGED=1 needs TWO_TAB_HOSTS=dedicated: Chrome gives a sync access handle to a dedicated Worker only");
+    return 1;
+  }
   for (let i = 0; i < repeat; i += 1) {
     if (repeat > 1) console.log(`run ${i + 1}/${repeat}`);
     const code = await runOnce(options);
