@@ -5,7 +5,7 @@
  *
  * The tab (`DbImpl` in src/db.ts) runs several calls at once, and every
  * await is a step of its own:
- * - `sync` (`coalesced`, `retrying`, `catchUpOnce`, `follow`): read the tail,
+ * - `sync` (`coalesced`, `retrying`, `catchUpToWal`, `follow`): read the tail,
  *   load its generation when the tab lacks it (`load`, with `has` before and
  *   after the await), then `catchUp`. A call while one runs makes it run
  *   once more. A pass that ends "behind" or "gone" runs again.

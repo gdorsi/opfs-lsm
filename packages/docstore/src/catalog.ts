@@ -389,7 +389,7 @@ export function declaredPlan(coll: BoundCollection, index: string): IndexPlan {
   }
 }
 
-/** Compile `catalog` for a handle that declared `declared`. An index is readable iff its stored spec equals the declared one and it is ready. */
+/** Compile `catalog` for a handle that declared `declared`. `readable` holds an index's plan when its stored spec equals the declared one and it is ready or building. `readableTarget` refuses a building one. */
 export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: DeclaredSchema): Bound {
   const collections = new Map<string, BoundCollection>();
   for (const [name, specs] of declared.collections) {
