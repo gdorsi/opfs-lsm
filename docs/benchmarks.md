@@ -23,6 +23,8 @@ Each workload holds 100,000 entries with 16-byte keys and 100-byte values, excep
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.4 to 2.9, commit ce378c55. Full results: [2026-11-25T09-30-12-apple-m5-max](results/2026-11-25T09-30-12-apple-m5-max.md).
 <!-- /bench:table -->
 
+The open row predates a change to the open: a tab now reads the newest manifest and opens its runs while IndexedDB opens. On an Apple M2 Pro that took the median of 25 fresh-tab opens of this workload from 10.3 to 8.97 ms ([research note](research/open-path-round-trips.md#ahead-of-indexeddb-2026-11-26)).
+
 The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time. Over the whole mix, half of it reads, kv is ahead, at 23.9k against 17.0k ops/s. The two 8 KiB rows are `kv/large-values`: kv is faster when a read asks for neighbouring keys, and slower when its keys are scattered over the store. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
 
 ## Framework adapters
@@ -205,13 +207,13 @@ The todo column opens first, so it also starts the label list every screen share
 
 ## Bundle size
 
-Importing `@opfs-lsm/kv` adds **19.3 kB** of JavaScript to your main bundle (gzip, 56.4 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
+Importing `@opfs-lsm/kv` adds **19.5 kB** of JavaScript to your main bundle (gzip, 57.0 kB raw). The SharedWorker and the wasm engine are not in it. Both load lazily, on the first `openDb`, and only when a page opens a database:
 
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
-| Main-thread JS | 19.3 kB | 56.4 kB | at import |
+| Main-thread JS | 19.5 kB | 57.0 kB | at import |
 | SharedWorker chunk | 13.5 kB | 39.8 kB | on the first `openDb` |
 | wasm engine | 6.5 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **39.4 kB** | **112.6 kB** | |
+| **Total after open** | **39.6 kB** | **113.2 kB** | |
 
-For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.3 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.5 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

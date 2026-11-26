@@ -1,14 +1,15 @@
 # Round trips in a cold open
 
-Status: shipped. An open overlaps its IndexedDB and OPFS steps, opens runs from the manifest copy
-in `meta` while it reads the manifest file, and the host flushes a waiting tail after 2 s with no
-write or 5 s of writes, so a fresh tab replays a short tail ([Installing a generation](../design.md#installing-a-generation),
-[Trigger](../design.md#trigger)). Not done: fewer folder levels, and file handles kept in
-IndexedDB. A read of every run's tail at open was rejected, and the block indexes later moved
+Status: shipped. An open overlaps its IndexedDB and OPFS steps, reads the newest manifest and opens
+its runs while IndexedDB opens, opens runs from the manifest copy in `meta` while it reads the
+manifest file, and the host flushes a waiting tail after 2 s with no write or 5 s of writes, so a
+fresh tab replays a short tail ([Installing a generation](../design.md#installing-a-generation),
+[Trigger](../design.md#trigger)). One folder level fewer was rejected. Not done: file handles kept
+in IndexedDB. A read of every run's tail at open was rejected, and the block indexes later moved
 into the manifest file ([cold-read-run-metadata.md](cold-read-run-metadata.md)).
 
-Date: 2026-11-11 to 2026-11-22. Chrome 157 headless, macOS arm64, Apple M5 Max, and Apple M2 Pro
-for the last section. Other work ran on the machine during every measurement, so each comparison
+Date: 2026-11-11 to 2026-11-26. Chrome 157 headless, macOS arm64, Apple M5 Max, and Apple M2 Pro
+with Chrome 158 for the last two sections. Other work ran on the machine during every measurement, so each comparison
 rotates its variants inside one run.
 
 ## Question
@@ -31,6 +32,7 @@ from running steps side by side and from keeping the WAL tail short:
 | 2: overlapped lookups and recovery check, see below | 2026-11-18 | fresh-tab open 3.78 and 3.90 ms |
 | idle flush after 2 s with no row, when an eighth of `maxWalBytes` waits | 2026-11-18 | fresh-tab open with a 0.66 MiB tail 7.55 to 3.90 ms |
 | idle flush also 5 s after the first row since the last flush began | 2026-11-22 | `reopen` opens over 20 ms: 2 of 10 to 0 of 10 |
+| the newest manifest read and its runs opened while IndexedDB opens | 2026-11-26 | fresh-tab open 10.3 to 8.97 ms, median of 25 |
 
 On 2026-11-23 the open also started opening the runs before it read the tail's records, and read
 the tail in ranges of 100 records, all in flight. This note has no measurement of that change.
@@ -179,11 +181,47 @@ to apply it, 89 ms for the open. The fix added the 5 s due time.
 Load average 5.8 to 9.8 during both runs. In 10 more runs with the timestamps, every fresh tab
 replayed 300 or 301 records against 26,001 in 1 of 10 before.
 
+## Ahead of IndexedDB, 2026-11-26
+
+Apple M2 Pro, Chrome 158 headless, base commit `fe964869`, load average 2 to 17 from other
+sessions, so every comparison is paired or interleaved.
+
+`node bench/probes/open-paired.ts --a <packages/kv> --b <packages/kv>` opens a settled database of
+100,000 entries in a fresh tab per open, 3 s after the last SharedWorker exited, one database per
+build, the builds in turn. It also prints one open as a timeline of its browser calls. In 15 of 15
+opens of the base commit, `indexedDB.open` returned 6.7 to 12.5 ms after `openDb` was called, the
+database folder was found at 2.8 to 6.9 ms, and the first call for the manifest file started
+1.3 to 2.8 ms after IndexedDB returned. The open resolved 3 to 9 ms after IndexedDB did. So on
+this machine IndexedDB decided the open and OPFS sat idle for it, the reverse of the M5 Max
+timeline above, where IndexedDB had answered before the folder was found.
+
+The change: while the WAL database opens, the tab lists `m/`, reads the newest manifest and opens
+its first 16 runs. The load of the generation IndexedDB names takes them when it is that one.
+
+| measure | before | after |
+|---|---:|---:|
+| the probe, 30 rounds, median open | 13.61 ms | 11.43 ms |
+| the probe, per-round difference, median and quartiles | | −2.17 ms, −2.54 to −1.34 |
+| `coldopen` of `kv/fillrandom` at size `small`, 5 runs of 5 opens a build, the builds in turn, median | 10.28 ms | 8.97 ms |
+| the same, quartiles | 9.34 to 14.55 ms | 8.65 to 10.37 ms |
+
+A rank-sum test separates the two sets of 25 bench opens (z = −3.44). An earlier run of the probe
+with the base commit as both builds gave a per-round difference of +0.13 ms, quartiles −3.22 to
++2.09, under a higher load. The first `get` after the open did not move past the spread: 2.47 and
+2.67 ms in the probe. The open is now IndexedDB's open and the two transactions after it. The
+change costs about 200 gzip bytes at import, and kv's import budget went from 19,300 to 19,500.
+
+Not measured: the M5 Max, where IndexedDB answered first and the change can only add one listing
+of `m/` beside the open, and Firefox and Safari.
+
+**One folder level fewer was rejected.** A build with each database folder in the OPFS root, and
+no `opfs-lsm/` above it, opened within the spread of the base commit: a per-round difference of
++0.43 ms, quartiles −3.13 to +3.01, over 30 rounds, against −0.13 ms for the base commit under a
+second name. The lookup it removes runs while the open lock is requested and IndexedDB opens, so
+it was not on the chain that decided the open.
+
 ## Not done
 
-- **Fewer folder levels.** Each level is one call on the chain that decides the open. The
-  database folder under the root and the runs beside the manifests would take two off, about
-  1.2 ms by the timelines above. It changes the layout on disk. Not prototyped.
 - **Handles kept in IndexedDB.** A `FileSystemHandle` can be stored in IndexedDB and used in a
   later session, which would replace every lookup with one `getFile` per run. Whether Firefox
   and Safari keep such a handle good after the folder is removed and made again was not checked.
