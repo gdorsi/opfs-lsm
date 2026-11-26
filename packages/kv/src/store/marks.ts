@@ -9,7 +9,7 @@ import type { BlockEntry, ScanBounds } from "./cursor.js";
  * through is gone". Lookup is the max `through` of the marks that hold the
  * key, so join is concatenation, and repeating a mark changes no answer.
  *
- * Marks block, the one encoding (manifest v4):
+ * Marks block, the one encoding:
  *
  *   | u32 count (0 is valid)                                              |
  *   | per mark: u32 start length | start | u8 has end | (u32 end length   |
