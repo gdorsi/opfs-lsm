@@ -830,15 +830,16 @@ function isClosedDatabase(err: unknown): boolean {
  * SharedWorker's host writes run files the way `fileWrites` finds. A
  * dedicated Worker's host writes none: each handle starts its own, and
  * several hosts do not share one reserve (docs/reserve.md, "Several
- * hosts"). Where `fileWrites` has to try, the ports are served at once and
- * each request waits for the host, so no connect event and no request is
- * lost.
+ * hosts"). The testing worker passes `everywhere` for the proofs that run
+ * such hosts. Where `fileWrites` has to try, the ports are served at once
+ * and each request waits for the host, so no connect event and no request
+ * is lost.
  */
-export function serveWorker(build: (writes: FileWrites) => EngineHost): void {
+export function serveWorker(build: (writes: FileWrites) => EngineHost, everywhere = false): void {
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
   const scope = globalThis as unknown as MessagePort & { onconnect?: ((ev: MessageEvent) => void) | null };
   const shared = "onconnect" in scope;
-  const host = Promise.resolve(shared ? fileWrites() : undefined).then(build);
+  const host = Promise.resolve(shared || everywhere ? fileWrites() : undefined).then(build);
   if (!shared) {
     attachEngineHostPort(scope, host);
     return;

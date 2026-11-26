@@ -9,6 +9,7 @@
  *   pnpm --filter @opfs-lsm/kv kill-chrome --seed 7 --from 12 --iterations 1   # replay one iteration
  *   pnpm --filter @opfs-lsm/kv kill-chrome --probes-only
  *   pnpm --filter @opfs-lsm/kv kill-chrome --inspect <db> --profile <dir> --port <port> [--match <regex>]
+ *   pnpm --filter @opfs-lsm/kv kill-chrome --hosts dedicated [--staged]   # each tab hosts in dedicated Workers that write
  *
  * Each iteration opens 2 or 3 tabs on one database. Every tab runs a
  * seeded write workload with a small `maxWalBytes`, so the SharedWorker
@@ -37,6 +38,13 @@
  * Locks of a crashed tab and of a closed SharedWorker are released, the
  * SharedWorker restarts, and a tab or browser killed mid-`createWritable`
  * leaves the target file as it was.
+ *
+ * With `--hosts dedicated` the pages have no SharedWorker, so each handle
+ * starts a dedicated Worker, and the testing worker's host writes run files
+ * there (proof/host-modes.ts): several hosts flush and compact one database.
+ * `close-worker` then terminates one tab's hosts, and the `worker-locks`
+ * probe terminates a dedicated Worker that holds the locks. `--staged` also
+ * has those hosts stage their files, as where OPFS has no `createWritable()`.
  */
 import http from "node:http";
 import fs from "node:fs";
@@ -74,12 +82,16 @@ type Options = {
   profile: string | undefined;
   port: number;
   match: string;
+  /** No SharedWorker in the pages: each handle's host is a dedicated Worker that writes. */
+  dedicated: boolean;
+  /** Those hosts stage their files. */
+  staged: boolean;
 };
 
 function usage(msg: string): never {
   console.error(msg);
   console.error(
-    "usage: kill-chrome [--seed N] [--iterations N] [--minutes M] [--from I] [--kinds a,b] [--rotate N] [--keep-going] [--no-probes] [--probes-only] [--verbose] [--artifacts DIR]",
+    "usage: kill-chrome [--seed N] [--iterations N] [--minutes M] [--from I] [--kinds a,b] [--rotate N] [--keep-going] [--no-probes] [--probes-only] [--verbose] [--artifacts DIR] [--hosts dedicated [--staged]]",
   );
   process.exit(2);
 }
@@ -101,6 +113,8 @@ function parseOptions(argv: string[]): Options {
     profile: undefined,
     port: 0,
     match: "^~",
+    dedicated: false,
+    staged: false,
   };
   let bounded = false;
   for (let i = 0; i < argv.length; i++) {
@@ -131,6 +145,11 @@ function parseOptions(argv: string[]): Options {
     else if (a === "--profile") opts.profile = path.resolve(next());
     else if (a === "--port") opts.port = int();
     else if (a === "--match") opts.match = next();
+    else if (a === "--hosts") {
+      const hosts = next();
+      if (hosts !== "dedicated" && hosts !== "shared") usage("--hosts needs dedicated or shared");
+      opts.dedicated = hosts === "dedicated";
+    } else if (a === "--staged") opts.staged = true;
     else if (a === "--kinds") {
       const kinds = next().split(",");
       for (const k of kinds) if (!(KINDS as readonly string[]).includes(k)) usage(`unknown kind ${k}`);
@@ -139,6 +158,7 @@ function parseOptions(argv: string[]): Options {
   }
   if (!Number.isFinite(opts.minutes) && !bounded) opts.iterations = 20;
   if (Number.isNaN(opts.minutes) || opts.minutes <= 0) usage("--minutes needs a positive number");
+  if (opts.staged && !opts.dedicated) usage("--staged needs --hosts dedicated: Chrome gives a sync access handle to a dedicated Worker only");
   return opts;
 }
 
@@ -567,7 +587,7 @@ type CheckResult = {
   before?: Snapshot;
   range?: [string, string][];
   gets?: Record<string, string | null>;
-  restart?: { generationBefore: number; generationAfter: number; probe: string | null; ms: number };
+  restart?: { generationBefore: number; generationAfter: number; probe: string | null; ms: number; writes: string | null };
   after?: Snapshot;
   error?: { name: string; message: string };
 };
@@ -673,7 +693,8 @@ class Run {
   }
 
   url(): string {
-    return `${this.origin}/proof/kill-chrome.html`;
+    const mode = this.opts.dedicated ? `?hosts=dedicated${this.opts.staged ? "&staged=1" : ""}` : "";
+    return `${this.origin}/proof/kill-chrome.html${mode}`;
   }
 
   async launch(): Promise<Browser> {
@@ -769,6 +790,11 @@ class Run {
         const victim = tabs[plan.pick % tabs.length]!;
         const ok = await victim.crash();
         what = `tab ${tabs.indexOf(victim)}${ok ? "" : " (no crash event)"}`;
+      } else if (plan.kind === "close-worker" && this.opts.dedicated) {
+        const victim = tabs[plan.pick % tabs.length]!;
+        const hosts = await victim.call<number>("terminateHosts", []);
+        what = `terminated ${hosts} host of tab ${tabs.indexOf(victim)}`;
+        if (hosts === 0) notes.push("close-worker: the tab had no dedicated Worker host to terminate");
       } else if (plan.kind === "close-worker") {
         const workers = (await browser.targets()).filter((t) => t.type === "shared_worker");
         if (workers.length === 0) {
@@ -924,6 +950,8 @@ class Run {
       if (!(res.restart.generationAfter > res.restart.generationBefore)) {
         fail("restarted SharedWorker did not publish a generation", [`${res.restart.generationBefore} -> ${res.restart.generationAfter}`]);
       }
+      const writes = this.opts.staged ? "staged" : "writable";
+      if (res.restart.writes !== writes) fail("the host did not write its files the way this run asks", [`${res.restart.writes}, expected ${writes}`]);
       if (after.head !== before.head + 1) fail("head did not move by one for the probe write", [`${before.head} -> ${after.head}`]);
       if (!failure) {
         db.base = new Map(after.state);
@@ -982,7 +1010,35 @@ async function probes(run: Run): Promise<ProbeResult[]> {
     }
   });
 
-  await attempt("worker-locks", async () => {
+  const hostLocks = [
+    { name: `opfs-lsm-ingest/${db}`, mode: "exclusive" },
+    { name: `opfs-lsm-compact/${db}`, mode: "exclusive" },
+  ];
+  if (run.opts.dedicated) {
+    await attempt("worker-locks", async () => {
+      const tab = await run.page();
+      await tab.call("holdLocksInWorker", [hostLocks]);
+      const watcher = await run.page();
+      const before = await Promise.all(hostLocks.map((l) => watcher.call<boolean>("lockFree", [l.name])));
+      if (before.some(Boolean)) return { ok: false, detail: "a lock the dedicated Worker holds reads as free" };
+      await tab.call("terminateLockWorker", []);
+      const t0 = Date.now();
+      for (;;) {
+        const free = await Promise.all(hostLocks.map((l) => watcher.call<boolean>("lockFree", [l.name])));
+        if (free.every(Boolean)) break;
+        if (Date.now() - t0 > 10_000) return { ok: false, detail: `dedicated Worker terminated, locks still held: ${hostLocks.filter((_, i) => !free[i]).map((l) => l.name).join(", ")}` };
+        await sleep(50);
+      }
+      const lockMs = Date.now() - t0;
+      const fresh = await run.page();
+      const res = await fresh.call<CheckResult>("check", [{ name: db, keys: [], probe: "p1" }], 60_000);
+      const ok = !!res.restart && res.restart.generationAfter > res.restart.generationBefore && res.restart.probe === "p1" && (res.after?.problems.length ?? 1) === 0;
+      return {
+        ok,
+        detail: `Worker.terminate() freed the ingest and compaction locks a dedicated Worker held after ${lockMs}ms; a new tab's host ingest ${ok ? `ok, files written as ${res.restart?.writes}` : `FAILED (${res.error?.message ?? JSON.stringify(res.after?.problems)})`}`,
+      };
+    });
+  } else await attempt("worker-locks", async () => {
     const browser = await run.launch();
     const tab = await run.page();
     await tab.call("connect", [db], 30_000);
@@ -1096,7 +1152,12 @@ function findFiles(dir: string, re: RegExp): string[] {
 // --- Main.
 
 function replay(opts: Options, iteration: number): string {
-  return `pnpm --filter @opfs-lsm/kv kill-chrome --seed ${opts.seed} --from ${iteration} --iterations 1 --kinds ${opts.kinds.join(",")} --no-probes`;
+  return `pnpm --filter @opfs-lsm/kv kill-chrome --seed ${opts.seed} --from ${iteration} --iterations 1 --kinds ${opts.kinds.join(",")} --no-probes${hostsOf(opts)}`;
+}
+
+/** The host mode of a run, as its flags. */
+function hostsOf(opts: Options): string {
+  return opts.dedicated ? ` --hosts dedicated${opts.staged ? " --staged" : ""}` : "";
 }
 
 async function main(): Promise<number> {
@@ -1125,7 +1186,7 @@ async function main(): Promise<number> {
   const run = new Run(opts, origin, profile);
   const started = Date.now();
   const deadline = started + opts.minutes * 60_000;
-  console.log(`kill-chrome seed=${opts.seed} kinds=${opts.kinds.join(",")} profile=${profile} origin=${origin}`);
+  console.log(`kill-chrome seed=${opts.seed} kinds=${opts.kinds.join(",")} hosts=${opts.dedicated ? `dedicated${opts.staged ? " staged" : ""}` : "shared"} profile=${profile} origin=${origin}`);
 
   let failures = 0;
   const counts = new Map<string, { ok: number; fail: number }>();

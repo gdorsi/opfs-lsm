@@ -9,7 +9,11 @@ const SRC = path.resolve(import.meta.dirname, "../src");
 
 /** The source files that put bytes into the bundle of `entry`. */
 async function bundled(entry: string): Promise<string[]> {
-  const { metafile } = await build({
+  return (await bundle(entry)).files;
+}
+
+async function bundle(entry: string): Promise<{ files: string[]; code: string }> {
+  const { metafile, outputFiles } = await build({
     entryPoints: [path.join(SRC, entry)],
     bundle: true,
     write: false,
@@ -20,11 +24,12 @@ async function bundled(entry: string): Promise<string[]> {
     outdir: "out",
     logLevel: "silent",
   });
-  return Object.values(metafile.outputs).flatMap((out) =>
+  const files = Object.values(metafile.outputs).flatMap((out) =>
     Object.entries(out.inputs)
       .filter(([, input]) => input.bytesInOutput > 0)
       .map(([file]) => path.basename(file)),
   );
+  return { files, code: outputFiles.map((file) => file.text).join("\n") };
 }
 
 const ports: MessagePort[] = [];
@@ -42,6 +47,11 @@ describe("the SharedWorker an app loads", () => {
 
   it("the testing one does", async () => {
     expect(await bundled("host/metered-worker.ts")).toContain("counting-fs.ts");
+  });
+
+  it("reads no proof flag from its URL, which the testing one does", async () => {
+    expect((await bundle("host/shared-worker.ts")).code).not.toContain("location");
+    expect((await bundle("host/metered-worker.ts")).code).toContain("location.hash");
   });
 
   it("rejects a stats request", async () => {
