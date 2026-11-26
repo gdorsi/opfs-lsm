@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { compareBytes, keyToString } from "../src/bytes.js";
+import { compareBytes } from "../src/bytes.js";
+import { keyToString } from "./sim/oracle.js";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget } from "../src/host/budget.js";
 import { mergeNextStep, pumpMerge } from "../src/host/compact.js";
