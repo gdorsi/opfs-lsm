@@ -60,6 +60,6 @@ The findings and the scripts that drive a phone over adb are in [the Android dev
 The host that writes without `createWritable()` ran in two places:
 
 - **Desktop Chrome 158**, with `createWritable()` hidden in the testing worker. Chrome gives a sync access handle to a dedicated Worker only, so each tab ran its host in one. The two-tab proof passed, and no kill in the kill-and-recover loop lost an acked write ([Verification](verification.md#kill-real-chrome)).
-- **Safari 18.6 on macOS**, where a prototype of this writer flushed, compacted and wrote its reserve from the SharedWorker. The writer that ships makes the same file calls, and has not run in Safari itself, nor has its scratch file.
+- **Safari 18.6 on macOS**, from the SharedWorker. The scratch file passed and left nothing behind. In a two-tab run the host flushed, compacted and wrote its reserve, and rows read back from run files after a reload.
 
 Firefox and iOS are not tested yet.
