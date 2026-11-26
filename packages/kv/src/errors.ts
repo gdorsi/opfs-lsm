@@ -77,6 +77,11 @@ export function codeOfError(err: unknown): ErrorCode | undefined {
   return undefined;
 }
 
+/** Whether `err` is an object named `name`, as a DOMException is. */
+export function hasErrorName(err: unknown, name: string): boolean {
+  return typeof err === "object" && err !== null && "name" in err && err.name === name;
+}
+
 /** Whether the browser refused a write for lack of space. */
 export function isQuota(err: unknown): boolean {
   return codeOfError(err) === "quota";

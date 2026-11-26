@@ -1,5 +1,5 @@
 import { checkDbName, type DbName } from "../check.js";
-import { ClosedError, codeOfError, isQuota, StorageUnavailableError } from "../errors.js";
+import { ClosedError, codeOfError, hasErrorName, isQuota, StorageUnavailableError } from "../errors.js";
 import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../idb/wal.js";
 import type { AsyncFs, FileWrites } from "../opfs/async-fs.js";
 import { fileWrites } from "../opfs/browser-fs.js";
@@ -407,7 +407,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
         quiet(watch);
       },
       (err: unknown) => {
-        if (isClosedDatabase(err)) return;
+        // The WAL database closed under the read.
+        if (hasErrorName(err, "InvalidStateError")) return;
         failed("reading the WAL", err);
       },
     );
@@ -817,15 +818,6 @@ function announceGeneration(dbName: DbName): void {
   const message: BusMessage = { kind: "ingest" };
   bus.postMessage(message);
   bus.close();
-}
-
-function isClosedDatabase(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "InvalidStateError"
-  );
 }
 
 /**
