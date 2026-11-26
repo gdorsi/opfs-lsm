@@ -1,12 +1,6 @@
 import { compareFrom, containsAll, copyOut, sharedPrefix } from "../bytes.js";
 import { asSeq, type Seq } from "../seq.js";
-
-type Version = {
-  readonly key: Uint8Array;
-  readonly kind: "put" | "del";
-  /** The WAL seq that wrote the entry. */
-  readonly seq: Seq;
-};
+import type { MemRow } from "./memtable.js";
 
 /** The u64 seq at `block[o]`, read as two u32 halves, which is exact below 2^53 and allocates no BigInt. */
 export function seqIn(block: Uint8Array, o: number): Seq {
@@ -140,11 +134,7 @@ export class BlockEntry {
  * a read copies both to hand them out. A record of a run is a `BlockEntry`.
  */
 export type LayerEntry =
-  | (Version & {
-      /** Present iff kind === "put". */
-      readonly value?: Uint8Array;
-      readonly block?: undefined;
-    })
+  | (MemRow & { readonly block?: undefined })
   | BlockEntry;
 
 /** `compareFrom(a.key, b.key, from)`, without copying the key of a run's record. */

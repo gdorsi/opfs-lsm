@@ -9,6 +9,7 @@ export type MemRow = {
   readonly key: Uint8Array;
   readonly seq: Seq;
   readonly kind: "put" | "del";
+  /** Present iff kind === "put". */
   readonly value?: Uint8Array;
 };
 
