@@ -2,9 +2,9 @@ import { compareBytes } from "../../src/bytes.js";
 import { CorruptDatabaseError } from "../../src/errors.js";
 import { crc32 } from "../../src/store/crc32.js";
 import { throughAt, type Marks } from "../../src/store/marks.js";
-import type { Demand, MergeCore, MergeSpec, MergeStop } from "../../src/store/engine.js";
-import { SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../../src/store/sst.js";
-import { blockLengths, decodeBlock, encodeRunRef, entryRecordSize, footerRef, type FooterRef } from "./sst-ref.js";
+import type { Demand, MergeCore, MergeInput, MergeSpec, MergeStop } from "../../src/store/engine.js";
+import { decodeIndex, SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../../src/store/sst.js";
+import { decodeBlock, encodeRunRef, entryRecordSize, footerRef, type FooterRef } from "./sst-ref.js";
 
 /**
  * The merge session in TypeScript (packages/kv/engine/abi.md, "Merge session"),
@@ -41,9 +41,11 @@ class Session implements MergeCore {
   private finished: { readonly body: Uint8Array; readonly end: RunEnd; at: number } | undefined;
 
   constructor(spec: MergeSpec) {
-    if (spec.sources.some((runs) => runs.some((size) => size < SST_FOOTER_BYTES))) {
+    if (spec.sources.some((runs) => runs.some((run) => run.size < SST_FOOTER_BYTES))) {
       throw new CorruptDatabaseError("sst too short");
     }
+    // Every index is checked before any read: its blocks must end before the run's footer.
+    for (const run of spec.sources.flat()) decodeIndex(run.index, run.size - SST_FOOTER_BYTES);
     this.chunkBytes = Math.max(1, spec.chunkBytes);
     const tailBytes = Math.max(SST_FOOTER_BYTES, spec.tailBytes);
     this.sources = spec.sources.map((runs, i) => new Source(new Reader(i, runs, this.chunkBytes, tailBytes, this.pace)));
@@ -202,13 +204,13 @@ class Source {
   }
 }
 
-/** What a reader learned of its current run from the run's footer and index. */
+/** What a reader learned of its current run from the run's footer and from its index, which the host passed. */
 type Layout = {
   readonly dataLen: number;
   readonly entryCount: number;
   /** The length of each data block, in file order. */
   readonly blocks: readonly number[];
-  /** What the run's CRC covers after the data: the bloom, the index and the footer's fields. */
+  /** What the run's CRC covers after the data: the bloom and the footer's fields. */
   readonly meta: Uint8Array;
   readonly storedCrc: number;
 };
@@ -231,9 +233,9 @@ type Blocks = {
 
 /** What a reader is reading of its current run. */
 type Read =
-  /** The run's tail: its footer, and its bloom and index when they fit. */
+  /** The run's tail: its footer, and its bloom when it fits. */
   | { readonly kind: "tail" }
-  /** The bloom or index starts before the tail: the bytes in front of it are asked for. */
+  /** The bloom starts before the tail: the bytes in front of it are asked for. */
   | { readonly kind: "meta-rest"; readonly tail: Uint8Array; readonly footer: FooterRef }
   | Blocks
   /** Every run of the source was read and checked. */
@@ -256,7 +258,7 @@ class Reader {
 
   constructor(
     private readonly source: number,
-    private readonly runs: readonly number[],
+    private readonly runs: readonly MergeInput[],
     private readonly chunkBytes: number,
     private readonly tailBytes: number,
     private readonly pace: { consumed: number },
@@ -305,13 +307,13 @@ class Reader {
   }
 
   private askTail(): Demand {
-    const size = this.runs[this.run]!;
+    const { size } = this.runs[this.run]!;
     const length = Math.min(size, this.tailBytes);
     return this.asks(size - length, length);
   }
 
   private takeMeta(read: Extract<Read, { kind: "tail" | "meta-rest" }>, bytes: Uint8Array): void {
-    const size = this.runs[this.run]!;
+    const { size } = this.runs[this.run]!;
     if (read.kind === "meta-rest") {
       const meta = new Uint8Array(bytes.byteLength + read.tail.byteLength);
       meta.set(bytes);
@@ -335,14 +337,14 @@ class Reader {
     }
   }
 
-  /** Index the run from `meta`, its bytes from the end of its data on. */
+  /** Start on the run's blocks, as its index places them. `meta` is its bytes from the end of its data on. */
   private startBlocks(footer: FooterRef, meta: Uint8Array): Blocks {
-    // The CRC sits after the footer's seven fields and covers every byte before it.
-    const crcAt = footer.indexEnd + 28 - footer.dataLen;
+    // The CRC sits after the footer's three fields and covers every byte before it.
+    const crcAt = meta.byteLength - 12;
     const layout: Layout = {
       dataLen: footer.dataLen,
       entryCount: footer.entryCount,
-      blocks: blockLengths(meta, footer),
+      blocks: blockLengths(this.runs[this.run]!.index, footer.dataLen),
       meta: meta.subarray(0, crcAt),
       storedCrc: new DataView(meta.buffer, meta.byteOffset, meta.byteLength).getUint32(crcAt, true),
     };
@@ -390,6 +392,17 @@ class Reader {
     this.run++;
     this.read = this.run < this.runs.length ? { kind: "tail" } : { kind: "done" };
   }
+}
+
+/**
+ * The length of each data block, in file order, from a run's index. Encoders
+ * write blocks back to back from offset 0 and a merge reads them that way, so
+ * they must end where the footer says the data does.
+ */
+function blockLengths(index: Uint8Array, dataLen: number): number[] {
+  const { blockStart } = decodeIndex(index, dataLen);
+  if (blockStart[blockStart.length - 1] !== dataLen) throw new CorruptDatabaseError("sst blocks do not tile the data");
+  return Array.from(blockStart.subarray(1), (end, b) => end - blockStart[b]!);
 }
 
 function checkCrc(read: Blocks): void {

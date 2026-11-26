@@ -24,7 +24,7 @@ import {
  */
 
 const SST_MAGIC = 0x4f4c5354;
-const VERSION = 2;
+const VERSION = 3;
 const TAG_PUT = 1;
 const TAG_DEL = 2;
 const OFFSET_STRIDE = 4;
@@ -58,7 +58,7 @@ function blockIndexOf(index: readonly BlockIndexEntry[]): BlockIndex {
 /**
  * `index` as a manifest records it: u32 blocks, each block's separator length
  * and byte length as varints, the separators, then a CRC-32. Written from the decoded
- * index, so a test checks `encodeIndex` and `decodeIndex` against it.
+ * index, so a test checks the engine's encoder and `decodeIndex` against it.
  */
 export function indexBlob(index: BlockIndex): Uint8Array {
   const { sepBytes, sepEnd, blockStart } = index;
@@ -204,14 +204,13 @@ function writeRecord(out: Uint8Array, view: DataView, o: number, e: SstEntry, pr
 }
 
 /**
- * Encode SST version 2.
+ * Encode SST version 3.
  *   data blocks (see `encodeBlock`)
  *   bloom bits
- *   index (each: u32 firstLen|key | u32 lastLen|key | u32 offset | u32 length)
- *   footer, 40 bytes:
- *     u32 entryCount | u32 blockCount | u32 bloomOffset | u32 bloomLen
- *     u32 bloomHashCount | u32 indexOffset | u32 indexLen
- *     u32 crc32 of every byte before it | u32 version=2 | u32 magic
+ *   footer, 24 bytes:
+ *     u32 entryCount | u32 dataLen | u32 bloomHashCount
+ *     u32 crc32 of every byte before it | u32 version=3 | u32 magic
+ * The run holds no index: `end.index` is the one its manifest entry records.
  */
 export function encodeRunRef(
   entries: readonly SstEntry[],
@@ -239,12 +238,7 @@ export function encodeRunRef(
     dataLen += blob.byteLength;
   }
 
-  let indexSize = 0;
-  for (const ix of index) {
-    indexSize += 4 + ix.firstKey.byteLength + 4 + ix.lastKey.byteLength + 8;
-  }
-
-  const out = new Uint8Array(dataLen + bloom.bits.byteLength + indexSize + SST_FOOTER_BYTES);
+  const out = new Uint8Array(dataLen + bloom.bits.byteLength + SST_FOOTER_BYTES);
   const view = new DataView(out.buffer);
   let o = 0;
   for (const blob of blockBlobs) {
@@ -254,31 +248,7 @@ export function encodeRunRef(
   out.set(bloom.bits, o);
   o += bloom.bits.byteLength;
 
-  const indexOffset = o;
-  for (const ix of index) {
-    view.setUint32(o, ix.firstKey.byteLength, true);
-    o += 4;
-    out.set(ix.firstKey, o);
-    o += ix.firstKey.byteLength;
-    view.setUint32(o, ix.lastKey.byteLength, true);
-    o += 4;
-    out.set(ix.lastKey, o);
-    o += ix.lastKey.byteLength;
-    view.setUint32(o, ix.offset, true);
-    o += 4;
-    view.setUint32(o, ix.length, true);
-    o += 4;
-  }
-
-  for (const field of [
-    sorted.length,
-    blocks.length,
-    dataLen,
-    bloom.bits.byteLength,
-    bloom.hashCount,
-    indexOffset,
-    indexSize,
-  ]) {
+  for (const field of [sorted.length, dataLen, bloom.hashCount]) {
     view.setUint32(o, field, true);
     o += 4;
   }
@@ -302,97 +272,78 @@ export function encodeSstRef(entries: readonly SstEntry[], blockTarget = SST_BLO
   return encodeRunRef(entries, blockTarget).body;
 }
 
-/** A run's footer as `readFooter` checks it, with the fields only this reference reads. */
-export type FooterRef = SstFooter & {
-  entryCount: number;
-  blockCount: number;
-  /** Where the footer starts, which is also where the index ends. */
-  indexEnd: number;
-};
+/** A run's footer as `readFooter` checks it, with the field only this reference reads. */
+export type FooterRef = SstFooter & { entryCount: number };
 
 /** `tail` is the last `tail.byteLength` bytes of a `fileSize`-byte run, as for `readFooter`. */
 export function footerRef(tail: Uint8Array, fileSize: number): FooterRef {
   const f = readFooter(tail, fileSize);
   const view = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
-  const at = tail.byteLength - SST_FOOTER_BYTES;
-  return { ...f, entryCount: view.getUint32(at, true), blockCount: view.getUint32(at + 4, true), indexEnd: fileSize - SST_FOOTER_BYTES };
+  return { ...f, entryCount: view.getUint32(tail.byteLength - SST_FOOTER_BYTES, true) };
 }
 
-type BlockLayout = {
+type RunLayout = {
   view: DataView;
   /** Where the CRC is stored. It covers every byte before it. */
   crcOff: number;
   entryCount: number;
-  blockCount: number;
   dataLen: number;
-  bloom: BloomFilter;
-  dataStart: number;
-  indexStart: number;
-  indexEnd: number;
 };
 
-function parseFooter(buf: Uint8Array): BlockLayout {
+function parseFooter(buf: Uint8Array): RunLayout {
   const f = footerRef(buf, buf.byteLength);
   return {
     view: new DataView(buf.buffer, buf.byteOffset, buf.byteLength),
-    crcOff: f.indexEnd + 28,
+    crcOff: buf.byteLength - 12,
     entryCount: f.entryCount,
-    blockCount: f.blockCount,
     dataLen: f.dataLen,
-    bloom: { bits: buf.slice(f.dataLen, f.indexStart), hashCount: f.bloomHashCount },
-    dataStart: 0,
-    indexStart: f.indexStart,
-    indexEnd: f.indexEnd,
   };
-}
-
-function readBlockIndex(
-  buf: Uint8Array,
-  view: DataView,
-  indexStart: number,
-  indexEnd: number,
-  blockCount: number,
-): BlockIndexEntry[] {
-  const index: BlockIndexEntry[] = [];
-  let o = indexStart;
-  const u32 = () => {
-    if (o + 4 > indexEnd) throw new CorruptDatabaseError("sst index OOB");
-    o += 4;
-    return view.getUint32(o - 4, true);
-  };
-  const key = () => {
-    const len = u32();
-    if (o + len > indexEnd) throw new CorruptDatabaseError("sst index OOB");
-    o += len;
-    return buf.slice(o - len, o);
-  };
-  for (let i = 0; i < blockCount; i++) {
-    const firstKey = key();
-    const lastKey = key();
-    const offset = u32();
-    const length = u32();
-    index.push({ firstKey, lastKey, offset, length });
-  }
-  if (o !== indexEnd) throw new CorruptDatabaseError("sst index trailing");
-  return index;
 }
 
 /**
- * The length of each data block, in file order, from `meta`: a run's
- * bytes from `footer.dataLen` to its end. Encoders write blocks back to back
- * from offset 0 and a merge reads them that way, so the index must agree.
+ * The length of the block that starts at `start`, which a reader of bare
+ * bytes has no index for: its header, the records the header counts, then
+ * its offset table. Nothing of it may reach `limit`, where the data ends.
  */
-export function blockLengths(meta: Uint8Array, footer: FooterRef): number[] {
-  const view = new DataView(meta.buffer, meta.byteOffset, meta.byteLength);
-  const index = readBlockIndex(meta, view, footer.indexStart - footer.dataLen, footer.indexEnd - footer.dataLen, footer.blockCount);
-  let next = 0;
-  const lengths = index.map(({ offset, length }) => {
-    if (offset !== next || length > footer.dataLen - offset) throw new CorruptDatabaseError("sst blocks do not tile the data");
-    next += length;
-    return length;
-  });
-  if (next !== footer.dataLen) throw new CorruptDatabaseError("sst blocks do not tile the data");
-  return lengths;
+export function blockLength(buf: Uint8Array, view: DataView, start: number, limit: number): number {
+  let o = start;
+  const skip = (n: number): number => {
+    if (o + n > limit) throw new CorruptDatabaseError("sst block OOB");
+    o += n;
+    return o - n;
+  };
+  const varint = (): number => {
+    let v = 0;
+    for (let shift = 0; shift < 35; shift += 7) {
+      const b = buf[skip(1)]!;
+      v += (b & 0x7f) * 2 ** shift;
+      if (b < 0x80) return v;
+    }
+    throw new CorruptDatabaseError("sst bad varint");
+  };
+  const count = view.getUint32(skip(4), true);
+  skip(varint());
+  for (let i = 0; i < count; i++) {
+    const tag = buf[skip(9)];
+    skip(varint());
+    if (tag === TAG_PUT) skip(varint());
+    else if (tag !== TAG_DEL) throw new CorruptDatabaseError(`bad sst tag ${tag}`);
+  }
+  skip(offsetTableBytes(count));
+  return o - start;
+}
+
+type Block = { offset: number; length: number; entries: SstEntry[] };
+
+/** Every block of a run's data, `buf[0, dataLen)`, found front to back and decoded. */
+function readBlocks(buf: Uint8Array, view: DataView, dataLen: number): Block[] {
+  const blocks: Block[] = [];
+  for (let offset = 0; offset < dataLen; ) {
+    const length = blockLength(buf, view, offset, dataLen);
+    blocks.push({ offset, length, entries: walkBlock(blockBytes(buf, view, offset, length)) });
+    offset += length;
+  }
+  return blocks;
 }
 
 /** Every record of one block, checking the block holds nothing after them. */
@@ -415,50 +366,51 @@ export function decodeBlock(block: Uint8Array): SstEntry[] {
   return walkBlock(blockBytes(block, view, 0, block.byteLength));
 }
 
+/** Every entry of a whole run file, read with no index: the CRC, then each block where the one before it ends. */
 export function decodeSst(buf: Uint8Array): SstEntry[] {
   const meta = parseFooter(buf);
   if (crc32(buf.subarray(0, meta.crcOff)) !== meta.view.getUint32(meta.crcOff, true)) {
     throw new CorruptDatabaseError("sst crc mismatch");
   }
-  const index = readBlockIndex(
-    buf,
-    meta.view,
-    meta.indexStart,
-    meta.indexEnd,
-    meta.blockCount,
-  );
-  const out: SstEntry[] = [];
-  for (const ix of index) {
-    out.push(...walkBlock(blockBytes(buf, meta.view, meta.dataStart + ix.offset, ix.length)));
-  }
+  const out = readBlocks(buf, meta.view, meta.dataLen).flatMap((block) => block.entries);
   if (out.length !== meta.entryCount) {
     throw new CorruptDatabaseError("sst entry count mismatch");
   }
   return out;
 }
 
-/** The block index of a whole run file, read from its tail. Encoders report the same index, encoded as `indexBlob` does, in `RunEnd`. */
-export function sstBlockIndex(buf: Uint8Array): BlockIndex {
+/** The first and last key of each block of a whole run file, and where the block is. */
+function blockIndexEntries(buf: Uint8Array): BlockIndexEntry[] {
   const meta = parseFooter(buf);
-  return blockIndexOf(readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount));
+  const none = new Uint8Array(0);
+  return readBlocks(buf, meta.view, meta.dataLen).map(({ offset, length, entries }) => ({
+    firstKey: entries[0]?.key ?? none,
+    lastKey: entries[entries.length - 1]?.key ?? none,
+    offset,
+    length,
+  }));
+}
+
+/** The block index of a whole run file, rebuilt from its blocks. Encoders report the same index, encoded as `indexBlob` does, in `RunEnd`. */
+export function sstBlockIndex(buf: Uint8Array): BlockIndex {
+  return blockIndexOf(blockIndexEntries(buf));
 }
 
 /**
- * The smallest and largest key of a whole run file, read from its index, or
+ * The smallest and largest key of a whole run file, read from its blocks, or
  * undefined for an empty run. Encoders report the same range in `RunEnd`.
  */
 export function sstKeyRange(buf: Uint8Array): KeyRange | undefined {
-  const meta = parseFooter(buf);
-  if (meta.entryCount === 0) return undefined;
-  const index = readBlockIndex(buf, meta.view, meta.indexStart, meta.indexEnd, meta.blockCount);
+  if (parseFooter(buf).entryCount === 0) return undefined;
+  const index = blockIndexEntries(buf);
   const first = index[0];
   const last = index[index.length - 1];
   return first && last ? { smallest: first.firstKey, largest: last.lastKey } : undefined;
 }
 
 /**
- * What an encoder reports at the end of a whole run file, read back from its
- * tail: what the run's manifest entry records, for a reader of bare bytes.
+ * What an encoder reports at the end of a whole run file, rebuilt from its
+ * bytes: what the run's manifest entry records, for a reader of bare bytes.
  */
 export function sstRunEnd(buf: Uint8Array): RunEnd {
   const range = sstKeyRange(buf);

@@ -53,10 +53,12 @@ count of runs, not of blocks.
 `bytes` and the key range let the compaction planner size and route levels without opening a
 file. The level of a run is in its path.
 
-A run's index lets a tab read any block without reading the run's own index first
-([design.md](design.md#reading-a-run)). The indexes follow the head in run order, each as long as
-its run's `index bytes`, and the file ends with the last one. A tab checks and decodes an index
-when it first reads the run. The blocks are back to back from
+A run's index is the only index of its blocks: the run file holds none
+([sst-format.md](sst-format.md)). A tab reads any block of the run with it
+([design.md](design.md#reading-a-run)), and a compaction takes the length of each block of an
+input from it ([design.md](design.md#merging)). The indexes follow the head in run order, each as
+long as its run's `index bytes`, and the file ends with the last one. A tab checks and decodes an
+index when it first reads the run. The blocks are back to back from
 offset 0, so the block lengths before a block add up to its offset, and all of them to the offset
 of the run's bloom filter. The separator of a block is the shortest prefix of its first key that
 sorts above the last key of the block before it, and the whole first key for block 0. A key can
@@ -74,4 +76,6 @@ mark with `through` 0, an end not above its start, `at` at or below its `through
 manifest's `through`, a run whose `marksThrough` is past it, a `head bytes` past the file, or
 indexes that do not end with the file. An index whose CRC does not match, whose block count the
 bytes cannot hold, or whose blocks end past the run's `bytes` is refused when a tab first reads
-the run: the manifest still decodes, and that run's read throws.
+the run: the manifest still decodes, and that run's read throws. A compaction refuses an input
+whose index fails the same checks, or whose block lengths do not add up to the data length in
+the run's footer.

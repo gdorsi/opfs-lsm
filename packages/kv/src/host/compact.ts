@@ -85,7 +85,7 @@ async function writeStep(
       }
     }
     merge = await openMerge({
-      sources: inputs.map((files) => files.map((f) => f.size)),
+      sources: plan.sources.map((source, s) => source.map(({ index }, r) => ({ size: inputs[s]![r]!.size, index }))),
       dropTombstones: plan.bottom,
       marks: base.marks,
       targetBytes: TARGET_RUN_BYTES,

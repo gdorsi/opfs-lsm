@@ -35,7 +35,7 @@ encode_sst(ptr, len) -> i32
     key once as its last record, and what the encoder knows about it.
 
 scan_block_contains(ptr, len, pat_ptr, pat_len) -> i32
-    Input: one data block, the bytes the SST block index names, and a
+    Input: one data block, the bytes the run's index names, and a
     pattern list. Both live in the input region; `pat_ptr` may point
     anywhere inside it. Result: hit records in key order.
 ```
@@ -52,10 +52,14 @@ merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64,
     Input: source list (below), newest source first, then the base
     manifest's marks block, which the session copies without checking it:
     the host encoded it, and a malformed block traps when a pump reads the
-    malformed part. Reserves the working
-    set: about `chunk_bytes` per source plus the output buffer. Returns 0,
+    malformed part. Checks every run's index and keeps its block lengths.
+    Reserves the working set: about `chunk_bytes` per source, four bytes
+    per input block, and the output buffer. The input region also holds
+    every input run's whole index as the host passed it. Returns 0,
     -12 while a session is open, -5 for a malformed list, -1 for a run
-    shorter than a footer, or -10 when the working set cannot be reserved.
+    shorter than a footer, -4 for an index whose CRC does not match, -5
+    for an index that is malformed or whose blocks would end past the
+    run's footer, or -10 when the working set cannot be reserved.
     It traps only when memory cannot hold the session's own objects, a few
     hundred bytes per source.
 
@@ -64,8 +68,8 @@ merge_pump() -> i32
       1 NEED     result: demand records. Read each, `merge_feed` it, pump.
       2 WRITE    result: the next bytes of the open output run, in the
                  session's buffer. Copy them out before the next call.
-      3 RUN_END  result: run head (below) · first_key · last_key · index
-                 rows. Every byte of the run was in a WRITE.
+      3 RUN_END  result: run head (below) · first_key · last_key · index.
+                 Every byte of the run was in a WRITE.
       4 YIELD    about `yield_bytes` of input were merged; result empty.
       5 DONE     result empty. Every run's CRC matched.
     or a negative error code. -15 (UNFED) means a demand was not fed yet
@@ -81,12 +85,15 @@ merge_close() -> i32
     Drop the session and its buffers. Returns 0, with or without one open.
 ```
 
-A session asks for whole blocks only. For each run it first reads the last
-`min(size, tail_bytes)` bytes, which hold the footer and usually the index,
-then the rest of the bloom and index if the tail missed them, then its data
-blocks in order, up to `chunk_bytes` per read. When the tail holds the whole
-run, that one read is all. A NEED lists every source that cannot go on,
-plus a read-ahead for each source holding less than half a chunk.
+A session asks for whole blocks only, and knows where they are from the
+index the source list gives for the run: the run holds none. For each run it
+first reads the last `min(size, tail_bytes)` bytes, which hold the footer
+and usually the bloom, then the rest of the bloom if the tail missed it,
+then its data blocks in order, up to `chunk_bytes` per read. When the tail
+holds the whole run, that one read is all. A NEED lists every source that
+cannot go on, plus a read-ahead for each source holding less than half a
+chunk. A run whose block lengths do not add up to the data length in its
+footer fails with -5 once its footer is read.
 
 A source is runs read back to back as one key-ordered stream. Across
 sources the newest wins; within a source the last duplicate of a key wins,
@@ -106,13 +113,16 @@ entry record     u8 tag (1 put, 2 del) · u64 seq · u32 key_len · key
 pattern list     repeated: u32 len · bytes
 hit record       u32 key_len · u32 value_len · u64 seq · key · value
 run record       u32 entries · u32 size · u32 first_key_len · u32 last_key_len
-                 · sst (size bytes) · first_key · last_key · index rows
-source list      u32 count · repeated: u32 run_count · run_count × u32 size
+                 · sst (size bytes) · first_key · last_key · index
+source list      u32 count · repeated: u32 run_count · run_count × (u32 size
+                 · u32 index_len · index)
 demand record    u32 source · u32 run · u32 offset · u32 len
 run head         u32 entries · u32 size · u32 first_key_len · u32 last_key_len
-index rows       per block: u32 first_key_len · first_key · u32 last_key_len
-                 · last_key · u32 offset · u32 length, the bytes of the SST's
-                 block index. They run to the end of the result
+index            u32 blocks · blocks × (varint separator_len · varint
+                 block_len) · the separators, back to back · u32 crc32 of
+                 every byte of the index before it. It is the run's block
+                 index as the manifest stores it (docs/manifest-format.md).
+                 In a result it runs to the end of the result
 marks block      u32 count · per mark: u32 start_len · start · u8 has_end
                  · (u32 end_len · end, when has_end is 1) · u64 through
                  · u64 at. The end is exclusive, no end is the end of the
@@ -123,8 +133,9 @@ marks block      u32 count · per mark: u32 start_len · start · u8 has_end
 A run record and a RUN_END carry what the manifest records about a run, so
 the caller never reads the SST back for it. `entries` is 0 for an empty run,
 whose two keys are empty; it is what tells an empty run from one whose only
-key is the empty key. The keys and the index rows follow the SST because the
-encoder only knows them when the run is complete.
+key is the empty key. The keys and the index follow the SST because the
+encoder only knows them when the run is complete. The SST holds no index, so
+a merge is opened with the one its encoder reported.
 
 `target_bytes` is an `f64` so JS can pass `Number.MAX_SAFE_INTEGER` for
 "one output run"; implementations saturate it to their address size.
@@ -152,9 +163,9 @@ a merge session it never returns -10; running out of memory inside an
 operation traps, which the loader sees as a `WebAssembly.RuntimeError` and
 answers by replacing the instance and throwing. A merge session reserves
 its working set in `merge_open`, and its reader grows its buffers (for a
-block, a run's bloom and index, or an entry larger than any before)
-without trapping, so it returns -10 instead. Its writer grows with the
-open output run, bounded by `target_bytes`: the staged block, the output
-buffer, one bloom hash per key and one index row per block, kept until the
-next run ends. Running out of memory in the writer traps as it does outside
+block, a run's bloom, or an entry larger than any before) without
+trapping, so it returns -10 instead. Its writer grows
+with the open output run, bounded by `target_bytes`: the staged block, the
+output buffer, one bloom hash per key and one index entry per block, kept
+until the next run ends. Running out of memory in the writer traps as it does outside
 a session.
