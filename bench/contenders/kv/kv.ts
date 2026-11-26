@@ -4,7 +4,7 @@ import { kvCommon, openKv } from "../../page/kv.ts";
 export default defineContender({
   family: "kv",
   durability: "idb-default",
-  fastPath: "openDb (SharedWorker host); putMany = one db.batch; getMany = db.getMany; range = db.range, with its offset and direction; count = db.count; update = db.update; a second tab's read of another tab's writes = db.sync, then db.get",
+  fastPath: "openDb (SharedWorker host); putMany = one db.batch; deleteRange = one db.batch with tx.deleteRange; getMany = db.getMany; range = db.range, with its offset and direction; count = db.count; update = db.update; a second tab's read of another tab's writes = db.sync, then db.get",
   engine: true,
   async open(name) {
     const db = await openKv(name);
@@ -19,6 +19,9 @@ export default defineContender({
         await db.batch((tx) => {
           for (const k of keys) tx.delete(k);
         });
+      },
+      deleteRange: async (start, endExclusive) => {
+        await db.batch((tx) => tx.deleteRange({ start, endExclusive }));
       },
       get: (key) => db.get(key),
       getMany: (keys) => db.getMany(keys),

@@ -130,6 +130,12 @@ suite("renderDocs", () => {
     assert.doesNotMatch(render([20, 21, 22, 23, 24], [100, 101, 102, 103, 104]), /†/);
   });
 
+  test("a table with a cell of 4 runs says it was not checked for two clusters", () => {
+    const note = /\nNo cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states\.\n/;
+    assert.match(render([20, 21, 22, 23], [100, 101, 300, 301]), note);
+    assert.doesNotMatch(render([20, 21, 22, 23, 24], [100, 101, 102, 103, 104]), note);
+  });
+
   test("a cell with no series throws and names the table, the row and the column", () => {
     const records = [...runsOf("kv/idb", [100, 100, 100, 100])];
     assert.throws(

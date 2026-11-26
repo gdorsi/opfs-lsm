@@ -16,6 +16,7 @@ export const PATTERNS = {
   "kv-second-tab": "kv: a second tab opening a store the first tab holds, then reading what the first tab just wrote",
   "kv-delete": "kv: batched random deletes, and the space compaction gives back",
   "kv-read-deleted": "kv: point gets and a cursor-paged scan over fresh tombstones, before compaction settles them",
+  "kv-delete-range": "kv: deletes of a whole key range in one write, then gets and scans across the deleted ranges, before and after compaction",
   "kv-seq-fill": "kv: sequential ingest",
   "kv-scan": "kv: a full ordered scan, seeks followed by 10 or 100 nexts, reverse seeks, and scans bounded above with a limit past the bound",
   "kv-count": "kv: a count of the keys in a range, no value read",

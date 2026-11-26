@@ -19,11 +19,14 @@ Each workload holds 100,000 entries with 16-byte keys and 100-byte values, excep
 | Every 8 KiB value in a fresh tab, 500 neighbouring keys a read | 91.1k ops/s | 178k ops/s | 1.9× |
 | Every 8 KiB value in a fresh tab, 500 scattered keys a read | 99.7k ops/s | 65.3k ops/s | 0.66× |
 | Opening the database in a fresh tab | 24.5 ms | 9.14 ms | 2.7× |
+| The first read after that open | 0.231 ms | 1.39 ms | 0.17× |
 
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.4 to 2.9, commit ce378c55. Full results: [2026-11-25T09-30-12-apple-m5-max](results/2026-11-25T09-30-12-apple-m5-max.md).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
-The open row predates a change to the open: a tab now reads the newest manifest and opens its runs while IndexedDB opens. On an Apple M2 Pro that took the median of 25 fresh-tab opens of this workload from 10.3 to 8.97 ms ([research note](research/open-path-round-trips.md#ahead-of-indexeddb-2026-11-26)).
+The last two rows predate a change to the open: a tab now reads the newest manifest and opens its runs while IndexedDB opens. On an Apple M2 Pro that took the median of 25 fresh-tab opens of this workload from 10.3 to 8.97 ms ([research note](research/open-path-round-trips.md#ahead-of-indexeddb-2026-11-26)).
 
 The read-modify-writes are the YCSB F half of `kv/ycsb-a`, zipfian, timed one at a time. Over the whole mix, half of it reads, kv is ahead, at 23.9k against 17.0k ops/s. The two 8 KiB rows are `kv/large-values`: kv is faster when a read asks for neighbouring keys, and slower when its keys are scattered over the store. The bench also measures YCSB A's blind updates, seeks of 10 keys and batched deletes. This table has no row for them.
 
@@ -48,6 +51,8 @@ The framework adapters, each against the IndexedDB option its framework ships, a
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.6 to 2.9, commit ce378c55. Full results: [2026-11-25T09-42-46-apple-m5-max](results/2026-11-25T09-42-46-apple-m5-max.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
 The IndexedDB options are TanStack DB's `indexedDBCollectionOptions`, y-indexeddb, automerge-repo's `IndexedDBStorageAdapter` and, for TanStack Query, idb-keyval under its per-query persister. Both TanStack DB collections run in eager mode, the default `syncMode`: a collection loads every row when it opens. `indexedDBCollectionOptions` has no on-demand mode. Opening a collection loads its 91,000 rows, so that row is a time and the others are rates. The Yjs editing trace is a burst: 25,700 updates written with no yield between keystrokes, so kv's group commit folds them into few writes while y-indexeddb commits one transaction per update. The paced row below it is one keystroke typed at 60 Hz, which is what an editor feels. The TanStack Query rows restore a cache of 644 queries in a fresh tab, as the store's open then the restore, and then refetch 10 queries at a time, timed until their writes are stored.
@@ -67,6 +72,8 @@ The editing-trace workloads write the trace's first 25,700 keystrokes, then type
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.4 to 2.6, commit ce378c55. Full results: [2026-11-25T09-42-46-apple-m5-max](results/2026-11-25T09-42-46-apple-m5-max.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
 Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 13.3 ms before the settle and 22.5 ms after for Yjs, 6.2 ms and 5.7 ms for Automerge.
@@ -84,6 +91,8 @@ In on-demand mode the comparison is TanStack DB's SQLite persistence, `@tanstack
 | 10 rows by id | 2.43k queries/s | 5.71k queries/s | 2.3× |
 
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.2 to 1.9, commit ce378c55. Full results: [2026-11-25T09-53-07-apple-m5-max](results/2026-11-25T09-53-07-apple-m5-max.md).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
 [bench/README.md](../bench/README.md) lists every family and workload.
@@ -163,6 +172,8 @@ A larger workspace from the same simulation, against Dexie: 200,000 issues, 600 
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.1 to 2.0, commit ce378c55. Full results: [2026-11-25T08-47-47-apple-m5-max](results/2026-11-25T08-47-47-apple-m5-max.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
 Warm, docstore is faster than Dexie on all 11 goals, from 2.1× to 65×. Cold, it is faster on 6 and slower on 4, the todo issues, the issue with its comments, the open issues by priority and the recent issues, and the runs do not separate the two on a person's open issues. IndexedDB cannot put an array field, the issue's labels, in one index with other fields. So Dexie walks the project's issues newest first, tests each one's labels and status, and stops after 50 matches, which reads more issues the rarer the label is. docstore's index holds the label, the project, the status and the update time, so it walks the entries of each open status newest first, together, and stops after 50 issues. Started together, the board's 6 reads end sooner than in turn on both stores when cold, by 1.2× on Dexie and 1.1× on docstore. Warm, docstore's times are equal and the runs do not separate Dexie's.
@@ -201,6 +212,8 @@ The same workspace, written through TanStack DB collections of users, projects, 
 | Frames dropped over 426 batches, screens open | 0 | 0.5 | 8.5 | 70 | |
 
 Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.8 to 3.0, commit ce378c55. Full results: [2026-11-25T09-58-56-apple-m5-max](results/2026-11-25T09-58-56-apple-m5-max.md).
+
+No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
 <!-- /bench:table -->
 
 The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds about 2 ms to a batch on IndexedDB, 2 ms on eager docstore and 3 ms on docstore on demand. On SQLite it adds 64 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
