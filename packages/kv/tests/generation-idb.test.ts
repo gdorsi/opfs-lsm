@@ -3,7 +3,8 @@ import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src
 import { TabWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { decodeGeneration, manifestHead } from "../src/store/generation.js";
+import { decodeGeneration, manifestHead, publishGeneration } from "../src/store/generation.js";
+import { asGeneration } from "../src/seq.js";
 
 const NAME = "generation-idb";
 const enc = new TextEncoder();
@@ -62,6 +63,8 @@ function manifestCopy(): Promise<Uint8Array | undefined> {
 function observedFs(inner: MemoryFs) {
   let lists = 0;
   const opened: string[] = [];
+  const closed: string[] = [];
+  let manifestReads = 0;
   let holdNextManifestRead = false;
   let release!: () => void;
   const held = new Promise<void>((resolve) => {
@@ -73,6 +76,7 @@ function observedFs(inner: MemoryFs) {
   });
   const fs: AsyncFs = {
     async read(path, offset, length) {
+      if (path.startsWith("m/")) manifestReads += 1;
       const bytes = await inner.read(path, offset, length);
       if (holdNextManifestRead && path.startsWith("m/")) {
         holdNextManifestRead = false;
@@ -86,9 +90,18 @@ function observedFs(inner: MemoryFs) {
       return inner.list(dir);
     },
     remove: (path) => inner.remove(path),
-    open: (path) => {
+    open: async (path) => {
       opened.push(path);
-      return inner.open(path);
+      const file = await inner.open(path);
+      return (
+        file && {
+          ...file,
+          close: () => {
+            closed.push(path);
+            file.close();
+          },
+        }
+      );
     },
     removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
     create: (path) => inner.create(path),
@@ -97,6 +110,8 @@ function observedFs(inner: MemoryFs) {
     fs,
     lists: () => lists,
     opened,
+    closed,
+    manifestReads: () => manifestReads,
     holdNextManifestRead: () => {
       holdNextManifestRead = true;
     },
@@ -194,7 +209,8 @@ describe("generation recorded in IndexedDB", () => {
     };
     const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes });
     await o.isHeld;
-    expect(o.opened).toHaveLength(1);
+    // The held read can be the one the open starts before IndexedDB answers, so the run opens a moment later.
+    await vi.waitFor(() => expect(o.opened).toHaveLength(1));
     o.release();
     const db = await reopening;
     expect(tails).toHaveBeenCalledTimes(1);
@@ -202,6 +218,139 @@ describe("generation recorded in IndexedDB", () => {
     expect(text(await db.get(utf("k7")))).toBe("v7");
     expect(text(await db.get(utf("tail")))).toBe("t");
     await db.close();
+  });
+
+  /** One run and a WAL tail, closed. */
+  const oneRunAndTail = async (): Promise<MemoryFs> => {
+    const inner = new MemoryFs();
+    const first = await openHarnessDb({ name: NAME, writerId: "w1", fs: inner, maxWalBytes });
+    for (let i = 0; i < 20; i++) await first.put(utf(`k${i}`), utf(`v${i}`));
+    await ingest(first);
+    await first.put(utf("tail"), utf("t"));
+    await first.close();
+    return inner;
+  };
+
+  /** Holds every `TabWal.open` until `release`, as a cold IndexedDB does. */
+  const heldWalOpen = () => {
+    const open = TabWal.open;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    TabWal.open = async (...args) => {
+      await held;
+      return open(...args);
+    };
+    return () => {
+      TabWal.open = open;
+      release();
+    };
+  };
+
+  it("a reopen reads the newest manifest and opens its run while IndexedDB still opens, once", async () => {
+    const o = observedFs(await oneRunAndTail());
+    const release = heldWalOpen();
+    const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes });
+    await vi.waitFor(() => expect(o.opened).toHaveLength(1));
+    release();
+    const db = await reopening;
+    expect(text(await db.get(utf("k7")))).toBe("v7");
+    expect(text(await db.get(utf("tail")))).toBe("t");
+    expect(o.opened).toHaveLength(1);
+    expect(o.manifestReads()).toBe(1);
+    expect(o.closed).toEqual([]);
+    await db.close();
+    expect(o.closed).toEqual(o.opened);
+  });
+
+  it("a reopen that ends before its early listing answers opens nothing after", async () => {
+    const o = observedFs(await oneRunAndTail());
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let first = true;
+    const fs: AsyncFs = {
+      ...o.fs,
+      list: async (dir) => {
+        if (first) {
+          first = false;
+          await held;
+        }
+        return o.fs.list(dir);
+      },
+    };
+    const db = await openHarnessDb({ name: NAME, writerId: "w2", fs, maxWalBytes });
+    expect(o.opened).toHaveLength(1);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(o.opened).toHaveLength(1);
+    expect(o.manifestReads()).toBe(1);
+    expect(text(await db.get(utf("k7")))).toBe("v7");
+    await db.close();
+    expect(o.closed).toEqual(o.opened);
+  });
+
+  it("a reopen closes the run it opened ahead when IndexedDB records another manifest", async () => {
+    const inner = await oneRunAndTail();
+    const [file] = await inner.list("m");
+    const recorded = decodeGeneration((await inner.read(`m/${file}`, 0, Number.POSITIVE_INFINITY))!);
+    // A manifest no flush recorded, numbered past the recorded one, over a copy of the run. Recovery keeps the
+    // recorded one: this one reaches no further.
+    const run = recorded.runs[0]!;
+    const copy = await inner.create("l0/copy.sst");
+    await copy.write((await inner.read(run.path, 0, Number.POSITIVE_INFINITY))!);
+    await copy.finish();
+    await publishGeneration(inner, { ...recorded, generation: asGeneration(recorded.generation + 5), runs: [{ ...run, path: "l0/copy.sst" }] });
+    const o = observedFs(inner);
+    const release = heldWalOpen();
+    const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes });
+    await vi.waitFor(() => expect(o.opened).toEqual(["l0/copy.sst"]));
+    release();
+    const db = await reopening;
+    expect(text(await db.get(utf("k7")))).toBe("v7");
+    expect(text(await db.get(utf("tail")))).toBe("t");
+    await vi.waitFor(() => expect(o.closed).toEqual(["l0/copy.sst"]));
+    expect(o.opened).toEqual(["l0/copy.sst", run.path]);
+    await db.close();
+    expect(o.closed).toEqual(["l0/copy.sst", run.path]);
+  });
+
+  it("a reopen whose early read met a manifest still being written reads it again", async () => {
+    const inner = await oneRunAndTail();
+    let early = true;
+    // The first read of the manifest file finds it created and not closed yet, as during a flush.
+    const fs: AsyncFs = {
+      read: async (path, offset, length) => {
+        if (early && path.startsWith("m/")) {
+          early = false;
+          return new Uint8Array(0);
+        }
+        return inner.read(path, offset, length);
+      },
+      list: (dir) => inner.list(dir),
+      remove: (path) => inner.remove(path),
+      open: (path) => inner.open(path),
+      removeUnlessOpen: (path) => inner.removeUnlessOpen(path),
+      create: (path) => inner.create(path),
+    };
+    const release = heldWalOpen();
+    const reopening = openHarnessDb({ name: NAME, writerId: "w2", fs, maxWalBytes });
+    await vi.waitFor(() => expect(early).toBe(false));
+    release();
+    const db = await reopening;
+    expect(text(await db.get(utf("k7")))).toBe("v7");
+    expect(text(await db.get(utf("tail")))).toBe("t");
+    await db.close();
+  });
+
+  it("a reopen that fails closes the run it opened ahead", async () => {
+    const o = observedFs(await oneRunAndTail());
+    const open = TabWal.open;
+    TabWal.open = async () => {
+      await vi.waitFor(() => expect(o.opened).toHaveLength(1));
+      throw new Error("no IndexedDB");
+    };
+    await expect(openHarnessDb({ name: NAME, writerId: "w2", fs: o.fs, maxWalBytes })).rejects.toThrow("no IndexedDB");
+    TabWal.open = open;
+    await vi.waitFor(() => expect(o.closed).toEqual(o.opened));
   });
 
   /** A database of one run holding `a`, closed, with byte `at` of its manifest file changed. `at` counts from the end when negative. */
