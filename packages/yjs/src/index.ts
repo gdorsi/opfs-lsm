@@ -9,11 +9,12 @@ import * as Y from "yjs";
  * Every local update is one `put`. Yjs updates commute, so the keys only have
  * to be unique, not ordered: `<doc prefix><session u32><seq u32>`, where the
  * session is random per persistence instance. Loading reads the doc's prefix
- * in one range scan and applies every update in one transaction. Once the doc
- * has `trimSize` stored updates or more and no update for `trimDelayMs`, they
- * are replaced with one merged state in one batch, the way y-indexeddb trims
- * at 500. A load replays every stored update, so a long session left unmerged
- * makes the next load slow.
+ * in one range scan and applies every update in one transaction. Once this
+ * instance has loaded and written `trimSize` updates or more and the doc has
+ * had no update for `trimDelayMs`, the doc's stored updates are replaced with
+ * one merged state in one batch, the way y-indexeddb trims at 500. A load
+ * replays every stored update, so a long session left unmerged makes the next
+ * load slow.
  */
 export class KvPersistence {
   readonly whenSynced: Promise<this>;
@@ -31,6 +32,8 @@ export class KvPersistence {
   private trimTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Set<Promise<void>>();
   private failure: { readonly error: unknown } | undefined;
+  /** The bytes of every put that failed since the last flush, which puts them again. */
+  private failed: Uint8Array[] = [];
   private destroying: Promise<void> | undefined;
 
   constructor(
@@ -45,21 +48,19 @@ export class KvPersistence {
     // Content the doc held before this persistence was attached fires no update event.
     // That includes an update still waiting for the one it builds on.
     const { clients, pendingStructs, pendingDs } = doc.store;
-    if (clients.size > 0 || pendingStructs || pendingDs) this.track(db.put(this.nextKey(), Y.encodeStateAsUpdate(doc)));
+    if (clients.size > 0 || pendingStructs || pendingDs) this.write(Y.encodeStateAsUpdate(doc));
     this.whenSynced = this.load();
   }
 
   /**
    * Resolves once every update written so far has been acked by the WAL. When
-   * a write failed, the stored doc misses that update, so flush writes the
-   * whole doc state once more and rejects if that write fails too.
+   * a write failed, the stored doc misses that update, so flush puts it again,
+   * one entry per failed write, and rejects if one of those puts fails too.
    */
   async flush(): Promise<void> {
     await this.settle();
-    if (this.failure) {
-      this.failure = undefined;
-      this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
-    }
+    this.failure = undefined;
+    for (const update of this.failed.splice(0)) this.write(update);
     // Settle again even with no failure: a concurrent flush may have just started the repair.
     await this.settle();
     this.throwIfFailed();
@@ -74,7 +75,7 @@ export class KvPersistence {
     this.doc.off("destroy", this.docDestroyed);
     // An update that went pending while attached fired no update event.
     const { pendingStructs, pendingDs } = this.doc.store;
-    if (pendingStructs || pendingDs) this.track(this.db.put(this.nextKey(), Y.encodeStateAsUpdate(this.doc)));
+    if (pendingStructs || pendingDs) this.write(Y.encodeStateAsUpdate(this.doc));
     await this.flush();
   }
 
@@ -96,7 +97,7 @@ export class KvPersistence {
 
   private readonly storeUpdate = (update: Uint8Array, origin: unknown): void => {
     if (origin === this || this.destroying) return;
-    this.track(this.db.put(this.nextKey(), update));
+    this.write(update);
     if (++this.stored >= this.trimSize) {
       clearTimeout(this.trimTimer);
       this.trimTimer = setTimeout(() => this.track(this.trim()), this.trimDelayMs);
@@ -179,11 +180,18 @@ export class KvPersistence {
       .catch(() => {});
   }
 
-  private track(write: Promise<unknown>): void {
+  private write(update: Uint8Array): void {
+    this.track(this.db.put(this.nextKey(), update), update);
+  }
+
+  /** A failed merge, tracked with no `update`, loses nothing: its batch lands whole or not at all. */
+  private track(write: Promise<unknown>, update?: Uint8Array): void {
     const done = write.then(
       () => {},
       (error: unknown) => {
+        if (!update) return;
         this.failure ??= { error };
+        this.failed.push(update);
       },
     ).finally(() => this.pending.delete(done));
     this.pending.add(done);

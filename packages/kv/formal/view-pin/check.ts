@@ -123,6 +123,21 @@ const inside = (o: object) => o as unknown as Inside;
 
 const broken: [string, Table][] = [
   [
+    "a range delete appended to the live marks array in place",
+    class extends Memtable {
+      override apply(record: Parameters<Memtable["apply"]>[0]) {
+        const self = this as unknown as { held: unknown[] };
+        const before = self.held;
+        const out = super.apply(record);
+        if (self.held !== before && before.length > 0) {
+          before.push(...self.held.slice(before.length));
+          self.held = before;
+        }
+        return out;
+      }
+    },
+  ],
+  [
     "a pin that shares the live chunk array",
     class extends Memtable {
       override pin(): MemRows {

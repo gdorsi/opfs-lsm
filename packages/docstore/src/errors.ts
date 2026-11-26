@@ -13,7 +13,7 @@ export type DocStoreErrorCode =
   /** A query on an index whose backfill met data it cannot hold. `ids` names the documents. */
   | "index-failed"
   | "query"
-  /** `after` is outside the query's range, or was made before a `clear` or a redefinition. */
+  /** `after` is not a cursor, is outside the query's range, or was made before its index was redefined. A `clear` leaves a cursor valid. */
   | "cursor"
   /** A bad or repeated id, `modify` changed the id, or a value an index cannot hold. Nothing is stored. */
   | "document"

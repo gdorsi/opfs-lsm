@@ -50,10 +50,12 @@ once more when that failure removed the file. Any other refused write fails with
 **Refused append.** A WAL group that aborts with `QuotaExceededError` calls `makeRoom` on the
 host, which handles it as a refused write, then opens a new IndexedDB connection and adds the
 same records once more. Groups refused together share one `makeRoom` and keep the order they
-were issued in. An `update` refused in a transaction of its own runs its `body` again. A second
-refusal fails every write of the group with `StorageFullError`, whose `cause` is the browser's
-error. The connection is replaced after every such abort, and no write transaction starts while
-it is: a connection that saw one can refuse every later write.
+were issued in. An `update` whose transaction follows a refused group aborts it before `body`
+runs, and starts another once that group has landed or failed. An `update` refused in a transaction
+of its own runs its `body` again. A second refusal fails every write of the group with
+`StorageFullError`, whose `cause` is the browser's error. The connection is replaced after every
+such abort, and no write transaction starts while it is: a connection that saw one can refuse
+every later write.
 
 **Offer.** The host posts `{ kind: "full", full: { bytes, need } }` on the layers channel: `bytes`
 is the sum of the run file bytes of the recorded manifest, and `need` is `reserveBytes`. The

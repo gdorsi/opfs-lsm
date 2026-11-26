@@ -247,7 +247,13 @@ describe("a WAL append the browser refuses", () => {
   });
 
   it("runs the body of an update again when the browser refuses its transaction, and only its last run counts", async () => {
-    const db = await openFlushed();
+    const a = await openFlushed();
+    const b = await open();
+    // b's put takes the seq a's update row names, so a's updates run in a transaction of their own from here.
+    await a.update([utf("first")], (_, tx) => {
+      void b.put(utf("b"), utf("2"));
+      tx.put(utf("a"), utf("1"));
+    });
     const release = host.makeRoom.bind(host);
     let go!: () => void;
     const held = new Promise<void>((resolve) => (go = resolve));
@@ -258,9 +264,7 @@ describe("a WAL append the browser refuses", () => {
     fillOrigin();
     let runs = 0;
     let seen: string | undefined;
-    // With a put of this handle in flight, the update writes in a transaction of its own.
-    const put = db.put(utf("first"), utf("new"));
-    const update = db.update([utf("first")], ([row], tx) => {
+    const update = a.update([utf("first")], ([row], tx) => {
       runs += 1;
       seen = dec.decode(row!);
       tx.put(utf("copy"), row!);
@@ -268,9 +272,8 @@ describe("a WAL append the browser refuses", () => {
     });
     await vi.waitFor(() => expect(runs).toBe(1));
     go();
-    await put;
     expect(await update).toBe(2);
-    expect(await read(db, "copy")).toBe(seen);
+    expect(await read(a, "copy")).toBe(seen);
   });
 
   it("holds the writes issued while it recovers, and lands them after it", async () => {

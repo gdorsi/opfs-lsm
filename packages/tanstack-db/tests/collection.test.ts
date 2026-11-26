@@ -287,6 +287,50 @@ test("an own insert during the first load stays visible until the load confirms 
   assert.deepEqual(plain(c.toArray), [{ id: "mine", title: "early" }]);
 });
 
+test("a gap during the first load does not replay a buffered write the new snapshot supersedes", async () => {
+  const { store } = await open(dbName());
+  const docs = store.collection("todos");
+  const tap = tappedFeed(docs);
+  const gate = gatedView(tap.docs);
+  const c = todos(gate.docs);
+  const loaded = c.preload();
+  await gate.reached;
+  await docs.put({ id: "x", title: "v1" });
+  tap.hideNextAppend();
+  await docs.delete("x");
+  tap.emit({ kind: "gap" });
+  gate.open();
+  await loaded;
+  assert.equal(c.has("x"), false);
+});
+
+test("cleaning up a collection during its first load settles an insert waiting on that load", async () => {
+  const { kv, store } = await open(dbName());
+  const docs = store.collection("todos");
+  const gate = gatedView(docs);
+  const c = createCollection(docstoreCollectionOptions({ collection: gate.docs }));
+  void c.preload();
+  await gate.reached;
+  const written = Promise.withResolvers<void>();
+  kv.changes((e) => {
+    if (e.kind === "append") written.resolve();
+  });
+
+  const tx = c.insert({ id: "y", title: "while loading" });
+  await written.promise;
+  await c.cleanup();
+  const outcome = await Promise.race([
+    tx.when("settled").then(
+      () => "settled",
+      () => "settled",
+    ),
+    new Promise((resolve) => setTimeout(() => resolve("hung"), 1000)),
+  ]);
+  gate.open();
+  assert.equal(outcome, "settled");
+  assert.deepEqual(await docs.get("y"), { id: "y", title: "while loading" });
+});
+
 test("a tab that falls behind a flush reloads and matches the writer", async () => {
   const name = dbName();
   const w = await open(name);

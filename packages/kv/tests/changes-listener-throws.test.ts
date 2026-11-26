@@ -58,4 +58,24 @@ describe("a changes() listener that throws", () => {
     await reader.close();
     expect(seqs(heard).at(-1)).toBe("closed");
   });
+
+  it("keeps announcing later events when console.error throws as well", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {
+      throw new Error("console.error fails the test run");
+    });
+    const db = await open("w");
+    const heard: ChangeEvent[] = [];
+    let buggy = true;
+    db.changes(() => {
+      if (buggy) throw new Error("listener bug");
+    });
+    db.changes((e) => heard.push(e));
+
+    await db.put(b(1), b(1)).catch(() => undefined);
+    expect(error).toHaveBeenCalled();
+    buggy = false;
+    const s2 = await db.put(b(2), b(2));
+    await db.close();
+    expect(seqs(heard).slice(-2)).toEqual([s2, "closed"]);
+  });
 });

@@ -177,6 +177,6 @@ test("a cursor is two reads, the first rows after it and every row tied with it"
 });
 
 test("a where on a value no index can hold, or on a virtual property, is residual", () => {
-  assert.deepEqual(plan({ where: and(isNull(ref("deleted")), eq(ref("$synced"), true)) }), [{ kind: "scan" }]);
+  assert.deepEqual(plan({ where: and(isNull(ref("deleted")), eq(ref("$hasPendingWrites"), false)) }), [{ kind: "scan" }]);
   assert.deepEqual(plan({ where: eq(ref("deleted"), null) }), [{ kind: "scan" }]);
 });

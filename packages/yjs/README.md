@@ -21,7 +21,7 @@ Content the doc already holds when you construct the persistence is stored too, 
 
 ## Merging
 
-Each update is one kv entry, and a load replays every entry of its doc. Once a doc has 500 entries or more and has had no update for a second, they are merged into one, whether it reached 500 at load or while open. Loading never waits on a merge. The fourth argument sets the threshold, and `trimDelayMs` the wait.
+Each update is one kv entry, and a load replays every entry of its doc. A persistence counts the entries it loaded and the ones it wrote since. Once that count reaches 500 and the doc has had no update for a second, every entry of the doc is merged into one. Entries another tab writes do not count, so two tabs that each stay under 500 leave their entries to the next load, which finds 500 or more and merges. Loading never waits on a merge. The fourth argument sets the threshold, and `trimDelayMs` the wait.
 
 ```ts
 const p = new KvPersistence(db, "draft", new Y.Doc(), 100);
@@ -36,7 +36,7 @@ A persistence loads once, when you construct it. Other tabs' later updates reach
 
 ## Limits
 
-The next `flush()` or `destroy()` stores a write that failed again, as the whole doc state. It rejects when that write fails too, as the examples below do.
+The next `flush()` or `destroy()` puts a write that failed again, as the same update. It rejects when that put fails too, as the examples below do.
 
 A document name with a lone surrogate makes the constructor throw `Error`, since it cannot round-trip through UTF-8.
 
@@ -64,7 +64,7 @@ await persistence.flush(); // every update written so far is acked
 await persistence.destroy(); // detaches from doc, then flushes
 ```
 
-If a write failed, the next `flush()` writes the whole doc state again. It rejects if that write fails too, and the next call retries.
+If a write failed, the next `flush()` puts that update again. It rejects if that put fails too, and the next call retries. A failed update stays in memory until a put of it lands.
 
 ## Sharing a database
 

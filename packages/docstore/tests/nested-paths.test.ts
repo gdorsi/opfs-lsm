@@ -87,4 +87,17 @@ describe("an index on a dot path", () => {
     expect((await c.queryIds({ index: "byLabel" })).ids).toEqual(["t1"]);
     expect((await c.queryIds({ index: "search" })).ids).toEqual(["t1"]);
   });
+
+  it("never enters an array, even at a key the array has", async () => {
+    type Holder = { id: string; m: { length: number } | string[] };
+    const schema = defineSchema({ version: 1, collections: { holders: collection<Holder>().index("len", "m.length") } });
+    const kv = await openKv(freshName());
+    open.push(kv);
+    const c = (await openDocStore(kv, schema)).collection("holders");
+    await c.putMany([
+      { id: "arr", m: ["x", "y"] },
+      { id: "obj", m: { length: 2 } },
+    ]);
+    expect((await c.queryEntries({ index: "len" })).entries).toEqual([{ id: "obj", values: [2] }]);
+  });
 });

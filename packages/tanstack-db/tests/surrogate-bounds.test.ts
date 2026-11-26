@@ -1,8 +1,9 @@
 /**
- * A string bound the index orders differently from TanStack must
- * not narrow an index read. The index orders strings by code point, TanStack
- * by UTF-16 unit, so `lt(s, "Ａ")` matches an astral string in TanStack
- * (its lead surrogate U+D83D sorts first) while the index puts it after U+FF21.
+ * The index orders strings by code point, TanStack by UTF-16 unit, so
+ * `lt(s, "Ａ")` matches an astral string in TanStack (its lead surrogate
+ * U+D83D sorts first) while the index puts it after U+FF21. A string bound
+ * must not narrow an index read, and a window ordered by such strings must
+ * not take its page in index order.
  */
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
@@ -40,6 +41,28 @@ test("an on-demand query bounded by a string past U+D800 finds every row TanStac
   } finally {
     await below.cleanup();
     await above.cleanup();
+    await c.cleanup();
+    await kv.close();
+  }
+});
+
+test("an on-demand window ordered lexically by strings past U+D800 shows TanStack's first rows", async () => {
+  const kv = await openHarnessDb({ name: `tsdb${randomUUID().replaceAll("-", "").slice(0, 20)}`, forceMemory: true });
+  const store = await openDocStore(kv, schema);
+  await store.collection("docs").putMany(DOCS);
+  const c = createCollection(docstoreCollectionOptions({ collection: store.collection("docs"), syncMode: "on-demand" }));
+  const first = createLiveQueryCollection((q) =>
+    q
+      .from({ d: c })
+      .where(({ d }) => eq(d.g, 0))
+      .orderBy(({ d }) => d.s, { direction: "asc", nulls: "last", stringSort: "lexical" })
+      .limit(2),
+  );
+  try {
+    await first.preload();
+    assert.deepEqual(first.toArray.map((r) => r.id), ["ascii", "astral"]);
+  } finally {
+    await first.cleanup();
     await c.cleanup();
     await kv.close();
   }

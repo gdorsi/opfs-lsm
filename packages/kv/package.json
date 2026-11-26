@@ -78,6 +78,7 @@
     "formal:power-loss": "tsx formal/power-loss/check.ts",
     "formal:crash-table": "tsx formal/crash-table/check.ts",
     "formal:reclaim-hold": "tsx formal/reclaim-hold/check.ts",
+    "formal:gen-switch": "tsx formal/gen-switch/check.ts",
     "fuzz:corpus": "tsx fuzz/make-corpus.ts",
     "fuzz:jazzer": "tsx fuzz/jazzer/run.ts"
   },

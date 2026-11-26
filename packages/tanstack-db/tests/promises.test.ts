@@ -6,20 +6,23 @@ import { collection, defineSchema, openDocStore } from "@opfs-lsm/docstore";
 import { ClosedError } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
 import {
+  and,
   createCollection,
   createLiveQueryCollection,
   eq,
+  gt,
+  inArray,
   localOnlyCollectionOptions,
   type Collection,
 } from "@tanstack/db";
 import { docstoreCollectionOptions } from "../src/index.ts";
 
-type Doc = { id: string; k?: boolean; n?: unknown; s?: unknown; t?: string | null };
+type Doc = { id: string; k?: boolean; n?: unknown; s?: unknown; t?: string | null; m?: { r?: number }; "m.r"?: number };
 
 const schema = defineSchema({
   version: 1,
   collections: {
-    sorted: collection<Doc>().index("byN", "n").index("byS", "s"),
+    sorted: collection<Doc>().index("byN", "n").index("byS", "s").index("byR", "m.r"),
     texted: collection<Doc>().text("search", ["k", "n"], "t"),
     todos: collection<{ id: string; title: string; done: boolean }>(),
   },
@@ -110,4 +113,36 @@ test("an update stores the whole row as this tab holds it, so the last of two ta
     await kvA.close();
     await kvB.close();
   }
+});
+
+test("a where that also reads a virtual property loads the rows its stored fields match", async () => {
+  const docs = [
+    { id: "a", n: 1 },
+    { id: "b", n: 2 },
+  ];
+  const { got, want } = await both("sorted", docs, (c) =>
+    createLiveQueryCollection((q) => q.from({ d: c }).where(({ d }) => and(eq(d.n, 1), eq(d.$hasPendingWrites, false)))),
+  );
+  assert.deepEqual(want.map((r) => r["id"]), ["a"]);
+  assert.deepEqual(got, want);
+});
+
+test("a where on a value no index can hold, -Infinity or a lone surrogate, still loads its rows", async () => {
+  const docs = [
+    { id: "a", n: 1, s: "a" },
+    { id: "b", n: null, s: "b" },
+  ];
+  const byN = await both("sorted", docs, (c) => createLiveQueryCollection((q) => q.from({ d: c }).where(({ d }) => gt(d.n, -Infinity))));
+  const byS = await both("sorted", docs, (c) => createLiveQueryCollection((q) => q.from({ d: c }).where(({ d }) => inArray(d.s, ["a", "\uD800"]))));
+  for (const { got, want } of [byN, byS]) {
+    assert.deepEqual(want.map((r) => r["id"]), ["a"]);
+    assert.deepEqual(got, want);
+  }
+});
+
+test("a field whose own name holds a dot is not read through the index on that dot path", async () => {
+  const docs = [{ id: "x", "m.r": 1, m: { r: 2 } }];
+  const { got, want } = await both("sorted", docs, (c) => createLiveQueryCollection((q) => q.from({ d: c }).where(({ d }) => eq(d["m.r"], 1))));
+  assert.deepEqual(want.map((r) => r["id"]), ["x"]);
+  assert.deepEqual(got, want);
 });
