@@ -8,12 +8,12 @@ import {
   destroyDbWith,
   NEEDS_BROWSER,
   openOn,
-  ROW_POST_MS,
   type Db,
   type OpenOptions,
 } from "./db.js";
 import { checkDbName, newWriterId, type DbName, type WriterId } from "./check.js";
 import { StorageUnavailableError } from "./errors.js";
+import { ROW_POST_MS } from "./row-post.js";
 import { DEFAULT_MAX_WAL_BYTES } from "./host/budget.js";
 import { createLocalIngestClient } from "./host/engine-host.js";
 import { MeteredHost } from "./host/metered-host.js";
