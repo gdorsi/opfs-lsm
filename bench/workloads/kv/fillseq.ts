@@ -9,11 +9,15 @@ const READ_PAGE = 1_000;
 /** The key set is cut into this many slots, and `deleterange` deletes a tenth of them, one range each. */
 const SLOTS = 1_000;
 
-/** Random gets, a tenth of them in a deleted range, then a page from the start of each deleted range, which must begin at the first live key past it. */
-async function readDeletedRanges(ctx: PhaseContext<"kv">): Promise<void> {
+type Ctx = PhaseContext<"kv">;
+
+/** Random gets, a tenth of them in a deleted range. */
+const getDeleted = (ctx: Ctx) => getIds(ctx, Math.ceil(ctx.params.ops / 10), uniform(ctx, ctx.params.entries));
+
+/** A page from the start of each deleted range, which must begin at the first live key past it. */
+async function pageDeleted(ctx: Ctx): Promise<void> {
   const span = ctx.params.entries / SLOTS;
   const deleted = Array.from({ length: SLOTS }, (_, slot) => slot * span).filter((from) => ctx.model.version(from) === 0);
-  await getIds(ctx, Math.ceil(ctx.params.ops / 10), uniform(ctx, ctx.params.entries));
   await scanAll(ctx, deleted.map((from): Scan => ({ from, limit: PAGE, op: "page", count: 1 })));
 }
 
@@ -141,8 +145,17 @@ export default defineWorkload({
         for (const [lo, hi] of bounds) await ctx.time("deleteRange", 2 * keyBytes, () => store.deleteRange(lo, hi), 1);
       },
     },
-    { name: "readdeleted", page: "same", timed: true, run: readDeletedRanges },
+    { name: "readdeleted", page: "same", timed: true, run: getDeleted },
+    { name: "pagedeleted", page: "same", timed: true, run: pageDeleted },
     settlePhase("settle-deleted"),
-    { name: "check-deleted", page: "same", timed: false, run: readDeletedRanges },
+    {
+      name: "check-deleted",
+      page: "same",
+      timed: false,
+      async run(ctx) {
+        await getDeleted(ctx);
+        await pageDeleted(ctx);
+      },
+    },
   ],
 });
