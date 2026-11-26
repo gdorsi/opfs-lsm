@@ -502,6 +502,16 @@ function afterTrap(err: unknown): boolean {
   return true;
 }
 
+/** `call`, restarting the engine if it traps. */
+function guard<T>(call: () => T): T {
+  try {
+    return call();
+  } catch (err) {
+    afterTrap(err);
+    throw err;
+  }
+}
+
 /** A bad status means the bytes are corrupt, or the module ran out of memory, and is thrown as is. */
 function corrupt(err: unknown, what: string): unknown {
   if (err instanceof CorruptDatabaseError || err instanceof EngineOutOfMemoryError) return err;
@@ -553,12 +563,7 @@ export function __restartEngineForTests(): void {
  */
 export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRun> {
   const wasm = await loaded();
-  try {
-    return encodeRunIn(wasm, entries);
-  } catch (err) {
-    afterTrap(err);
-    throw err;
-  }
+  return guard(() => encodeRunIn(wasm, entries));
 }
 
 /**
@@ -569,14 +574,6 @@ export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRu
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   const wasm = await loaded();
   watcher?.reserved((spec.sources.length + 1) * spec.chunkBytes);
-  const guard = <T>(call: () => T): T => {
-    try {
-      return call();
-    } catch (err) {
-      afterTrap(err);
-      throw err;
-    }
-  };
   const core = guard(() => openMergeIn(wasm, spec));
   return {
     pump: () => guard(() => core.pump()),
