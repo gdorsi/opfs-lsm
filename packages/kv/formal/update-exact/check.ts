@@ -17,15 +17,20 @@
  * its keys again and reads the tail first. An update may also take that
  * transaction from the start, at any time: the product does when an append
  * of its handle is in flight, after a row of the handle lost, or after the
- * body threw, and no property may depend on that rule. Properties, in every
- * state:
+ * body threw, and no property may depend on that rule.
+ *
+ * A run of the body may end at a `tx.read` whose value has to load, once in
+ * all (`FORMAL_UPDATE_MISSES`), before the row or inside the transaction.
+ * That run appends nothing and keeps nothing it read: after the load, an
+ * await, the update loads its keys again and the body runs again.
+ * Properties, in every state:
  * - UpdateExact: the body of each update row that has its ops read the
  *   state just before that row's seq;
  * - PrefixExact: a tab's memtable is the state after its `appliedThrough`;
  * - AckedInLog: an update that resolved wrote a row that has its ops;
  * - ReadYourWrites: a put or an update resolves with its tab's memtable at
  *   or past its seq;
- * - a body runs at most twice, and every update resolves.
+ * - a body runs to its end at most twice, and every update resolves.
  * The state of the key is named by the seq that last wrote it, so two
  * states never look alike.
  *
@@ -33,7 +38,8 @@
  * applies a row whatever its header, the header takes `appliedThrough` after
  * an await, a recovery drops the records and keeps the head, the body reads
  * the load whatever landed since, a row that lands past a gap waits for no
- * catch-up) must each fail.
+ * catch-up, a body that waited for a load goes on with what it had read)
+ * must each fail.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -41,6 +47,7 @@ import { fileURLToPath } from "node:url";
 
 const UPDATES = Number(process.env.FORMAL_UPDATE_UPDATES ?? 2);
 const PUTS = Number(process.env.FORMAL_UPDATE_PUTS ?? 1);
+const MISSES = Number(process.env.FORMAL_UPDATE_MISSES ?? 1);
 const TABS = ["A", "B"] as const;
 
 type Variant = {
@@ -50,6 +57,7 @@ type Variant = {
   readonly dropKeepsHead?: boolean;
   readonly warmIgnoresLanded?: boolean;
   readonly landNoCatchUp?: boolean;
+  readonly resumeAfterLoad?: boolean;
 };
 
 /** `validAt` 0: no header. `basedOn`: the state the body read, `BLIND` for a put, which reads nothing. */
@@ -63,6 +71,8 @@ type Update =
   | { at: "idle" }
   /** The warm read is in flight: the body has not run. */
   | { at: "warm"; warm: Warm }
+  /** A run of the body ended at a read that has to load, and the load is in flight. `basedOn` only with `resumeAfterLoad`. */
+  | { at: "loading"; basedOn?: number }
   /** Only with `stampAfterAwait`: the body ran, the header is not written yet. */
   | { at: "read"; basedOn: number }
   | { at: "queued"; row: Row }
@@ -91,6 +101,8 @@ type State = {
   /** Tabs at or past this seq read the records. One below it loads the manifest recovery recorded. */
   droppedAt: number;
   dropsLeft: number;
+  /** Runs of a body that may still end at a read that has to load. */
+  missesLeft: number;
   /** A property a step broke: UpdateExact at a commit, AckedInLog and ReadYourWrites when a write resolves. */
   fault?: string;
   tabs: Tab[];
@@ -106,7 +118,7 @@ function rowValid(validAt: number, seq: number): boolean {
 
 function initial(recoveries: number): State {
   const tab = (): Tab => ({ applied: 0, state: 0, put: "idle", update: { at: "idle" }, runs: 0, updatesLeft: UPDATES, putsLeft: PUTS });
-  return { truth: [0], rows: [null], droppedAt: 0, dropsLeft: recoveries, tabs: [tab(), tab()] };
+  return { truth: [0], rows: [null], droppedAt: 0, dropsLeft: recoveries, missesLeft: MISSES, tabs: [tab(), tab()] };
 }
 
 /** How a message names a state. */
@@ -170,7 +182,12 @@ function resolved(s: State, who: string, tab: Tab, seq: number): void {
   if (tab.applied < seq) s.fault ??= `ReadYourWrites: ${who}'s write resolved at seq ${seq} with its memtable at seq ${tab.applied}`;
 }
 
-type Action = { readonly tab: number; readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "plan" | "stamp" | "rowCommits" | "rowLands" | "warmTx" | "transaction" | "written" } | { readonly tab: -1; readonly type: "drop" };
+type Action =
+  | {
+      readonly tab: number;
+      readonly type: "hear" | "put" | "putCommits" | "putLands" | "update" | "updateAlone" | "plan" | "miss" | "loaded" | "loadedAlone" | "resume" | "stamp" | "rowCommits" | "rowLands" | "warmTx" | "transaction" | "missTx" | "written";
+    }
+  | { readonly tab: -1; readonly type: "drop" };
 
 function enabled(s: State): Action[] {
   const out: Action[] = [];
@@ -187,10 +204,20 @@ function enabled(s: State): Action[] {
       out.push({ tab: i, type: "updateAlone" });
     }
     if (at === "warm") out.push({ tab: i, type: "plan" });
+    if (at === "warm" && s.missesLeft > 0) out.push({ tab: i, type: "miss" });
+    if (u.at === "loading") {
+      if (u.basedOn !== undefined) out.push({ tab: i, type: "resume" });
+      else {
+        // As at the call: with an append of its own in flight, only the transaction.
+        if (tab.put === "idle") out.push({ tab: i, type: "loaded" });
+        out.push({ tab: i, type: "loadedAlone" });
+      }
+    }
     if (at === "read") out.push({ tab: i, type: "stamp" });
     if (at === "queued") out.push({ tab: i, type: "rowCommits" });
     if (at === "committed") out.push({ tab: i, type: "rowLands" });
     if (u.at === "transaction") out.push({ tab: i, type: u.warm ? "transaction" : "warmTx" });
+    if (u.at === "transaction" && u.warm && s.missesLeft > 0) out.push({ tab: i, type: "missTx" });
     if (at === "written") out.push({ tab: i, type: "written" });
   });
   if (s.dropsLeft > 0 && head(s) > 0) out.push({ tab: -1, type: "drop" });
@@ -251,6 +278,26 @@ function step(s: State, a: Action, v: Variant): string {
       tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn } };
       return `${who}: body reads ${named(basedOn)}, the row is valid at seq ${tab.applied + 1}`;
     }
+    case "miss": {
+      if (u.at !== "warm") throw new Error("model: miss");
+      s.missesLeft--;
+      tab.runs = 0;
+      const basedOn = values(tab, u.warm, v);
+      tab.update = v.resumeAfterLoad ? { at: "loading", basedOn } : { at: "loading" };
+      return `${who}: body reads ${named(basedOn)} and ends at a read that has to load: no row`;
+    }
+    case "loaded":
+      tab.runs = 1;
+      tab.update = { at: "warm", warm: { at: tab.applied, state: tab.state } };
+      return `${who}: the load is done, warm loads ${named(tab.state)} at seq ${tab.applied}`;
+    case "loadedAlone":
+      tab.update = { at: "transaction" };
+      return `${who}: the load is done, the update waits for a transaction`;
+    case "resume":
+      if (u.at !== "loading" || u.basedOn === undefined) throw new Error("model: resume");
+      tab.runs = 1;
+      tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn: u.basedOn } };
+      return `${who}: the load is done, body goes on with ${named(u.basedOn)}, the row is valid at seq ${tab.applied + 1}`;
     case "stamp":
       if (u.at !== "read") throw new Error("model: stamp");
       tab.update = { at: "queued", row: { validAt: tab.applied + 1, basedOn: u.basedOn } };
@@ -286,6 +333,12 @@ function step(s: State, a: Action, v: Variant): string {
       tab.update = { at: "written", seq };
       return `${who}: a transaction reads the tail, body reads ${named(basedOn)}, the row commits at seq ${seq}`;
     }
+    case "missTx":
+      if (u.at !== "transaction" || !u.warm) throw new Error("model: missTx");
+      s.missesLeft--;
+      catchUp(s, tab, v);
+      tab.update = { at: "transaction" };
+      return `${who}: a transaction reads the tail, body ends at a read that has to load: no row`;
     case "written":
       if (u.at !== "written") throw new Error("model: written");
       land(s, tab, u.seq, true, v);
@@ -342,7 +395,7 @@ function shapeOf(s: State, order: readonly Tab[]): string {
     const update =
       u.at === "warm" || u.at === "transaction"
         ? [u.at, ...warm(u.warm)]
-        : u.at === "read"
+        : u.at === "read" || (u.at === "loading" && u.basedOn !== undefined)
           ? [u.at, id(u.basedOn)]
           : u.at === "queued"
             ? [u.at, validAt(u.row.validAt), id(u.row.basedOn)]
@@ -353,7 +406,7 @@ function shapeOf(s: State, order: readonly Tab[]): string {
                 : [u.at];
     return [seq(tab.applied), id(tab.state), typeof tab.put === "number" ? seq(tab.put) : tab.put, update, tab.runs, tab.updatesLeft, tab.putsLeft];
   });
-  return JSON.stringify([from, window, seq(s.droppedAt), s.dropsLeft, s.fault ? 1 : 0, tabs]);
+  return JSON.stringify([from, window, seq(s.droppedAt), s.dropsLeft, s.missesLeft, s.fault ? 1 : 0, tabs]);
 }
 
 function copy(s: State): State {
@@ -412,12 +465,27 @@ function sourceSync(): string[] {
   need("db.ts", /const seq = await this\.wal\.append\(record\);\s*await this\.landed\(seq, rowValid\(validAt, seq\) \? ops : \[\], record\);/, "the writer lands its row with the ops rowValid gives it");
   need(
     "db.ts",
-    /await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*const next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(!this\.appending && !this\.beaten\) \{\s*let planned: ReturnType<typeof plan> \| undefined;\s*try \{\s*planned = plan\(\);\s*\} catch \{\s*(?:\/\/[^\n]*\n\s*)*\}\s*(?:\/\/[^\n]*\n\s*)*if \(planned instanceof Miss\) planned\.ready\.catch\(\(\) => undefined\);\s*else if \(planned\?\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*\}\s*const out = await this\.write\(plan, warm\);/,
-    "update takes appliedThrough + 1, reads and runs body with no await in between, appends no row with an append of its handle in flight, resolves only when rowValid holds, and runs the transaction otherwise, a body that threw included",
+    /for \(;;\) \{\s*await warm\(\);\s*this\.ensureOpen\(\);\s*(?:\/\/[^\n]*\n\s*)*next = nextSeq\(this\.mem\.appliedThrough\);\s*if \(this\.appending \|\| this\.beaten\) break;\s*let planned: ReturnType<typeof plan> \| undefined;\s*try \{\s*planned = plan\(\);\s*\} catch \{\s*(?:\/\/[^\n]*\n\s*)*\}\s*if \(planned instanceof Miss\) \{\s*(?:\/\/[^\n]*\n\s*)*await planned\.ready\.catch\(\(\) => undefined\);\s*continue;\s*\}\s*if \(planned\?\.ops\.length\) \{\s*if \(rowValid\(next, await this\.commit\(planned\.ops, next\)\)\) return planned\.result;\s*this\.beaten = true;\s*\}\s*break;\s*\}\s*const out = await this\.write\(plan, warm\);/,
+    "update takes appliedThrough + 1, reads and runs body with no await in between, appends no row with an append of its handle in flight, loads again and plans again after a plan that waits for a load, resolves only when rowValid holds, and runs the transaction otherwise, a body that threw included",
   );
-  need("db.ts", /const at = this\.mem\.appliedThrough;\s*warmed = \[at, await this\.settleInstalled\(read\(\), held\)\];/, "warm names its load by the appliedThrough of the turn it starts reading in");
-  need("db.ts", /const values =\s*warmed\?\.\[0\] === this\.mem\.appliedThrough \? warmed\[1\] : held\.attempt\(\(\) => read\(\)\(this\.installed\.levels\)\);/, "the body reads the warm load only when nothing landed since it, else the memtable now");
-  need("db.ts", /\.appendAfter\(this\.mem\.appliedThrough, \(tail\) => \{\s*missing = this\.catchUp\(tail\);\s*if \(missing !== undefined\) return undefined;\s*const planned = plan\(\);/, "the transaction catches the memtable up to the tail before the body reads");
+  need(
+    "db.ts",
+    /const at = this\.mem\.appliedThrough;\s*const values = await this\.settleInstalled\(read\(wanted\), held\);\s*(?:\/\/[^\n]*\n\s*)*values\.length = ks\.length;\s*warmed = \[at, values\];/,
+    "warm names its load by the appliedThrough of the turn it starts reading in, and keeps no value of a key tx.read asked for",
+  );
+  need("db.ts", /const now = \(keys: readonly CheckedKey\[\]\) => held\.attempt\(\(\) => read\(keys\)\(this\.installed\.levels\)\);/, "a read that cannot wait reads the memtable of the turn it is called in");
+  need("db.ts", /const values = warmed\?\.\[0\] === this\.mem\.appliedThrough \? warmed\[1\] : now\(ks\);/, "the body reads the warm load only when nothing landed since it, else the memtable now");
+  need(
+    "db.ts",
+    /\(keys\) => \{\s*if \(!miss\) \{\s*const more = keys\.map\(checkKey\);\s*wanted = wanted\.concat\(more\);\s*const got = now\(more\);\s*if \(!\(got instanceof Miss\)\) return got;\s*miss = got;\s*\}\s*throw miss;\s*\}/,
+    "tx.read reads the memtable in the turn body runs in, and ends the run when a value has to load",
+  );
+  need("db.ts", /\} catch \(err\) \{\s*if \(!miss\) throw err;\s*\}\s*return miss \? held\.keep\(miss\) : \{ ops: ops!, result \};/, "a run of body that ended at tx.read gives no ops, whatever body did after");
+  need(
+    "db.ts",
+    /\.appendAfter\(this\.mem\.appliedThrough, \(tail\) => \{\s*missing = this\.catchUp\(tail\);\s*if \(missing !== undefined\) return undefined;\s*const planned = plan\(\);\s*if \(!\(planned instanceof Miss\)\) return planned;\s*miss = planned;\s*return undefined;\s*\}\)/,
+    "the transaction catches the memtable up to the tail before the body reads, and appends nothing for a plan that waits for a load",
+  );
   need("db.ts", /const turn = this\.updating\.then\(\(\) => this\.updateOnce\(ks, body\)\);\s*this\.updating = turn\.catch\(\(\) => undefined\);/, "the updates of one handle run one at a time");
   need("db.ts", /=== "gap" && ops\.length && !this\.closed\) await this\.sync\(\);/, "a row that lands with no ops waits for no catch-up");
   need("idb/wal.ts", /const nextHead = follows \? head : asSeq\(Math\.max\(past, nextSeq\(head\)\)\);/, "an adopt that drops the records moves the head by at least one");
@@ -439,6 +507,7 @@ const broken: [string, Variant, number][] = [
   ["a recovery that drops the WAL records keeps the head", { dropKeepsHead: true }, 1],
   ["the body reads the warm load whatever landed since", { warmIgnoresLanded: true }, 0],
   ["a row that lands past a gap waits for no catch-up", { landNoCatchUp: true }, 0],
+  ["a body that waited for a load goes on with what it had read", { resumeAfterLoad: true }, 0],
 ];
 for (const [name, v, recoveries] of broken) {
   if (!explore(v, recoveries)) {
@@ -455,4 +524,4 @@ if (found) {
   console.error("\nHarm: an update wrote from a state another write had replaced, a tab reads a state no log prefix gives, or a tab does not read a write of its own that resolved.");
   process.exit(1);
 }
-console.log(`PASS UpdateExact — ${states} states: two tabs, up to ${UPDATES} updates and ${PUTS} puts each, one recovery`);
+console.log(`PASS UpdateExact — ${states} states: two tabs, up to ${UPDATES} updates and ${PUTS} puts each, ${MISSES} read that has to load, one recovery`);

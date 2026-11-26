@@ -127,6 +127,19 @@ count; // => 1
 
 The body usually runs once, and the update costs what a `put` costs. It runs again when another write landed between its read and its commit, when it writes nothing or throws, and when the browser refuses the write for lack of space: three times at most. Only its last run counts: what it wrote, returned or threw. So keep it free of side effects, such as a counter outside the database or a network call. The updates of one handle run one at a time, in call order.
 
+When the body learns a key only from what it read, `tx.read` reads it, in the same state as the values:
+
+```ts
+// "name/ada" holds the key of Ada's record.
+await db.update([enc("name/ada")], ([at], tx) => {
+  if (!at) return;
+  const [user] = tx.read([at]);
+  tx.put(at, enc(`${dec(user)}, seen today`));
+});
+```
+
+`tx.read` takes a list of keys and returns their values in that order. A value the tab holds in memory comes back at once, and the update still costs what a `put` costs. For any other, `read` throws to end this run of the body, kv loads the value, and the body runs again, once more for each such read. Let the throw pass: a run that ended at a read never counts, even if the body caught it.
+
 ## Range scans
 
 ```ts

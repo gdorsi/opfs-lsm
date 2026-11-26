@@ -382,9 +382,10 @@ type UpdateAction = "keep" | "del" | "put";
 
 /**
  * `update` reads `keys` and writes in one transaction, so it reads the prefix
- * just before its own seq. The body writes `more` ops to any key after the
- * ones `actions` picks, and returns a value, or throws: then the update
- * rejects with that error and writes nothing (README, "Read-modify-write").
+ * just before its own seq. The body reads the last `late` keys with
+ * `tx.read`, writes `more` ops to any key after the ones `actions` picks,
+ * and returns a value, or throws: then the update rejects with that error
+ * and writes nothing (README, "Read-modify-write").
  */
 class UpdateCmd implements Cmd {
   constructor(
@@ -393,6 +394,7 @@ class UpdateCmd implements Cmd {
     private readonly value: ValueSpec,
     private readonly more: readonly OpSpec[],
     private readonly throws: boolean,
+    private readonly late: number,
   ) {}
   check = () => true;
   async run(m: Model, r: Sut): Promise<void> {
@@ -408,9 +410,11 @@ class UpdateCmd implements Cmd {
     let seen: readonly (Uint8Array | undefined)[] = [];
     const failure = new Error("the body threw");
     const result = {};
+    const first = keys.slice(0, Math.max(keys.length - this.late, 0));
+    const rest = keys.slice(first.length);
     const run = () =>
-      r.db.update(keys, (got, tx) => {
-        seen = got;
+      r.db.update(first, (got, tx) => {
+        seen = rest.length ? [...got, ...tx.read(rest)] : got;
         applyOps(tx, ops);
         if (this.throws) throw failure;
         return result;
@@ -436,6 +440,7 @@ class UpdateCmd implements Cmd {
   }
   toString = () =>
     `update[${this.keys.map((k, i) => `${keyName(k)}:${this.actions[i % this.actions.length]}`).join(", ")}]` +
+    (this.late ? ` late ${this.late}` : "") +
     (this.more.length ? ` then ${this.more.map(opName).join("; ")}` : "") +
     (this.throws ? " throws" : "");
 }
@@ -742,8 +747,9 @@ export const commandsArb = (replayPath?: string, maxCommands = 80) => fc.command
         valueArb,
         fc.array(opArb, { maxLength: 2 }),
         fc.oneof({ weight: 4, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
+        fc.nat({ max: 3 }),
       )
-      .map(([keys, actions, value, more, throws]) => new UpdateCmd(keys, actions, value, more, throws)),
+      .map(([keys, actions, value, more, throws, late]) => new UpdateCmd(keys, actions, value, more, throws, late)),
     keyArb.map((k) => new GetCmd(k)),
     keyArb.map((k) => new GetCmd(k)),
     getManyArb.map((spec) => new GetManyCmd(spec)),
