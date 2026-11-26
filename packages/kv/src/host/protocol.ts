@@ -105,43 +105,39 @@ export async function unlessHeld(name: string, fn: () => Promise<void>): Promise
   });
 }
 
-export type ClientToHost =
-  | {
-      readonly type: "ingest";
-      readonly id: number;
-      readonly name: string;
-      readonly waitForCompaction: boolean;
-    }
-  | {
-      readonly type: "watch";
-      readonly name: string;
-      readonly maxWalBytes: number;
-      readonly compactionMemoryBytes: number;
-      readonly reserveBytes: number;
-    }
-  | { readonly type: "unwatch"; readonly name: string }
-  | { readonly type: "make-room"; readonly id: number; readonly name: string }
-  | { readonly type: "destroy"; readonly id: number; readonly name: string }
-  | { readonly type: "repair"; readonly id: number; readonly name: string }
-  | { readonly type: "stats"; readonly id: number; readonly name: string };
+/** What a tab calls on the host. `EngineHost` implements it, and both clients are built from `HOST_CALLS`. */
+export type HostCalls = Omit<IngestClient, "close">;
+export type HostCall = keyof HostCalls;
 
+/** Each call, and whether the host answers it: exactly the calls that return a promise. One it does not answer is fire-and-forget. */
+export const HOST_CALLS: { readonly [M in HostCall]: ReturnType<HostCalls[M]> extends Promise<unknown> ? true : false } = {
+  ingest: true,
+  watch: false,
+  unwatch: false,
+  makeRoom: true,
+  repair: true,
+  destroy: true,
+  stats: true,
+};
+
+/**
+ * A call over the port. Only an answered one carries an `id`. `args` names
+ * what each call takes; both clients pass a call's arguments through as
+ * they are, and `EngineHost implements HostCalls` is what checks them.
+ */
+export type ClientToHost = {
+  [M in HostCall]: { readonly id?: number; readonly method: M; readonly args: Parameters<HostCalls[M]> };
+}[HostCall];
+
+/** The host's answer: what the call returned, or the error it threw. */
 export type HostToClient =
+  | { readonly id: number; readonly value: unknown }
   | {
-      readonly type: "ingest-ok";
-      readonly id: number;
-      readonly generation: Generation;
-    }
-  | {
-      readonly type: "err";
       readonly id: number;
       readonly message: string;
       /** The `OpfsLsmError` code, so the tab rethrows the same class. */
-      readonly code?: ErrorCode;
-    }
-  | { readonly type: "stats-ok"; readonly id: number; readonly stats: HostStats }
-  | { readonly type: "make-room-ok"; readonly id: number }
-  | { readonly type: "destroy-ok"; readonly id: number }
-  | { readonly type: "repair-ok"; readonly id: number };
+      readonly code: ErrorCode | undefined;
+    };
 
 export type IngestClient = {
   /**

@@ -80,7 +80,7 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     attachEngineHostPort(port1, new EngineHost(() => fs));
     const posted = vi.spyOn(port2, "postMessage");
     const db = await openHarnessDb({ name: "port-db", fs, ingest: createPortIngestClient(port2) });
-    expect(posted.mock.calls.filter(([msg]) => (msg as { type: string }).type === "repair")).toHaveLength(1);
+    expect(posted.mock.calls.filter(([msg]) => (msg as { method: string }).method === "repair")).toHaveLength(1);
     expect(await db.get(utf("k"))).toEqual(utf("v"));
     expect(await db.put(utf("k2"), utf("v2"))).toBe(2);
     await db.close();
@@ -106,13 +106,40 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
   it("answers a request it does not know, so a newer tab does not wait forever", async () => {
     const { port1, port2 } = new MessageChannel();
     attachEngineHostPort(port1, new EngineHost(() => new MemoryFs()));
-    const reply = new Promise<{ type: string; id: number; code?: string }>((resolve) => {
+    const reply = new Promise<{ id: number; code?: string }>((resolve) => {
       port2.onmessage = (ev) => resolve(ev.data);
     });
-    port2.postMessage({ type: "from-a-newer-build", id: 7, name: "port-db" });
-    expect(await reply).toMatchObject({ type: "err", id: 7, code: new StorageUnavailableError("").code });
+    port2.postMessage({ method: "fromANewerBuild", id: 7, args: ["port-db"] });
+    expect(await reply).toMatchObject({ id: 7, code: new StorageUnavailableError("").code });
     port1.close();
     port2.close();
+  });
+
+  it("ignores a message that is not a call, and answers the next one", async () => {
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => new MemoryFs()));
+    const replies: unknown[] = [];
+    const reply = new Promise<{ id: number; code?: string }>((resolve) => {
+      port2.onmessage = (ev) => {
+        replies.push(ev.data);
+        resolve(ev.data);
+      };
+    });
+    const unhandled = vi.fn<(reason: unknown) => void>();
+    process.on("unhandledRejection", unhandled);
+    try {
+      port2.postMessage(null);
+      port2.postMessage("not a call");
+      port2.postMessage({ method: "fromANewerBuild", id: 8, args: [] });
+      expect(await reply).toMatchObject({ id: 8 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(replies).toHaveLength(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      port1.close();
+      port2.close();
+    }
   });
 
   it("answers every request about a name no openDb created, creates neither store, and serves the name once it is opened", async () => {
