@@ -552,6 +552,7 @@ describe("a list in eq", () => {
     expect(await c.count({ index: "two", eq, offset: 9 })).toBe(0);
     expect(await c.count({ index: "two", eq, offset: 1, limit: 2 })).toBe(2);
     expect(await c.count({ index: "two", eq, offset: 4, limit: 3 })).toBe(1);
+    expect(await c.count({ index: "two", eq: [["x", "y"]], offset: 2, limit: 1 })).toBe(1);
   });
 
   it("throws query for a list on the rows or a unique index, a nested list, too many combinations, and every error of a query without lists", async () => {
@@ -688,6 +689,9 @@ describe("malformed queries", () => {
     ["match on a sorted index", { index: "one", match: "x" }],
     ["match on the rows", { match: "x" }],
     ["a non-string id bound", { gt: 1 }],
+    ["an id in eq with a lone surrogate", { eq: ["\uD800"] }],
+    ["an id bound with a lone surrogate", { gte: "a\uDC00" }],
+    ["an id prefix with a lone surrogate", { startsWith: "\uD800" }],
     ["limit 0", { index: "one", limit: 0 }],
     ["a fractional limit", { limit: 1.5 }],
     ["a negative offset", { index: "one", offset: -1 }],
