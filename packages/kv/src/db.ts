@@ -550,6 +550,7 @@ class DbImpl implements Db {
   private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
+  private announcing = false;
   /** A repair may have recorded another manifest, so the next install can change what reads return. */
   private repaired = false;
   private readonly bus: BroadcastChannel | undefined;
@@ -676,18 +677,28 @@ class DbImpl implements Db {
     }
   }
 
+  /**
+   * A listener that closes the handle calls this again. That call returns,
+   * and the loop already running delivers `closed` once every listener has
+   * the events before it.
+   */
   private announce(): void {
-    const events = this.unannounced;
-    this.unannounced = [];
-    for (const event of events) {
-      for (const listener of this.listeners) {
-        try {
-          listener(event);
-        } catch (err) {
-          console.error("changes() listener threw", err);
+    if (this.announcing) return;
+    this.announcing = true;
+    for (let events = this.unannounced; events.length > 0; events = this.unannounced) {
+      this.unannounced = [];
+      for (const event of events) {
+        for (const listener of this.listeners) {
+          try {
+            listener(event);
+          } catch (err) {
+            console.error("changes() listener threw", err);
+          }
         }
+        if (event.kind === "closed") this.listeners.clear();
       }
     }
+    this.announcing = false;
   }
 
   private emit(event: ChangeEvent): void {
@@ -1343,7 +1354,6 @@ class DbImpl implements Db {
     if (this.closed) return;
     this.closed = true;
     this.emit({ kind: "closed", reason });
-    this.listeners.clear();
     this.unlock?.();
     if (this.bus) {
       this.postRows();
