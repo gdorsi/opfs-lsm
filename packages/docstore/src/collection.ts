@@ -1,9 +1,9 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { decodeDocs, diffEntries, entriesOf, type EncodedDoc, type StoredDoc } from "./derive.js";
+import { decodeDocs, diffEntries, entriesOf, uniqueConflict, type Claim, type EncodedDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { bytesEqual, concat, idBytes, idOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
+import { bytesEqual, concat, idBytes, idOf, indexIdOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
 import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
 import { SnapshotReader, type CollectionSnapshot } from "./snapshot.js";
 import type { StoreCore, WritePlan } from "./store.js";
@@ -107,179 +107,140 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   changes(listener: (change: CollectionChange<T, Ix>) => void): () => void;
 }
 
-export const RETRY: unique symbol = Symbol("retry");
-
 const NONE: readonly Entry[] = [];
 
-/**
- * A row read before the transaction. The body retries unless the row still
- * holds `bytes`. `owned` lists the row's unique entries while some unique
- * index is building, and is empty otherwise.
- */
-type Prior = {
-  readonly bytes: Uint8Array | undefined;
-  readonly before: readonly Entry[];
-  readonly owned: readonly Entry[];
+/** What a write makes of one row: a document to store, null for no row, undefined to leave the row as it is. */
+type Slot = EncodedDoc | null | undefined;
+
+type Change = {
+  readonly next: readonly Slot[];
+  /** The entries of each stored row, from a write that parsed the rows itself. */
+  readonly before?: readonly (readonly Entry[])[];
 };
 
-/**
- * While a unique index is building, two old rows may share a value and the
- * entry belongs to whichever row the backfill reached first, so a row may
- * remove a unique entry only after reading who owns it. Which keys to read
- * depends on the old row, and `update` reads only keys named up front: such
- * writes read their rows before the transaction. Once every unique index is
- * ready, a row's unique entries are its own.
- */
-const buildingUnique = (coll: BoundCollection) =>
-  coll.maintained.some((p) => p.target.unique && p.state.kind === "building");
+type ChangeRows = (rows: readonly (Uint8Array | undefined)[], idbs: readonly Uint8Array[]) => Change;
 
-function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc: StoredDoc | undefined): Prior {
-  if (!bytes) return { bytes, before: NONE, owned: NONE };
-  const owned: Entry[] | undefined = buildingUnique(coll) ? [] : undefined;
-  return { bytes, before: entriesOf(coll, idb, doc!, "stored", owned), owned: owned ?? NONE };
-}
+/** What each row became, and how many of the rows existed. */
+type Written = { readonly next: readonly Slot[]; readonly existed: number };
 
 /**
- * One transaction that writes `docs[i]` under `ids[i]`, or deletes the row
- * when it is undefined, and returns how many of the rows existed. Without
- * `prior` the old rows are read inside the transaction.
+ * The one transaction that writes rows. It reads the rows `ids`, takes from
+ * `change` what each becomes, and writes the rows whose bytes differ with
+ * the index entries that differ. `change` is the slots themselves when they
+ * do not depend on the rows. With `blind` it reads no row: documents put
+ * into a collection with no index have nothing to diff.
  *
- * A unique key conflicts when its owner is another id outside the batch. A
- * batch member that owns a key and no longer claims it releases it, so every
- * delete of the batch goes out before any put.
+ * A unique key belongs to the row its value names. A row takes a key that
+ * is free, or that a row of this write lets go of, so every delete goes out
+ * before any put. Given slots name their unique keys before the body runs,
+ * so the plan asks for the owners with the rows. Slots that `change` makes
+ * from the rows name them only in the body, which reads the owners with
+ * `tx.read`. While a unique index builds, two old rows may share a value,
+ * and the entry belongs to whichever row the backfill reached first: a row
+ * then removes a unique entry only after reading, with `tx.read` too, that
+ * it owns it. Once the index is ready, a row's unique entries are its own.
  */
-function planChanges(
+function planRows(
   coll: BoundCollection,
   ids: readonly DocId[],
-  docs: readonly (EncodedDoc | undefined)[],
-  prior?: readonly Prior[],
-): WritePlan<number> {
-  const n = ids.length;
-  const idbs = ids.map(idBytes);
-  const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-  const after: (readonly Entry[])[] = [];
-  const claims = new Map<string, { readonly key: Uint8Array; readonly at: number }>();
-  for (let i = 0; i < n; i++) {
-    const doc = docs[i];
-    if (!doc) {
-      after.push(NONE);
-      continue;
-    }
-    const unique: Entry[] = [];
-    after.push(entriesOf(coll, idbs[i]!, doc.doc, "next", unique));
-    for (const u of unique) {
-      const k = keyString(u.key);
-      const other = claims.get(k);
-      if (other) throw uniqueError(ids[i]!, ids[other.at]!);
-      claims.set(k, { key: u.key, at: i });
-    }
-  }
-  const claimed = [...claims.values()];
-  const owners = new Map<string, number>();
-  const ownedKeys: Uint8Array[] = [];
-  for (const p of prior ?? []) {
-    for (const u of p.owned) {
-      owners.set(keyString(u.key), n + claimed.length + ownedKeys.length);
-      ownedKeys.push(u.key);
+  change: readonly Slot[] | ChangeRows,
+  blind = false,
+): WritePlan<Written> {
+  const indexed = coll.maintained.length > 0;
+  // A blind write derives no entry, so it needs no id apart from its row key.
+  const idbs = blind ? [] : ids.map(idBytes);
+  const rowKeys = blind ? ids.map((id) => rowKey(coll.rows.prefix, id)) : idbs.map((b) => concat(coll.rows.prefix, b));
+  const uniques = coll.maintained.filter((p) => p.target.unique);
+  /** The unique index `key` is an entry of, if it is one. */
+  const uniqueOf = (key: Uint8Array) => uniques.find((p) => p.id === indexIdOf(key));
+  let changeOf: ChangeRows;
+  /** The entries of slots that are given: derived once, however often the body runs. */
+  let after: (readonly Entry[])[] | undefined;
+  /** Where the owner of each unique entry of `after` comes in the values, after the rows. */
+  const asked = new Map<Entry, number>();
+  if (typeof change === "function") changeOf = change;
+  else {
+    const given = { next: change };
+    changeOf = () => given;
+    if (indexed) after = change.map((d, i) => (d ? entriesOf(coll, idbs[i]!, d.doc, "next") : NONE));
+    for (const entries of after ?? []) {
+      for (const e of entries) if (uniqueOf(e.key)) asked.set(e, rowKeys.length + asked.size);
     }
   }
-  let batch: Set<string> | undefined;
 
   return {
-    keys: [...rowKeys, ...claimed.map((c) => c.key), ...ownedKeys],
-    apply: (values, tx) => {
-      if (prior?.some((p, i) => !bytesEqual(p.bytes, values[i]))) return RETRY;
-      for (let j = 0; j < claimed.length; j++) {
-        const { at } = claimed[j]!;
-        const owner = values[n + j];
-        if (owner === undefined || bytesEqual(owner, idbs[at]) || bytesEqual(values[at], docs[at]!.bytes)) continue;
-        const ownerId = idOf(owner);
-        if (!(batch ??= new Set(ids)).has(ownerId)) throw uniqueError(ids[at]!, ownerId);
+    keys: blind ? [] : asked.size > 0 ? [...rowKeys, ...Array.from(asked.keys(), (e) => e.key)] : rowKeys,
+    apply: (rows, tx) => {
+      const { next, before } = changeOf(rows, idbs);
+      const changed: number[] = [];
+      let existed = 0;
+      for (let i = 0; i < next.length; i++) {
+        const doc = next[i];
+        const old = rows[i];
+        if (old) existed++;
+        if (doc !== undefined && !(doc ? bytesEqual(old, doc.bytes) : old === undefined)) changed.push(i);
       }
+
       const removes: Uint8Array[] = [];
       const writes: Entry[] = [];
-      let existed = 0;
-      const rows = values.slice(0, n);
-      const kept = rows.map((old, i) => (docs[i] ? bytesEqual(old, docs[i]!.bytes) : old === undefined));
-      const olds = prior ? [] : decodeDocs(rows.map((old, i) => (kept[i] ? undefined : old)));
-      for (let i = 0; i < n; i++) {
-        const old = olds[i];
-        const doc = docs[i];
-        if (rows[i]) existed++;
-        if (kept[i]) continue;
+      if (indexed) {
+        const claims: Claim[] = [];
+        /** The stored value of each claim's key. */
+        const owners: (Uint8Array | undefined)[] = [];
+        /** Unique entries of a building index, removed only if their row owns them. */
+        const kept: Claim[] = [];
+        const olds = before ? undefined : decodeDocs(changed.map((i) => rows[i]));
+        for (let c = 0; c < changed.length; c++) {
+          const i = changed[c]!;
+          const id = idbs[i]!;
+          const doc = next[i];
+          const old = olds?.[c];
+          const was = before ? before[i]! : old ? entriesOf(coll, id, old, "stored") : NONE;
+          const now = !doc ? NONE : after ? after[i]! : entriesOf(coll, id, doc.doc, "next");
+          const diff = diffEntries(was, now);
+          for (const key of diff.remove) {
+            if (uniqueOf(key)?.state.kind === "building") kept.push({ key, id });
+            else removes.push(key);
+          }
+          for (const e of diff.write) {
+            writes.push(e);
+            if (!uniqueOf(e.key)) continue;
+            claims.push({ key: e.key, id });
+            if (after) owners.push(rows[asked.get(e)!]);
+          }
+        }
+        // What only the stored rows decide is read here.
+        const late = after ? kept : [...claims, ...kept];
+        if (late.length > 0) {
+          const read = tx.read(late.map((c) => c.key));
+          const from = read.length - kept.length;
+          for (let j = 0; j < from; j++) owners.push(read[j]);
+          kept.forEach((k, j) => {
+            if (bytesEqual(read[from + j], k.id)) removes.push(k.key);
+          });
+        }
+        if (claims.length > 0) {
+          // Only a key another row holds asks, so the usual write builds no set.
+          let released: Set<string> | undefined;
+          const clash = uniqueConflict(claims, owners, (key) => (released ??= new Set(removes.map(keyString))).has(keyString(key)));
+          if (clash) throw uniqueError(idOf(clash[0]), idOf(clash[1]));
+        }
+      }
+
+      for (const i of changed) {
+        const doc = next[i];
         if (doc) tx.put(rowKeys[i]!, doc.bytes);
         else tx.delete(rowKeys[i]!);
-        const before = prior ? prior[i]!.before : old ? entriesOf(coll, idbs[i]!, old, "stored") : NONE;
-        const diff = diffEntries(before, after[i]!);
-        for (const k of diff.remove) {
-          // Empty unless a unique index is building: no string per key then.
-          const at = owners.size === 0 ? undefined : owners.get(keyString(k));
-          if (at === undefined || bytesEqual(values[at], idbs[i])) removes.push(k);
-        }
-        for (const e of diff.write) writes.push(e);
       }
       for (const k of removes) tx.delete(k);
       for (const e of writes) tx.put(e.key, e.value);
-      return existed;
-    },
-  };
-}
-
-/** With no index to diff, a put needs no old row: the catalog read in `write` is the only guard. */
-function blindPut(coll: BoundCollection, docs: readonly EncodedDoc[]): WritePlan<void> {
-  return {
-    keys: [],
-    apply: (_values, tx) => {
-      for (const d of docs) tx.put(rowKey(coll.rows.prefix, d.id), d.bytes);
+      return { next, existed };
     },
   };
 }
 
 function uniqueError(incoming: string, owner: string): DocStoreError {
   return new DocStoreError("unique", `"${incoming}" and "${owner}" would share a unique value`, [incoming, owner]);
-}
-
-type Slot = EncodedDoc | null | undefined;
-
-/**
- * Run `fn` on the rows `olds` and plan the writes of the slots it changed,
- * against those rows. `changed` lists the slot of each id in the plan.
- */
-function planModify<T extends JsonDoc, In>(
-  coll: BoundCollection,
-  encode: (docs: readonly unknown[]) => EncodedDoc[],
-  docIds: readonly DocId[],
-  idbs: readonly Uint8Array[],
-  olds: readonly (Uint8Array | undefined)[],
-  fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
-): { readonly next: readonly Slot[]; readonly changed: readonly number[]; readonly plan: WritePlan<number> } {
-  const docs = decodeDocs(olds);
-  // Before `fn`, which may change the objects it is given.
-  const priors = olds.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
-
-  const out = fn(docs as unknown as (T | undefined)[]);
-  if (!Array.isArray(out) || out.length !== docIds.length) {
-    throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
-  }
-  const encoded = encode(out.filter((d) => d !== undefined && d !== null));
-  let k = 0;
-  const next = out.map((d, i): Slot => {
-    if (d === undefined || d === null) return d;
-    const doc = encoded[k++]!;
-    if (doc.id !== docIds[i]) {
-      throw new DocStoreError("document", `fn returned a document with id "${doc.id}" for "${docIds[i]}"`);
-    }
-    return doc;
-  });
-
-  const changed = next.flatMap((d, i) => (d === undefined ? [] : [i]));
-  const plan = planChanges(
-    coll,
-    changed.map((i) => docIds[i]!),
-    changed.map((i) => next[i] ?? undefined),
-    changed.map((i) => priors[i]!),
-  );
-  return { next, changed, plan };
 }
 
 export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, Ix, In> {
@@ -306,9 +267,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     const encoded = this.encode(docs);
     const ids = encoded.map((e) => e.id);
     if (new Set(ids).size !== ids.length) throw new DocStoreError("document", "putMany got one id twice");
-    await this.store.write<unknown>(this.name, (coll) =>
-      coll.maintained.length === 0 ? blindPut(coll, encoded) : this.planRows(coll, ids, encoded),
-    );
+    await this.store.write(this.name, (coll) => planRows(coll, ids, encoded, coll.maintained.length === 0));
   }
 
   async modify(id: string, fn: (doc: T) => In): Promise<T | undefined> {
@@ -323,44 +282,36 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     await this.transact(ids, fn);
   }
 
-  /**
-   * Without a unique index the transaction reads only the rows, so `fn`
-   * runs inside it, on what it read. A unique index adds the owners of the
-   * values `fn` returns, and kv takes its keys up front: then the rows are
-   * read before the transaction, and it commits only if every row, the ones
-   * `fn` left included, still holds the bytes `fn` saw. Returns what each
-   * slot became.
-   */
+  /** `fn` runs inside the transaction, on the rows it read. Returns what each slot became. */
   private async transact(
     ids: readonly string[],
     fn: (docs: readonly (T | undefined)[]) => readonly (In | null | undefined)[],
   ): Promise<readonly Slot[]> {
     const docIds = ids.map(parseId);
     if (new Set(docIds).size !== docIds.length) throw new DocStoreError("document", "modifyMany got one id twice");
-    const idbs = docIds.map(idBytes);
-    return this.store.write(this.name, async (coll): Promise<WritePlan<readonly Slot[]>> => {
-      const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-      if (!coll.maintained.some((p) => p.target.unique)) {
-        return {
-          keys: rowKeys,
-          apply: (olds, tx) => {
-            const { next, changed, plan } = planModify(coll, this.encode, docIds, idbs, olds, fn);
-            plan.apply(changed.map((i) => olds[i]), tx);
-            return next;
-          },
-        };
-      }
-      const olds = await this.store.kv.getMany(rowKeys);
-      const { next, plan } = planModify(coll, this.encode, docIds, idbs, olds, fn);
-      const left = next.flatMap((d, i) => (d === undefined ? [i] : []));
-      return {
-        keys: [...plan.keys, ...left.map((i) => rowKeys[i]!)],
-        apply: (values, tx) => {
-          if (left.some((i, k) => !bytesEqual(olds[i], values[plan.keys.length + k]))) return RETRY;
-          return plan.apply(values, tx) === RETRY ? RETRY : next;
-        },
-      };
-    });
+    const written = await this.store.write(this.name, (coll) =>
+      planRows(coll, docIds, (rows, idbs) => {
+        const docs = decodeDocs(rows);
+        // Before `fn`, which may change the objects it is given.
+        const before = docs.map((doc, i) => (doc ? entriesOf(coll, idbs[i]!, doc, "stored") : NONE));
+        const out = fn(docs as unknown as (T | undefined)[]);
+        if (!Array.isArray(out) || out.length !== docIds.length) {
+          throw new DocStoreError("document", `fn must return one entry for each of the ${docIds.length} ids`);
+        }
+        const encoded = this.encode(out.filter((d) => d !== undefined && d !== null));
+        let k = 0;
+        const next = out.map((d, i): Slot => {
+          if (d === undefined || d === null) return d;
+          const doc = encoded[k++]!;
+          if (doc.id !== docIds[i]) {
+            throw new DocStoreError("document", `fn returned a document with id "${doc.id}" for "${docIds[i]}"`);
+          }
+          return doc;
+        });
+        return { next, before };
+      }),
+    );
+    return written.next;
   }
 
   async delete(id: string): Promise<boolean> {
@@ -369,23 +320,8 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
 
   async deleteMany(ids: readonly string[]): Promise<number> {
     const distinct = [...new Set(ids.map(parseId))];
-    return this.store.write(this.name, (coll) => this.planRows(coll, distinct, distinct.map(() => undefined)));
-  }
-
-  /** `planChanges`, reading the rows first only while a unique index builds. */
-  private async planRows(
-    coll: BoundCollection,
-    ids: readonly DocId[],
-    docs: readonly (EncodedDoc | undefined)[],
-  ): Promise<WritePlan<number>> {
-    return planChanges(coll, ids, docs, buildingUnique(coll) ? await this.priors(coll, ids) : undefined);
-  }
-
-  private async priors(coll: BoundCollection, ids: readonly DocId[]): Promise<Prior[]> {
-    const idbs = ids.map(idBytes);
-    const rows = await this.store.kv.getMany(idbs.map((idb) => concat(coll.rows.prefix, idb)));
-    const docs = decodeDocs(rows);
-    return rows.map((bytes, i) => priorOf(coll, idbs[i]!, bytes, docs[i]));
+    const gone = distinct.map(() => null);
+    return (await this.store.write(this.name, (coll) => planRows(coll, distinct, gone))).existed;
   }
 
   clear(): Promise<void> {

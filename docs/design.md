@@ -107,8 +107,9 @@ a row whose header names `appliedThrough + 1`. The row takes that seq only if no
 since the read. Failing that, the update runs in one transaction that reads the tail, applies it to
 the memtable, runs `body` and adds the batch at `head + 1`, which no writer can beat. So does an
 update issued while an append of its handle is in flight, or whose `body` wrote nothing or threw. After a row
-loses, the handle appends no such row until one of those transactions writes with an empty tail. A handle
-runs its updates one at a time, in call order.
+loses, the handle appends no such row until one of those transactions writes with an empty tail. `tx.read`
+reads more keys in the turn `body` runs in, so in the same state. A run of `body` that needs a value not
+in memory appends nothing, and runs again once the value is loaded. A handle runs its updates one at a time, in call order.
 
 The commit point is the `complete` event of the transaction, at the default IndexedDB
 durability. The writes of a group commit in seq order. A commit survives a tab crash. It may not
@@ -308,8 +309,7 @@ reads the manifest file for their block indexes. The load fails without the file
 Recovery never reads the copy. An open also reads ahead of IndexedDB, which answers last in a cold tab: meanwhile it lists `m/`, reads the
 newest manifest and opens its first 16 runs. The first load takes the open runs, and the manifest when it is its generation's. The open closes the rest.
 
-After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
-tabs call `sync`.
+After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and tabs call `sync`.
 
 ### Loading a generation under churn
 

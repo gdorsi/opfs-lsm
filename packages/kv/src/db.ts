@@ -170,6 +170,19 @@ export interface BatchTx {
   deleteRange(bounds: KeyBounds, options?: DeleteRangeOptions): void;
 }
 
+/** The `tx` of an `update`: a batch that also reads. */
+export interface UpdateTx extends BatchTx {
+  /**
+   * The values of more keys, in the order of `keys`, in the same state as
+   * the `values` of the update: for a key the body learns only from what it
+   * read. A value this tab holds in memory comes back at once. For any
+   * other, this run of `body` ends here: `read` throws, kv loads the values
+   * and runs `body` again. A run that ended so never counts, even when
+   * `body` caught what `read` threw.
+   */
+  read(keys: readonly Uint8Array[]): (Uint8Array | undefined)[];
+}
+
 export interface Db {
   /** The name passed to `openDb`. */
   readonly name: string;
@@ -206,17 +219,18 @@ export interface Db {
   /**
    * Read `keys` and write as one step: `body` runs synchronously with the
    * values, in the order of `keys`, and its writes commit only if no other
-   * write landed since they were read. So there is no conflict to handle,
-   * and concurrent updates lose nothing. `body` usually runs once. It runs
-   * again when another write landed between its read and its commit, when
-   * it writes nothing or throws, and when the browser refuses the write for
-   * lack of space: three times at most. Only its last run counts, so keep
-   * it free of side effects. The updates of one handle run one at a time,
-   * in call order.
+   * write landed since they were read. `tx.read` reads more keys in that
+   * same state. So there is no conflict to handle, and concurrent updates
+   * lose nothing. `body` usually runs once. It runs again when another
+   * write landed between its read and its commit, when it writes nothing or
+   * throws, and when the browser refuses the write for lack of space: three
+   * times at most. It also runs again each time `tx.read` has to load a
+   * value. Only its last run counts, so keep it free of side effects. The
+   * updates of one handle run one at a time, in call order.
    */
   update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T>;
   range(range?: Range): AsyncIterable<Entry>;
   /** How many entries `range` would yield, `limit` included, without copying them. */
@@ -450,15 +464,20 @@ async function openStores(
   }
 }
 
+/** The ops `build` chose. `read` answers the `tx.read` of an update. A batch has none. */
 function collectBatch(
-  build: (tx: BatchTx) => unknown,
+  build: (tx: UpdateTx) => unknown,
+  read?: UpdateTx["read"],
 ): readonly CheckedOp[] {
   const batch = new CheckedBatch();
   let open = true;
   // A build that catches a check error still rejects the whole batch.
   let failure: { readonly error: unknown } | undefined;
-  const add = (op: BatchOp) => {
+  const live = () => {
     if (!open) throw new ConstraintError("tx used after its callback returned");
+  };
+  const add = (op: BatchOp) => {
+    live();
     try {
       batch.add(op);
     } catch (error) {
@@ -473,6 +492,10 @@ function collectBatch(
       delete: (key) => add({ type: "del", key }),
       deleteRange: (bounds, options) =>
         add({ type: "deleteRange", start: bounds.start, endExclusive: bounds.endExclusive, through: options?.through }),
+      read: (keys) => {
+        live();
+        return read!(keys);
+      },
     });
   } finally {
     open = false;
@@ -1147,7 +1170,7 @@ class DbImpl implements Db {
 
   async update<T>(
     keys: readonly Uint8Array[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
@@ -1164,58 +1187,92 @@ class DbImpl implements Db {
    * `body` saw the state just before its own write. Otherwise the row has no
    * ops, and `write` runs `body` again inside a transaction, which cannot
    * lose. `write` runs it alone when an append of this handle is in flight,
-   * whose row the memtable lacks, or when a read still waits for a page, and
-   * again when `body` wrote nothing or threw, so that what it returns or
-   * throws was read at the committed head. It also runs it alone after a row
-   * lost (`beaten`): while another tab keeps writing, every row would lose,
-   * and cost a round trip more than the transaction alone.
+   * whose row the memtable lacks, and again when `body` wrote nothing or
+   * threw, so that what it returns or throws was read at the committed
+   * head. It also runs it alone after a row lost (`beaten`): while another
+   * tab keeps writing, every row would lose, and cost a round trip more
+   * than the transaction alone.
+   *
+   * `tx.read` reads in the turn `body` runs in, so it reads the state
+   * `body` got its values from. A read that waits for a page ends that run
+   * of `body`, here and in the transaction: nothing is appended, the page
+   * loads, and `body` runs again from a new read of every key.
    */
   private async updateOnce<T>(
     ks: readonly CheckedKey[],
-    body: (values: readonly (Uint8Array | undefined)[], tx: BatchTx) => T,
+    body: (values: readonly (Uint8Array | undefined)[], tx: UpdateTx) => T,
   ): Promise<T> {
     // One set for the warm reads and the reads that cannot wait for a load.
     const held = new ReadSet();
-    const read = () => keysReader(this.memRows(ks), ks, this.point());
-    /** What the last `warm` read, and the `appliedThrough` it read at. */
+    const read = (keys: readonly CheckedKey[]) => keysReader(this.memRows(keys), keys, this.point());
+    /** A read that cannot wait: of the memtable and the pages in memory, in this turn. */
+    const now = (keys: readonly CheckedKey[]) => held.attempt(() => read(keys)(this.installed.levels));
+    /** What `warm` loads: `ks`, then the keys the last run of `body` gave `tx.read`. */
+    let wanted = ks;
+    /** What the last `warm` read of `ks`, and the `appliedThrough` it read at. */
     let warmed: [Seq, (Uint8Array | undefined)[]] | undefined;
     const plan = () => {
       // Nothing landed since the warm read, so it read this state: no second read.
-      const values =
-        warmed?.[0] === this.mem.appliedThrough ? warmed[1] : held.attempt(() => read()(this.installed.levels));
+      const values = warmed?.[0] === this.mem.appliedThrough ? warmed[1] : now(ks);
       warmed = undefined;
       if (values instanceof Miss) return held.keep(values);
+      wanted = ks;
       let result!: T;
-      const ops = collectBatch((tx) => {
-        result = body(values, tx);
-        return result;
-      });
-      return { ops, result };
+      /** The load a `tx.read` waits for. This run of `body` does not count, whatever it did after. */
+      let miss: Miss | undefined;
+      let ops: readonly CheckedOp[] | undefined;
+      try {
+        ops = collectBatch(
+          (tx) => (result = body(values, tx)),
+          (keys) => {
+            if (!miss) {
+              const more = keys.map(checkKey);
+              wanted = wanted.concat(more);
+              const got = now(more);
+              if (!(got instanceof Miss)) return got;
+              miss = got;
+            }
+            throw miss;
+          },
+        );
+      } catch (err) {
+        if (!miss) throw err;
+      }
+      return miss ? held.keep(miss) : { ops: ops!, result };
     };
     const warm = async () => {
       // The rows, levels and marks it reads are all taken now, so the values are the state at `at`.
       const at = this.mem.appliedThrough;
-      warmed = [at, await this.settleInstalled(read(), held)];
+      const values = await this.settleInstalled(read(wanted), held);
+      // Only the values of `ks` are kept: `tx.read` reads its keys in the turn `body` runs in.
+      values.length = ks.length;
+      warmed = [at, values];
     };
     // Only its turn: the handle is checked open again below.
     await this.pressure.admit();
-    await warm();
-    this.ensureOpen();
-    // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
-    const next = nextSeq(this.mem.appliedThrough);
-    if (!this.appending && !this.beaten) {
+    let next: Seq;
+    for (;;) {
+      await warm();
+      this.ensureOpen();
+      // No await from here to the append: the seq the row is valid at and the state `body` reads are one instant.
+      next = nextSeq(this.mem.appliedThrough);
+      if (this.appending || this.beaten) break;
       let planned: ReturnType<typeof plan> | undefined;
       try {
         planned = plan();
       } catch {
         // This handle can lag another tab's write: the run in `write`, at the head, throws for good.
       }
-      // `write` loads what missed again and surfaces a failure, so the one of this load is dropped.
-      if (planned instanceof Miss) planned.ready.catch(() => undefined);
-      else if (planned?.ops.length) {
+      if (planned instanceof Miss) {
+        // The next `warm` loads what missed again and surfaces a failure, so the one of this load is dropped.
+        await planned.ready.catch(() => undefined);
+        continue;
+      }
+      if (planned?.ops.length) {
         if (rowValid(next, await this.commit(planned.ops, next))) return planned.result;
         this.beaten = true;
       }
+      break;
     }
     const out = await this.write(plan, warm);
     // The transaction took the seq this update started at: no other write is in the way.

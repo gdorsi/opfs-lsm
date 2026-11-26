@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ClosedError, prefixBound, type Db, type Range, type ViewSnapshot } from "../src/index.js";
+import { ClosedError, ConstraintError, prefixBound, type Db, type Range, type UpdateTx, type ViewSnapshot } from "../src/index.js";
 import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src/testing.js";
 import { CheckedBatch, checkDbName } from "../src/check.js";
 import { TabWal } from "../src/idb/wal.js";
@@ -286,6 +286,149 @@ describe("update", () => {
       }),
     ).rejects.toThrow("boom");
     expect(await db.get(utf("k"))).toBeUndefined();
+    await db.close();
+  });
+});
+
+describe("update with tx.read", () => {
+  /** `at` names the key that holds a number. Adds one to that number. */
+  const bumpAt = (db: Db, count?: { runs: number }) =>
+    db.update([utf("at")], ([at], tx) => {
+      if (count) count.runs += 1;
+      const [n] = tx.read([at!]);
+      const next = Number(text(n) ?? "0") + 1;
+      tx.put(at!, utf(String(next)));
+      return `${text(at)}=${next}`;
+    });
+
+  /** `at` and the number it names in two runs, so a handle that loaded the one still has the other to load. */
+  async function twoRuns(fs: MemoryFs): Promise<void> {
+    const writer = await open("w", fs);
+    await writer.batch((tx) => {
+      tx.put(utf("n/1"), utf("7"));
+      tx.put(utf("n/2"), utf("100"));
+    });
+    await ingest(writer);
+    await writer.put(utf("at"), utf("n/1"));
+    await ingest(writer);
+    await writer.close();
+  }
+
+  it("reads a key the body learns from its values, and commits like a put when the value is in memory", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.batch((tx) => {
+      tx.put(utf("at"), utf("n/1"));
+      tx.put(utf("n/1"), utf("7"));
+    });
+    const groups = watchWalGroups();
+    const count = { runs: 0 };
+    expect(await bumpAt(db, count)).toBe("n/1=8");
+    expect(count.runs).toBe(1);
+    expect(groups).toEqual([1]);
+    expect(text(await db.get(utf("n/1")))).toBe("8");
+    await db.close();
+  });
+
+  it("gives the values in the order of the keys, undefined for a missing one, and nothing for no key", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.batch((tx) => {
+      tx.put(utf("a"), utf("1"));
+      tx.put(utf("c"), utf("3"));
+    });
+    const seen = await db.update([], (values, tx) => [values, tx.read([]), tx.read([utf("c"), utf("b"), utf("a")]).map(text)]);
+    expect(seen).toEqual([[], [], ["3", undefined, "1"]]);
+    await db.close();
+  });
+
+  it("runs the body again once a value it asked for is loaded, and still commits like a put", async () => {
+    const fs = new MemoryFs();
+    await twoRuns(fs);
+    // A cache that keeps nothing: the update holds what it loaded until its body has run.
+    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes, cacheBytes: 1 });
+    const groups = watchWalGroups();
+    const count = { runs: 0 };
+    expect(await bumpAt(db, count)).toBe("n/1=8");
+    expect(count.runs, "the first run ended at tx.read").toBe(2);
+    expect(groups).toEqual([1]);
+    expect(text(await db.get(utf("n/1")))).toBe("8");
+    await db.close();
+  });
+
+  it("writes nothing from a run that ended at tx.read, even when the body caught what it threw", async () => {
+    const fs = new MemoryFs();
+    await twoRuns(fs);
+    const db = await open("a", fs);
+    let caught = 0;
+    const out = await db.update([utf("at")], ([at], tx) => {
+      try {
+        const [n] = tx.read([at!]);
+        tx.put(utf("copy"), n!);
+        return "read";
+      } catch {
+        caught += 1;
+        tx.put(utf("caught"), utf("x"));
+        return "caught";
+      }
+    });
+    expect([out, caught]).toEqual(["read", 1]);
+    expect(await db.get(utf("caught"))).toBeUndefined();
+    expect(text(await db.get(utf("copy")))).toBe("7");
+    await db.close();
+  });
+
+  it("reads at the committed head when another handle's write landed first", async () => {
+    const db = await open("a", new MemoryFs());
+    await db.batch((tx) => {
+      tx.put(utf("at"), utf("n/1"));
+      tx.put(utf("n/1"), utf("7"));
+      tx.put(utf("n/2"), utf("100"));
+    });
+    await unheard("at", "n/2");
+    const count = { runs: 0 };
+    expect(await bumpAt(db, count)).toBe("n/2=101");
+    expect(count.runs).toBe(2);
+    expect((await db.getMany([utf("n/1"), utf("n/2")])).map(text)).toEqual(["7", "101"]);
+    await db.close();
+  });
+
+  it("ends a run at tx.read inside the transaction too, which then appends nothing and runs again", async () => {
+    const fs = new MemoryFs();
+    await twoRuns(fs);
+    const db = await open("a", fs);
+    // A row of this handle loses to another handle's write, so its next update runs in a transaction. Neither reads a run.
+    await db.put(utf("m"), utf("0"));
+    await unheard("other", "0");
+    await db.update([utf("m")], ([m], tx) => tx.put(utf("m"), utf(`${text(m)}1`)));
+    const groups = watchWalGroups();
+    const count = { runs: 0 };
+    expect(await bumpAt(db, count)).toBe("n/1=8");
+    expect(count.runs).toBe(2);
+    expect(groups, "the transaction adds its record itself, in no group").toEqual([]);
+    expect(text(await db.get(utf("n/1")))).toBe("8");
+    await db.close();
+  });
+
+  it("concurrent updates from two tabs that read through tx.read lose none", async () => {
+    const fs = new MemoryFs();
+    const a = await open("a", fs);
+    const b = await open("b", fs);
+    await a.put(utf("at"), utf("n/1"));
+    await b.sync();
+    const results = await Promise.all(upTo(20).map((i) => bumpAt(i % 2 ? a : b)));
+    expect(results.sort()).toEqual(upTo(20).map((i) => `n/1=${i}`).sort());
+    await a.sync();
+    expect(text(await a.get(utf("n/1")))).toBe("20");
+    await a.close();
+    await b.close();
+  });
+
+  it("throws ConstraintError once the body returned", async () => {
+    const db = await open("a", new MemoryFs());
+    let kept: UpdateTx | undefined;
+    await db.update([], (_values, tx) => {
+      kept = tx;
+    });
+    expect(() => kept!.read([utf("k")])).toThrow(ConstraintError);
     await db.close();
   });
 });
