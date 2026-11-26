@@ -39,6 +39,13 @@ export interface ReadFs {
   list(dir: string): Promise<readonly string[]>;
 }
 
+/**
+ * How a host writes a file. "writable": through `createWritable()`. "staged":
+ * where OPFS has none, through a sync access handle on `<name>.crswap`, then
+ * a rename. Undefined: the host writes no file.
+ */
+export type FileWrites = "writable" | "staged" | undefined;
+
 export interface AsyncFs extends ReadFs {
   remove(path: string): Promise<void>;
   /** Remove `path` unless some tab holds it open. True when it is gone. */

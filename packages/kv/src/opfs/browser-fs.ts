@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter, OpenFile, ReadFs, RemovableFolder } from "./async-fs.js";
+import type { AsyncFs, FileWrites, FileWriter, OpenFile, ReadFs, RemovableFolder } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { runLock } from "../locks.js";
@@ -138,11 +138,41 @@ class BrowserReadFs implements ReadFs {
   }
 }
 
+/** What the DOM lib leaves off a file handle: sync access, which it gives to a dedicated Worker only, and `move`. */
+type StagedHandle = FileSystemFileHandle & {
+  createSyncAccessHandle(): Promise<SyncAccess>;
+  move(dir: FileSystemDirectoryHandle, name: string): Promise<void>;
+};
+
+/** The first spec made all but `write` asynchronous, and older browsers return promises, so each call is awaited. */
+type SyncAccess = {
+  truncate(size: number): void | Promise<void>;
+  write(bytes: Uint8Array, options: { at: number }): number;
+  flush(): void | Promise<void>;
+  close(): void | Promise<void>;
+};
+
+/** A file being written, by either way: `close` publishes it, and `abort` leaves the published file as it was. */
+type Sink = {
+  write(bytes: Uint8Array): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+};
+
 /**
- * The adapter the host uses: reads, and the writes.
- * Publish = createWritable (no keepExistingData) + close.
+ * The adapter the host uses: reads, and the writes. A file is published
+ * whole, by the `close` of a `createWritable()`, or by the rename of a staged
+ * file where `writes` says so.
  */
 export class BrowserFs extends BrowserReadFs implements AsyncFs {
+  constructor(
+    root: FileSystemDirectoryHandle | Promise<FileSystemDirectoryHandle>,
+    dbName: DbName,
+    private readonly writes?: FileWrites,
+  ) {
+    super(root, dbName);
+  }
+
   async removeUnlessOpen(path: string): Promise<boolean> {
     return await navigator.locks.request(
       this.lockName(path),
@@ -159,38 +189,123 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
     );
   }
 
-  async remove(path: string): Promise<void> {
+  /** The directory of the file at `path`, and the file's name in it. */
+  private async entry(path: string, create: boolean): Promise<[FileSystemDirectoryHandle, string]> {
     const parts = splitPath(path);
-    if (parts.length === 0) throw new Error("cannot remove root");
-    const fileName = parts[parts.length - 1]!;
-    const dir = await this.dir(parts.slice(0, -1), false);
-    await dir.removeEntry(fileName);
+    const name = parts.pop()!;
+    return [await this.dir(parts, create), name];
+  }
+
+  async remove(path: string): Promise<void> {
+    const [dir, name] = await this.entry(path, false);
+    await dir.removeEntry(name);
   }
 
   async create(path: string): Promise<FileWriter> {
-    const handle = await this.fileHandle(path, true);
-    // Default createWritable: new staged version, no keepExistingData.
-    const writable = await handle.createWritable();
+    const file = await (this.writes === "staged" ? this.stage(path) : this.writable(path));
     let done = false;
     return {
       write: async (bytes: Uint8Array) => {
         if (done) throw new Error("write after finish/abort");
-        const chunk = new Uint8Array(bytes.byteLength);
-        chunk.set(bytes);
-        await writable.write(chunk);
+        await file.write(bytes);
       },
       finish: async () => {
         if (done) throw new Error("second finish");
         done = true;
-        await writable.close();
+        await file.close();
       },
       abort: async () => {
         if (done) return;
         done = true;
-        await writable.abort();
+        await file.abort();
       },
     };
   }
+
+  /** Default createWritable: new staged version, no keepExistingData. */
+  private async writable(path: string): Promise<Sink> {
+    const writable = await (await this.fileHandle(path, true)).createWritable();
+    return {
+      write: (bytes) => writable.write(new Uint8Array(bytes)),
+      close: () => writable.close(),
+      abort: () => writable.abort(),
+    };
+  }
+
+  /**
+   * Where OPFS has no `createWritable()`. The staged file takes the name
+   * Chrome's `createWritable()` leaves after a crash, so what removes those
+   * removes a staged file a crash left, and the next write of `path` writes
+   * over it. The handle locks the staged file, so a step that fails closes
+   * and removes it: the host writes a refused file again at once.
+   */
+  private async stage(path: string): Promise<Sink> {
+    const [dir, name] = await this.entry(path, true);
+    const swap = `${name}.crswap`;
+    const handle = (await dir.getFileHandle(swap, { create: true })) as StagedHandle;
+    let access: SyncAccess | undefined;
+    let at = 0;
+    const abort = async (): Promise<void> => {
+      await access?.close();
+      await dir.removeEntry(swap);
+    };
+    const orAbort = async (step: () => unknown): Promise<void> => {
+      try {
+        await step();
+      } catch (err) {
+        await abort().catch(() => undefined);
+        throw err;
+      }
+    };
+    await orAbort(async () => {
+      access = await handle.createSyncAccessHandle();
+      await access.truncate(0);
+    });
+    return {
+      write: (bytes) =>
+        orAbort(() => {
+          const written = access!.write(bytes, { at });
+          at += written;
+          // A full disk writes part of the bytes, and is a refusal like a full quota.
+          if (written < bytes.byteLength) throw new DOMException("short write", "QuotaExceededError");
+        }),
+      close: () =>
+        orAbort(async () => {
+          // On disk before the rename, so a power loss leaves the whole file or none.
+          await access!.flush();
+          await access!.close();
+          await handle.move(dir, name);
+        }),
+      abort,
+    };
+  }
+}
+
+/**
+ * How this worker writes an OPFS file. With `createWritable()` it answers
+ * without a file call. Without, it writes one scratch file in `opfs-lsm/` as
+ * the host would, and answers "staged" only when the byte reads back under
+ * the final name. The spec gives sync access handles to dedicated Workers
+ * only and Safari 18.6 also gives them to a SharedWorker, so whether one
+ * works here is found by trying. The scratch name is this worker's own: a
+ * second handle on one file is refused.
+ */
+export async function fileWrites(): Promise<FileWrites> {
+  const writable: unknown = globalThis.FileSystemFileHandle?.prototype.createWritable;
+  if (writable) return "writable";
+  const fs = new BrowserFs(openParent(), "" as DbName, "staged");
+  const name = `probe-${Math.random()}`;
+  try {
+    const writer = await fs.create(name);
+    await writer.write(new Uint8Array(1));
+    await writer.finish();
+    if ((await fs.read(name, 0, 2))?.byteLength === 1) return "staged";
+  } catch {
+    // No sync access handle here, or no rename: the host writes no file.
+  } finally {
+    await fs.remove(name).catch(() => undefined);
+  }
+  return undefined;
 }
 
 function isNotFound(err: unknown): boolean {
@@ -240,10 +355,10 @@ async function findFolder(dbName: DbName): Promise<[FileSystemDirectoryHandle, F
  * `opfs-lsm/`. The SharedWorker resolves the folder with it at the start of
  * every operation.
  */
-export async function findBrowserFs(name: string): Promise<BrowserFs | undefined> {
+export async function findBrowserFs(name: string, writes?: FileWrites): Promise<BrowserFs | undefined> {
   const dbName: DbName = checkDbName(name);
   const found = await findFolder(dbName);
-  return found && new BrowserFs(found[1], dbName);
+  return found && new BrowserFs(found[1], dbName, writes);
 }
 
 async function ignoreNotFound(removal: Promise<void>): Promise<void> {

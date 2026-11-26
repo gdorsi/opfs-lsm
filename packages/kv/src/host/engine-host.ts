@@ -1,7 +1,8 @@
 import { checkDbName, type DbName } from "../check.js";
 import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
 import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../idb/wal.js";
-import type { AsyncFs } from "../opfs/async-fs.js";
+import type { AsyncFs, FileWrites } from "../opfs/async-fs.js";
+import { fileWrites } from "../opfs/browser-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
 import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
 import {
@@ -819,16 +820,18 @@ function isClosedDatabase(err: unknown): boolean {
 
 /**
  * Serve the host `build` makes to every tab that connects to this
- * SharedWorker, or, in a dedicated Worker, to the page that started it. It
- * writes run files only in a SharedWorker whose OPFS files have
- * `createWritable()`: each handle starts its own dedicated Worker, and several
- * hosts flushing one database is not verified.
+ * SharedWorker, or, in a dedicated Worker, to the page that started it. A
+ * SharedWorker's host writes run files the way `fileWrites` finds. A
+ * dedicated Worker's host writes none: each handle starts its own, and
+ * several hosts flushing one database is not verified. Where `fileWrites`
+ * has to try, the ports are served at once and each request waits for the
+ * host, so no connect event and no request is lost.
  */
-export function serveWorker(build: (writes: boolean) => EngineHost): void {
+export function serveWorker(build: (writes: FileWrites) => EngineHost): void {
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
   const scope = globalThis as unknown as MessagePort & { onconnect?: ((ev: MessageEvent) => void) | null };
   const shared = "onconnect" in scope;
-  const host = build(shared && !!globalThis.FileSystemFileHandle?.prototype.createWritable);
+  const host = Promise.resolve(shared ? fileWrites() : undefined).then(build);
   if (!shared) {
     attachEngineHostPort(scope, host);
     return;
@@ -839,15 +842,16 @@ export function serveWorker(build: (writes: boolean) => EngineHost): void {
   };
 }
 
-/** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). */
+/** Serve EngineHost over a MessagePort (SharedWorker connection or test channel). A host still being built answers once it is. */
 export function attachEngineHostPort(
   port: MessagePort,
-  host: EngineHost,
+  served: EngineHost | Promise<EngineHost>,
 ): () => void {
   const onMessage = async (ev: MessageEvent<ClientToHost>) => {
     const msg = ev.data;
     const reply = (m: HostToClient) => port.postMessage(m);
     try {
+      const host = await served;
       switch (msg.type) {
         case "ingest": {
           const { generation } = await host.ingest(msg.name, msg.waitForCompaction);
