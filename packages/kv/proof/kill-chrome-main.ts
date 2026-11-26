@@ -11,7 +11,8 @@ import { terminateHosts } from "./host-modes.ts";
 import { OpfsLsmError } from "../src/index.js";
 import { openBrowserFs, openHarnessDb, ingest, ensureEngine, readStats } from "../src/testing.js";
 import { checkDatabase, walMeta, walRows } from "../tests/sim/check-database.js";
-import { decodeGeneration, listRuns } from "../src/store/generation.js";
+import { decodeGeneration } from "../src/store/generation.js";
+import { listRuns } from "../src/host/reclaim.js";
 import { decodeSst } from "../tests/oracle/sst-ref.js";
 import { attempts, type WorkOp } from "./kill-chrome-workload.js";
 
