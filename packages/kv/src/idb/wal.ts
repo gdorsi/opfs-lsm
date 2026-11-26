@@ -1,5 +1,13 @@
 import { compareBytes } from "../bytes.js";
-import { flushBytes, type CheckedKey, type CheckedOp, type CheckedValue, type DbName } from "../check.js";
+import {
+  flushBytes,
+  type CheckedKey,
+  type CheckedOp,
+  type CheckedValue,
+  type DbName,
+  type ResolvedOp,
+  type ResolvedSeq,
+} from "../check.js";
 import { ClosedError, codeOfError, CommitError, StorageFullError, unavailable } from "../errors.js";
 import {
   asGeneration,
@@ -111,8 +119,8 @@ export function rowValid(validAt: Seq | undefined, seq: Seq): boolean {
 }
 
 /** A range delete asked for `asked` in the record at `seq` never covers its own batch. */
-function resolveThrough(asked: Seq, seq: Seq): Seq {
-  return asSeq(Math.max(0, Math.min(asked, prevSeq(seq))));
+function resolveThrough(asked: Seq, seq: Seq): ResolvedSeq {
+  return Math.max(0, Math.min(asked, prevSeq(seq))) as ResolvedSeq;
 }
 
 /**
@@ -164,8 +172,9 @@ export function encodeOps(ops: readonly CheckedOp[], validAt?: Seq): ArrayBuffer
 }
 
 /** The ops of `record` with each range delete's `through` resolved against `seq`. */
-export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly CheckedOp[] {
-  if (!ops.some((op) => op.type === "deleteRange")) return ops;
+export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly ResolvedOp[] {
+  // With no range delete, the ops are resolved as they are.
+  if (!ops.some((op) => op.type === "deleteRange")) return ops as readonly ResolvedOp[];
   return ops.map((op) => (op.type === "deleteRange" ? { ...op, through: resolveThrough(op.through, seq) } : op));
 }
 
@@ -176,11 +185,11 @@ export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly Checke
  * buffer, which nothing else holds. Exported for the decoder fuzz tests
  * (`packages/kv/fuzz/`).
  */
-export function decodeOps(raw: unknown, seq: Seq): CheckedOp[] {
+export function decodeOps(raw: unknown, seq: Seq): ResolvedOp[] {
   if (!(raw instanceof ArrayBuffer)) throw new CommitError("corrupt wal row: not bytes");
   const bytes = new Uint8Array(raw);
   const view = new DataView(raw);
-  const ops: CheckedOp[] = [];
+  const ops: ResolvedOp[] = [];
   let at = 0;
   const take = (length: number): Uint8Array => {
     if (at + length > bytes.byteLength) throw new CommitError("corrupt wal row: truncated");

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { compareBytes } from "../src/bytes.js";
-import type { CheckedKey, CheckedOp, CheckedValue } from "../src/check.js";
+import type { CheckedKey, CheckedValue, ResolvedOp, ResolvedSeq } from "../src/check.js";
 import { asSeq } from "../src/seq.js";
 import { throughAt, type Mark } from "../src/store/marks.js";
 import { Memtable, type MemRow, type MemRows } from "../src/store/memtable.js";
@@ -34,7 +34,7 @@ function run(seed: number): void {
     const roll = rnd(20);
     if (roll < 13) {
       seq += 1;
-      const ops: CheckedOp[] = [];
+      const ops: ResolvedOp[] = [];
       const added: Mark[] = [];
       const written = new Set<number>();
       for (let n = 1 + rnd(8); n > 0; n--) {
@@ -52,9 +52,9 @@ function run(seed: number): void {
         } else {
           const from = rnd(4) === 0 ? undefined : k;
           const to = rnd(4) === 0 ? undefined : (from ?? 0) + 1 + rnd(KEYS - (from ?? 0));
-          const through = asSeq(rnd(3) === 0 ? rnd(seq) : seq - 1);
+          const through = (rnd(3) === 0 ? rnd(seq) : seq - 1) as ResolvedSeq;
           const start = from === undefined ? (new Uint8Array(0) as CheckedKey) : key(from);
-          const op: CheckedOp = { type: "deleteRange", start, ...(to === undefined ? {} : { endExclusive: key(to) }), through };
+          const op: ResolvedOp = { type: "deleteRange", start, ...(to === undefined ? {} : { endExclusive: key(to) }), through };
           ops.push(op);
           for (const [i, row] of model) {
             if (row.seq <= through && i >= (from ?? 0) && (to === undefined || i < to)) model.delete(i);
@@ -77,7 +77,8 @@ function run(seed: number): void {
       // A record that is not the next one: an old one, or one past a gap.
       const before = show(mem.range());
       const stale = seq === 0 ? 0 : 1 + rnd(seq);
-      const ops: CheckedOp[] = [{ type: "deleteRange", start: new Uint8Array(0) as CheckedKey, through: asSeq(Number.MAX_SAFE_INTEGER) }];
+      // Never applied: a stale or gapped record is refused before its ops are read.
+      const ops: ResolvedOp[] = [{ type: "deleteRange", start: new Uint8Array(0) as CheckedKey, through: Number.MAX_SAFE_INTEGER as ResolvedSeq }];
       if (stale > 0) expect(mem.apply({ seq: asSeq(stale), ops })).toBe("already");
       expect(mem.apply({ seq: asSeq(seq + 2 + rnd(3)), ops })).toBe("gap");
       expect(show(mem.range())).toEqual(before);
