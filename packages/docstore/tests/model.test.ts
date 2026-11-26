@@ -322,7 +322,6 @@ async function run(declared: boolean, cmds: readonly Cmd[]): Promise<void> {
     await Promise.all([store.whenIdle(), previous?.whenIdle()]);
     const docs = [...model.values()];
     const kept = await storedCatalog(kv);
-    expect(kept.dropped).toEqual([]);
     const states = Object.entries(kept.collections["docs"]!.indexes).map(([n, i]) => [n, i.state.kind]);
     expect(Object.fromEntries(states)).toEqual(Object.fromEntries(catalog));
     let entries = 0;

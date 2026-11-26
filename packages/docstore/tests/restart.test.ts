@@ -24,7 +24,6 @@ const v2 = {
   unique: defineSchema({ version: 2, collections: { rows: byA.unique("added", "u") } }),
   text: defineSchema({ version: 2, collections: { rows: byA.text("added", "a", "t") } }),
 };
-const withoutA = defineSchema({ version: 2, collections: { rows: collection<Row>() } });
 
 /** 500 rows per chunk, then the empty scan that marks the index ready. */
 const BACKFILL_SCANS = Math.ceil(ROWS / 500) + 1;
@@ -85,7 +84,7 @@ describe("a backfill stopped between chunks", () => {
 });
 
 describe("a backfill stopped, then resumed by a handle on the version before", () => {
-  it("fails over a duplicate, and whenIdle waits for the sweep the failure starts", async () => {
+  it("fails over a duplicate, and deletes the entries it wrote in the write that marks it failed", async () => {
     const name = await loaded();
     const writer = await openKv(name);
     await (await openDocStore(writer, v1)).collection("rows").put({ ...rows[1]!, id: "dup" });
@@ -97,55 +96,7 @@ describe("a backfill stopped, then resumed by a handle on the version before", (
       await (await openDocStore(kv, v1)).whenIdle();
       const catalog = await storedCatalog(kv);
       expect(catalog.collections["rows"]!.indexes["added"]!.state).toEqual({ kind: "failed", reason: "unique", ids: [rows[1]!.id, "dup"] });
-      expect(catalog.dropped).toEqual([]);
       expect(await keysUnder(kv, prefix)).toBe(0);
-    } finally {
-      await kv.close();
-    }
-  });
-});
-
-describe("a sweep stopped before its range delete", () => {
-  it("of a cleared collection keeps the prefix listed, and the next open empties it", async () => {
-    const k = 1;
-    const kept = rows.slice(0, 3).map((r) => ({ ...r, id: `kept-${r.id}` }));
-    const name = await loaded();
-    let prefix: Uint8Array | undefined;
-    const kv = await stopAt(name, "catalog-or-batch", k, async (db) => {
-      const c = (await openDocStore(db, v1)).collection("rows");
-      prefix = await storedPrefix(db, "rows");
-      await c.clear();
-      await c.putMany(kept);
-    });
-    try {
-      expect((await storedCatalog(kv)).dropped).toHaveLength(1);
-      await (await openDocStore(kv, v1)).whenIdle();
-      expect((await storedCatalog(kv)).dropped).toEqual([]);
-      expect(await keysUnder(kv, prefix!)).toBe(0);
-      const reference = await finished(v1, async (ref) => {
-        const c = (await openDocStore(ref, v1)).collection("rows");
-        await c.clear();
-        await c.putMany(kept);
-      });
-      expect(await docstoreKeys(kv)).toEqual(reference);
-    } finally {
-      await kv.close();
-    }
-  });
-
-  it("of a removed index keeps the prefix listed, and the next open empties it", async () => {
-    const k = 1;
-    const name = await loaded();
-    const before = await openKv(name);
-    const prefix = await storedPrefix(before, "rows", "byA");
-    await before.close();
-    const kv = await stopAt(name, "catalog-or-batch", k, (db) => openDocStore(db, withoutA));
-    try {
-      expect((await storedCatalog(kv)).dropped).toHaveLength(1);
-      await (await openDocStore(kv, withoutA)).whenIdle();
-      expect((await storedCatalog(kv)).dropped).toEqual([]);
-      expect(await keysUnder(kv, prefix)).toBe(0);
-      expect(await docstoreKeys(kv)).toEqual(await finished(withoutA));
     } finally {
       await kv.close();
     }

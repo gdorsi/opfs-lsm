@@ -54,7 +54,7 @@ describe("a query that started before a clear", () => {
     expect(await c.get("x")).toEqual({ id: "x", a: 2 });
   });
 
-  it("leaves the clear to sweep the old rows when it resolves just after the clear's write", async () => {
+  it("deletes the old rows in the clear's write though a query from before it resolves just after", async () => {
     const kv = await openKv(freshName());
     open.push(kv);
     const { db, hold } = holdingReads(kv);

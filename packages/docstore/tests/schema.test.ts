@@ -1,4 +1,4 @@
-import type { Db } from "@opfs-lsm/kv";
+import type { Db, ViewSnapshot } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it } from "vitest";
 import { collection, defineSchema, openDocStore, type DocStore } from "../src/index.js";
 import { encodeCatalog, type StoredCatalog } from "../src/catalog.js";
@@ -188,16 +188,14 @@ describe("opening a schema", () => {
     expect(await codeOf(reader.collection("todos").queryIds({ index: "byTitle" }))).toBe("schema");
   });
 
-  it("sweeps every key of a removed index", async () => {
+  it("deletes every key of a removed index in the open that removes it", async () => {
     const name = freshName();
     const old = await at(name, v1);
     await old.store.collection("todos").putMany(rows(50));
     const titles = await storedPrefix(old.kv, "todos", "byTitle");
     expect(await keysUnder(old.kv, titles)).toBe(50);
     const next = await at(name, defineSchema({ version: 2, collections: { todos: byCreated } }));
-    await next.store.whenIdle();
     expect(await keysUnder(next.kv, titles)).toBe(0);
-    expect((await storedCatalog(next.kv)).dropped).toEqual([]);
   });
 
   it("rebuilds an index whose include a newer version adds, changes or removes, over the rows written before", async () => {
@@ -275,17 +273,16 @@ describe("opening a schema", () => {
       name,
       defineSchema({ version: 2, collections: { todos: byCreated }, drop: ["notes"] }),
     );
-    await next.store.whenIdle();
     const catalog = await storedCatalog(next.kv);
     expect(catalog.collections["notes"]).toBeUndefined();
-    expect(catalog.dropped).toEqual([]);
     expect(await keysUnder(next.kv, notes)).toBe(0);
     expect(await next.store.collection("todos").count({ index: "byCreated" })).toBe(5);
+    await old.kv.sync();
     expect(await codeOf(old.store.collection("notes").get("n1"))).toBe("schema");
     expect(await codeOf(old.store.collection("notes").put({ id: "n1", body: "x" }))).toBe("schema");
   });
 
-  it("starts a dropped collection declared again empty before any sweep has removed its old keys: no row, no unique value", async () => {
+  it("starts a dropped collection declared again empty: no row, no unique value", async () => {
     type User = { id: string; email?: string | undefined; plan?: string | undefined };
     const users = collection<User>().unique("byEmail", "email");
     const withUsers = (version: number) => defineSchema({ version, collections: { todos: byCreated, users } });
@@ -297,27 +294,15 @@ describe("opening a schema", () => {
     ]);
     const oldUsers = await storedPrefix(first.kv, "users");
 
-    // Each handle's first catalog update is its open; the second, its sweep, waits.
-    const dropKv = gate(await kvOn(name), "catalog-or-batch", 1);
-    await openOn(dropKv.db, defineSchema({ version: 2, collections: { todos: byCreated }, drop: ["users"] }));
-    const kv = await kvOn(name);
-    const againKv = gate(kv, "catalog-or-batch", 1);
-    const again = await openOn(againKv.db, withUsers(3));
-    await againKv.arrived(2);
-    expect(await keysUnder(kv, oldUsers)).toBeGreaterThan(0);
+    await at(name, defineSchema({ version: 2, collections: { todos: byCreated }, drop: ["users"] }));
+    const { kv, store } = await at(name, withUsers(3));
+    expect(await keysUnder(kv, oldUsers)).toBe(0);
 
-    const c = again.collection("users");
+    const c = store.collection("users");
     expect(await c.getMany(["u1", "u2"])).toEqual([undefined, undefined]);
     expect((await c.queryIds({})).ids).toEqual([]);
     expect((await c.queryIds({ index: "byEmail" })).ids).toEqual([]);
-    expect(await c.count({ index: "byEmail" })).toBe(0);
     await c.put({ id: "u3", email: "ada@example.com", plan: "pro" });
-    expect(await c.count({ index: "byEmail" })).toBe(1);
-
-    dropKv.release();
-    againKv.release();
-    await Promise.all(stores.map((s) => s.whenIdle()));
-    expect(await keysUnder(kv, oldUsers)).toBe(0);
     expect((await c.query({ index: "byEmail" })).docs).toEqual([{ id: "u3", email: "ada@example.com", plan: "pro" }]);
   });
 
@@ -452,7 +437,7 @@ describe("indexes the stored data cannot fill", () => {
     expect((await fixed.store.collection("todos").queryIds({ index: "bySlug", eq: ["s"] })).ids).toEqual(["a"]);
   });
 
-  it("sweeps the entries a unique backfill wrote before it met a duplicate", async () => {
+  it("deletes the entries a unique backfill wrote before it met a duplicate", async () => {
     const name = freshName();
     const old = await at(name, v1);
     const docs = rows(600).map((d, i) => ({ ...d, slug: i === 550 ? "r0000" : d.id }));
@@ -552,6 +537,51 @@ describe("indexes the stored data cannot fill", () => {
 });
 
 describe("clear", () => {
+  it.each<["range" | "update", number]>([
+    ["range", 0],
+    ["range", 1],
+    ["update", 1],
+    ["update", 2],
+  ])("stops a backfill another handle clears under, with its %s call %i held, and leaves the index ready and empty", async (method, k) => {
+    const name = freshName();
+    const first = await at(name, v1);
+    const writer = first.store.collection("todos");
+    await writer.putMany(rows(1_500));
+    const kv = await kvOn(name);
+    // The open's catalog write is the first update: the backfill's chunks come after it.
+    const held = gate(kv, method, k);
+    const opening = openOn(held.db, v2);
+    await held.arrived(k + 1);
+    await writer.clear();
+    held.release();
+    const todos = (await opening).collection("todos");
+    expect((await storedCatalog(kv)).collections["todos"]!.indexes["byDone"]!.state).toEqual({ kind: "ready" });
+    expect((await docstoreKeys(kv)).map((e) => e.key)).toEqual([CATALOG_KEY]);
+
+    await todos.putMany(rows(6, 100));
+    expect((await todos.queryIds({ index: "byDone", eq: [true] })).ids).toEqual(["r0102", "r0105"]);
+    await first.kv.sync();
+    expect(await writer.count({ index: "byCreated" })).toBe(6);
+  });
+
+  it("leaves only the new entries once a backfill held before its write commits after a clear and a rewrite with other values", async () => {
+    const name = freshName();
+    const first = await at(name, v1);
+    const writer = first.store.collection("todos");
+    await writer.putMany(rows(1_500));
+    const kv = await kvOn(name);
+    const held = gate(kv, "update", 2);
+    const opening = openOn(held.db, v2);
+    await held.arrived(3);
+    await writer.clear();
+    // Other `done` values than the held chunk read, so an entry it wrote after the clear would be one too many.
+    await writer.putMany(rows(1_500).map((r) => ({ ...r, done: !r.done })));
+    held.release();
+    const todos = (await opening).collection("todos");
+    expect(await keysUnder(kv, await storedPrefix(kv, "todos", "byDone"))).toBe(1_500);
+    expect(await todos.count({ index: "byDone", eq: [true] })).toBe(1_000);
+  });
+
   it("clears documents with 800 multi entries each in one write, and reads see nothing once it resolves", async () => {
     const { store } = await at(freshName(), tagged);
     const c = store.collection("tagged");
@@ -573,10 +603,9 @@ describe("clear", () => {
     await store.collection("todos").clear();
     await store.whenIdle();
     expect(await keysUnder(kv, old)).toBe(0);
-    expect((await storedCatalog(kv)).dropped).toEqual([]);
   });
 
-  it("sweeps the entries of index id 255, the last id a collection can give", async () => {
+  it("clears the entries of index id 255, the last id a collection can give", async () => {
     let todos = collection<Todo>();
     for (let i = 0; i < 255; i++) todos = todos.index(`i${i}`, "createdAt") as never;
     const wide = defineSchema({ version: 1, collections: { todos } });
@@ -590,22 +619,21 @@ describe("clear", () => {
     expect(await keysUnder(kv, old)).toBe(0);
   });
 
-  it("keeps two collections apart once clears give one an id 256 above the other's", async () => {
-    const { kv, store } = await at(freshName(), defineSchema({ version: 1, collections: { a: base, b: base } }));
-    const [a, b] = [store.collection("a"), store.collection("b")];
-    const ids = async () => Object.values((await storedCatalog(kv)).collections).map((c) => c.id);
-    expect(await ids()).toEqual([1, 2]);
-    for (let i = 0; i < 255; i++) await b.clear();
-    expect(await ids()).toEqual([1, 257]);
-    await store.whenIdle();
+  it("keeps the collection's id across clears, and leaves the next collection's documents and entries alone", async () => {
+    const { kv, store } = await at(freshName(), defineSchema({ version: 1, collections: { a: base, b: base, c: base } }));
+    const [a, b, c] = [store.collection("a"), store.collection("b"), store.collection("c")];
+    const ids = async () => Object.values((await storedCatalog(kv)).collections).map((x) => x.id);
     await a.put({ id: "1", title: "a", createdAt: 1 });
     await b.put({ id: "2", title: "b", createdAt: 2 });
-    for (const [c, id] of [[a, "1"], [b, "2"]] as const) {
-      expect((await c.queryIds({})).ids).toEqual([id]);
-      expect((await c.queryIds({ index: "byCreated" })).ids).toEqual([id]);
-      expect((await c.queryIds({ index: "byTitle" })).ids).toEqual([id]);
+    await c.put({ id: "3", title: "c", createdAt: 3 });
+    for (let i = 0; i < 3; i++) await b.clear();
+    expect(await ids()).toEqual([1, 2, 3]);
+    await b.put({ id: "4", title: "d", createdAt: 4 });
+    for (const [x, id] of [[a, "1"], [b, "4"], [c, "3"]] as const) {
+      expect((await x.queryIds({})).ids).toEqual([id]);
+      expect((await x.queryIds({ index: "byCreated" })).ids).toEqual([id]);
+      expect((await x.queryIds({ index: "byTitle" })).ids).toEqual([id]);
     }
-    expect(await b.get("1")).toBeUndefined();
   });
 
   it("keeps a put that resolves after clear resolved, alone", async () => {
@@ -636,7 +664,7 @@ describe("clear", () => {
     }
   });
 
-  it("writes one catalog op and scans nothing, in the clear or in its sweep, whatever the size", async () => {
+  it("writes one catalog op and one range delete and scans nothing, whatever the size", async () => {
     for (const n of [10, 20_000]) {
       const kv = await kvOn(freshName());
       let scans = 0;
@@ -647,23 +675,27 @@ describe("clear", () => {
       updates.length = 0;
       scans = 0;
       await todos.clear();
-      expect({ updates, scans }).toEqual({ updates: [{ reads: 1, puts: 1, deletes: 0 }], scans: 0 });
+      expect({ updates, scans }).toEqual({ updates: [{ reads: 1, puts: 1, deletes: 1 }], scans: 0 });
       await store.whenIdle();
-      expect(scans).toBe(0);
+      expect({ updates: updates.length, scans }).toEqual({ updates: 1, scans: 0 });
     }
   });
 
-  it("refuses a cursor made before the clear", async () => {
+  it("resumes a cursor made before the clear over the documents written after it", async () => {
     const { store } = await at(freshName(), v1);
     const todos = store.collection("todos");
     await todos.putMany(rows(5));
-    const { next } = await todos.query({ index: "byCreated", limit: 2 });
+    const cursors = [
+      { index: "byCreated" as const, after: (await todos.queryIds({ index: "byCreated", limit: 2 })).next! },
+      { after: (await todos.queryIds({ limit: 2 })).next! },
+    ];
     await todos.clear();
-    await todos.putMany(rows(5));
-    expect(await codeOf(todos.query({ index: "byCreated", after: next }))).toBe("cursor");
+    for (const q of cursors) expect((await todos.queryIds(q)).ids).toEqual([]);
+    await todos.putMany(rows(5, 1));
+    for (const q of cursors) expect((await todos.queryIds(q)).ids).toEqual(["r0002", "r0003", "r0004", "r0005"]);
   });
 
-  it("gives a read racing a clear and its sweep the whole old result or the new one, at every sweep chunk", async () => {
+  it("gives a read racing a clear from another handle the whole old result or the new one", async () => {
     type Todos = ReturnType<DocStore<typeof v1>["collection"]>;
     const docs = rows(1_500);
     const ids = docs.map((d) => d.id);
@@ -673,32 +705,29 @@ describe("clear", () => {
       ["query", async (c) => (await c.query({ index: "byCreated" })).docs.map((d) => d.id), ids],
       ["count", (c) => c.count({ index: "byTitle" }), ids.length],
     ];
-    for (let chunks = 0; chunks <= 5; chunks++) {
-      for (const [, read, whole] of reads) {
-        const name = freshName();
-        await (await at(name, v1)).store.collection("todos").putMany(docs);
-        const sweeper = gate(await kvOn(name), "catalog-or-batch", chunks + 1);
-        const clearing = await openOn(sweeper.db, v1);
-        const readerKv = await kvOn(name);
-        let armed = false;
-        const readerDb = wrapViews(readerKv, (snap) => ({
-          async get(key) {
-            const value = await snap.get(key);
-            if (armed) {
-              armed = false;
-              await clearing.collection("todos").clear();
-              await Promise.race([sweeper.arrived(chunks + 2), clearing.whenIdle()]);
-              await readerKv.sync();
-            }
-            return value;
-          },
-        }));
-        const reader = (await openOn(readerDb, v1)).collection("todos");
-        armed = true;
-        const got = await read(reader);
-        expect([whole, Array.isArray(whole) ? [] : 0]).toContainEqual(got);
-        sweeper.release();
-      }
+    for (const [, read, whole] of reads) {
+      const name = freshName();
+      await (await at(name, v1)).store.collection("todos").putMany(docs);
+      const clearing = (await at(name, v1)).store.collection("todos");
+      const readerKv = await kvOn(name);
+      let armed = false;
+      // The read's first kv read is its catalog: the clear lands after the snapshot began, before it reads a row.
+      const readerDb = wrapViews(readerKv, (snap) => ({
+        getMany: (async (...args: Parameters<ViewSnapshot["getMany"]>) => {
+          const out = await snap.getMany(...args);
+          if (armed) {
+            armed = false;
+            await clearing.clear();
+            await readerKv.sync();
+          }
+          return out;
+        }) as ViewSnapshot["getMany"],
+      }));
+      const reader = (await openOn(readerDb, v1)).collection("todos");
+      armed = true;
+      expect(await read(reader)).toEqual(whole);
+      expect(armed).toBe(false);
+      expect(await read(reader)).toEqual(Array.isArray(whole) ? [] : 0);
     }
-  }, 60_000);
+  });
 });

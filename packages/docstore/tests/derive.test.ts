@@ -12,7 +12,7 @@ const encodeDoc = (doc: JsonDoc) => docEncoder("c", undefined)([doc])[0]!;
 
 function coll(indexes: Record<string, object>): BoundCollection {
   const declared = normalizeSchema({ version: 1, collections: { c: { indexes } } } as never);
-  const catalog = reconcile(undefined, declared)!;
+  const { catalog } = reconcile(undefined, declared)!;
   return bind(encodeCatalog(catalog), catalog, declared).collections.get("c")!;
 }
 

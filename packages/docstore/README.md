@@ -74,7 +74,7 @@ const store = await openDocStore(kv, schema);
 const todos = store.collection("todos");
 const users = store.collection("users");
 await store.whenIdle();
-// this handle's background backfills and sweeps are done
+// this handle's background backfills are done
 // docstore owns the kv keys that start with byte 0x64
 ```
 
@@ -221,10 +221,10 @@ await todos.delete("t1"); // => true
 await todos.delete("t1"); // => false
 await todos.deleteMany(["t2", "t3", "t3", "t9"]);
 // => 2, the distinct ids that existed
-await todos.clear();      // one catalog write, at any size
+await todos.clear();      // one kv write, at any size
 ```
 
-`clear` gives the collection a new id, so every reader and writer stops seeing the old documents at once. A background sweep deletes the old keys.
+`clear` deletes every document and index entry with one kv range delete, in the write that updates the catalog, so every reader and writer stops seeing them at once. Like any kv range delete, it makes every tab rebuild its memtable once.
 
 ## Indexes
 
@@ -377,7 +377,7 @@ await users.queryIds({
 
 ### Pages
 
-`next` is exclusive, and each page reads one kv snapshot. An `after` made before a `clear`, or before the index was redefined, throws `"cursor"`.
+`next` is exclusive, and each page reads one kv snapshot. An `after` made before a `clear` stays valid and resumes after its position, so documents written since that sort at or before it are skipped. One made before the index was redefined throws `"cursor"`.
 
 ```ts
 const first = await todos.queryIds({ index: "open", limit: 2 });
@@ -689,7 +689,7 @@ await load();
 
 ## Schema versions
 
-Open compares the declared `version` with the stored one, in one kv transaction. A higher version stores the new schema, builds new indexes, and sweeps the keys of removed ones.
+Open compares the declared `version` with the stored one, in one kv transaction. A higher version stores the new schema, deletes the keys of removed indexes and dropped collections in the same transaction, and builds new indexes.
 
 ```ts
 const v2 = defineSchema({
@@ -794,7 +794,7 @@ try {
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |
 | `"query"` | A query is malformed. | Fix the query. |
-| `"cursor"` | `after` belongs to another range, or predates a `clear` or a redefinition. | Query again without `after`. |
+| `"cursor"` | `after` belongs to another range, or predates a redefinition of its index. | Query again without `after`. |
 | `"document"` | A bad or repeated id, a changed id, or a value an index cannot hold. | Fix the document. Nothing was stored. |
 | `"invalid"` | A validator rejected a document: `issues` lists why, and `ids` names it if it has a string id. Or a validator returned a Promise. | Fix the document, or use a synchronous validator. Nothing was stored. |
 | `ConstraintError` | A write passes kv's batch limit, or a query value makes a key over kv's 8 KiB limit. | Split the write, or shorten the query value. |

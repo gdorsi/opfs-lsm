@@ -9,11 +9,11 @@
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { isObject } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import { fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
+import { collectionPrefix, fromUtf8, indexPrefix, rowPrefix, utf8, type CollectionId, type IndexId, type ScanTarget } from "./keys.js";
 import type { IndexInfo, Schema } from "./schema.js";
 
 /** Bumped when stored bytes change meaning. */
-const FORMAT = 2;
+const FORMAT = 3;
 const MAX_COLLECTION_ID = 0xffff;
 const MAX_INDEX_ID = 0xff;
 const MAX_FIELDS = 8;
@@ -29,16 +29,14 @@ export type StoredCatalog = {
   readonly format: typeof FORMAT;
   /** The app version that last changed the catalog. Only a higher declared version may change definitions. */
   readonly version: number;
-  /** Every collection and every `clear` takes the next id. Never reused. */
+  /** Every new collection takes the next id. Never reused. */
   readonly nextCollectionId: number;
   readonly collections: { readonly [name: string]: StoredCollection };
-  /** Prefixes nothing points at any more, swept in the background, then removed from this list. */
-  readonly dropped: readonly DroppedPrefix[];
 };
 
 type StoredCollection = {
   readonly id: number;
-  /** Index ids keep their number across `clear`, since the collection id changes. Never reused. */
+  /** Every new index of the collection takes the next id. Never reused. */
   readonly nextIndexId: number;
   readonly indexes: { readonly [name: string]: StoredIndex };
 };
@@ -65,15 +63,19 @@ export type IndexSpec =
  * building: written by every writer, read by nobody, filled by backfill.
  * ready: written and read.
  * failed: the backfill met data the index cannot hold. Not written, not
- *   read, its prefix is in `dropped`. The next version bump rebuilds it.
+ *   read, its entries deleted. The next version bump rebuilds it.
  */
 export type IndexState =
   | { readonly kind: "building" }
   | { readonly kind: "ready" }
   | { readonly kind: "failed"; readonly reason: "unique" | "value"; readonly ids: readonly string[] };
 
-/** `64 CC CC`, a cleared collection; or `64 CC CC II`, a removed, redefined or failed index. */
-export type DroppedPrefix = { readonly collection: number } | { readonly collection: number; readonly index: number };
+/**
+ * A catalog to store, and the key prefixes the same batch deletes: `64 CC CC`
+ * for a cleared or dropped collection, `64 CC CC II` for a removed, redefined
+ * or failed index.
+ */
+export type Edit = { readonly catalog: StoredCatalog; readonly drop: readonly Uint8Array[] };
 
 export type DeclaredSchema = {
   readonly version: number;
@@ -209,11 +211,7 @@ function isCatalog(c: unknown): c is StoredCatalog {
     Number.isInteger(c["version"]) &&
     Number.isInteger(c["nextCollectionId"]) &&
     isObject(c["collections"]) &&
-    Object.values(c["collections"]).every(isCollection) &&
-    Array.isArray(c["dropped"]) &&
-    c["dropped"].every(
-      (p) => isObject(p) && isId(p["collection"], MAX_COLLECTION_ID) && (!("index" in p) || isId(p["index"], MAX_INDEX_ID)),
-    )
+    Object.values(c["collections"]).every(isCollection)
   );
 }
 
@@ -277,10 +275,8 @@ export function sameCatalog(a: Uint8Array | undefined, b: Uint8Array | undefined
  * the stored one. Runs inside `update([CATALOG_KEY])`, so two handles opening
  * at once see each other's result.
  */
-export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredSchema): StoredCatalog | undefined {
-  if (!stored) {
-    return upgrade({ format: FORMAT, version: declared.version, nextCollectionId: 1, collections: {}, dropped: [] }, declared);
-  }
+export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredSchema): Edit | undefined {
+  if (!stored) return upgrade({ format: FORMAT, version: declared.version, nextCollectionId: 1, collections: {} }, declared);
   if (declared.version < stored.version) return undefined;
   if (declared.version > stored.version) return upgrade(stored, declared);
   for (const [name, specs] of declared.collections) {
@@ -299,16 +295,14 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
   return undefined;
 }
 
-function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog {
+function upgrade(stored: StoredCatalog, declared: DeclaredSchema): Edit {
   let nextCollectionId = stored.nextCollectionId;
   const collections = { ...stored.collections };
-  let dropped = [...stored.dropped];
+  const drop: Uint8Array[] = [];
   for (const name of declared.drop) {
     if (!Object.hasOwn(collections, name)) continue;
-    const old = collections[name]!;
+    drop.push(collectionPrefix(collections[name]!.id as CollectionId));
     delete collections[name];
-    // The collection prefix covers its index prefixes.
-    dropped = [...dropped.filter((p) => p.collection !== old.id), { collection: old.id }];
   }
   for (const [name, specs] of declared.collections) {
     const old = collections[name];
@@ -326,11 +320,12 @@ function upgrade(stored: StoredCatalog, declared: DeclaredSchema): StoredCatalog
       indexes[index] = { id: nextIndexId++, spec, state: old ? { kind: "building" } : { kind: "ready" } };
     }
     for (const [index, was] of Object.entries(old?.indexes ?? {})) {
-      if (indexes[index] !== was && was.state.kind !== "failed") dropped.push({ collection: id, index: was.id });
+      // A failed index lost its entries when it failed.
+      if (indexes[index] !== was && was.state.kind !== "failed") drop.push(indexPrefix(id as CollectionId, was.id as IndexId));
     }
     collections[name] = { id, nextIndexId, indexes };
   }
-  return { format: FORMAT, version: declared.version, nextCollectionId, collections, dropped };
+  return { catalog: { format: FORMAT, version: declared.version, nextCollectionId, collections }, drop };
 }
 
 /**
@@ -344,46 +339,34 @@ export function settleIndex(
   collection: CollectionId,
   index: IndexId,
   state: Exclude<IndexState, { kind: "building" }>,
-): StoredCatalog | undefined {
+): Edit | undefined {
   const found = Object.entries(c.collections).find(([, coll]) => coll.id === collection);
   const entry = found && Object.entries(found[1].indexes).find(([, i]) => i.id === index);
   if (!entry || entry[1].state.kind !== "building") return undefined;
   const [collName, coll] = found;
   const [name, was] = entry;
   return {
-    ...c,
-    collections: { ...c.collections, [collName]: { ...coll, indexes: { ...coll.indexes, [name]: { ...was, state } } } },
-    dropped: state.kind === "failed" ? [...c.dropped, { collection, index }] : c.dropped,
+    catalog: { ...c, collections: { ...c.collections, [collName]: { ...coll, indexes: { ...coll.indexes, [name]: { ...was, state } } } } },
+    drop: state.kind === "failed" ? [indexPrefix(collection, index)] : [],
   };
 }
 
 /**
- * A new collection id, every index that is not failed ready (the collection
- * is empty, so there is nothing to build), the old `64 CC CC` to `dropped`.
- * Two clears are two clears.
+ * Every document and entry deleted, the collection id kept, every index that
+ * is not failed ready: the collection is empty, so there is nothing to build,
+ * and a backfill finds its index settled. Two clears are two clears.
  */
-export function clearCollection(c: StoredCatalog, collection: string): StoredCatalog {
+export function clearCollection(c: StoredCatalog, collection: string): Edit {
   const coll = c.collections[collection];
   if (!coll) badSchema(`the catalog has no collection "${collection}"`);
-  if (c.nextCollectionId > MAX_COLLECTION_ID) badSchema("no collection ids left");
   const indexes: Record<string, StoredIndex> = {};
   for (const [name, i] of Object.entries(coll.indexes)) {
     indexes[name] = i.state.kind === "failed" ? i : { ...i, state: { kind: "ready" } };
   }
   return {
-    ...c,
-    nextCollectionId: c.nextCollectionId + 1,
-    collections: { ...c.collections, [collection]: { ...coll, id: c.nextCollectionId, indexes } },
-    dropped: [...c.dropped, { collection: coll.id }],
+    catalog: { ...c, collections: { ...c.collections, [collection]: { ...coll, indexes } } },
+    drop: [collectionPrefix(coll.id as CollectionId)],
   };
-}
-
-const samePrefix = (a: DroppedPrefix, b: DroppedPrefix) =>
-  a.collection === b.collection && ("index" in a ? "index" in b && a.index === b.index : !("index" in b));
-
-export function removeDropped(c: StoredCatalog, prefix: DroppedPrefix): StoredCatalog | undefined {
-  const dropped = c.dropped.filter((p) => !samePrefix(p, prefix));
-  return dropped.length === c.dropped.length ? undefined : { ...c, dropped };
 }
 
 export type Path = readonly string[];
