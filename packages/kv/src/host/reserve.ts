@@ -1,4 +1,4 @@
-import { codeOfError } from "../errors.js";
+import { isQuota } from "../errors.js";
 import type { AsyncFs, FileWriter } from "../opfs/async-fs.js";
 import type { Seq } from "../seq.js";
 
@@ -180,7 +180,7 @@ export async function fillReserve(fs: AsyncFs, target: number): Promise<"ok" | "
     return "ok";
   } catch (err) {
     await writer?.abort().catch(() => undefined);
-    if (codeOfError(err) === "quota") return "quota";
+    if (isQuota(err)) return "quota";
     throw err;
   }
 }

@@ -268,7 +268,7 @@ describe("bind", () => {
     expect(todos.maintained.map((p) => p.name).sort()).toEqual(["byA", "byB"]);
 
     const building = bind(encodeCatalog(c2), c2, declare(2, { todos: { byD: { by: "d" } } }));
-    expect(building.collections.get("todos")!.readable.get("byD")).toEqual({ kind: "building" });
+    expect(building.collections.get("todos")!.readable.get("byD")).toMatchObject({ name: "byD", state: { kind: "building" } });
     expect(building.collections.get("todos")!.maintained.map((p) => p.name).sort()).toEqual(["byA", "byB", "byD"]);
     expect(bind(encodeCatalog(c2), c2, declare(1, { gone: {} })).collections.has("gone")).toBe(false);
   });

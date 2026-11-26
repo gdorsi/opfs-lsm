@@ -1,10 +1,10 @@
 import { checkDbName, type DbName } from "../check.js";
-import { ClosedError, codeOfError, StorageUnavailableError } from "../errors.js";
+import { ClosedError, codeOfError, hasErrorName, isQuota, StorageUnavailableError } from "../errors.js";
 import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../idb/wal.js";
 import type { AsyncFs, FileWrites } from "../opfs/async-fs.js";
 import { fileWrites } from "../opfs/browser-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
-import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
+import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
 import {
   listRuns,
   liveRuns,
@@ -19,7 +19,6 @@ import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   HOST_CALLS,
-  unlessHeld,
   type BusMessage,
   type ClientToHost,
   type HostCall,
@@ -29,7 +28,7 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
-import { compactLock, ingestLock, layersChannel, withLock } from "../locks.js";
+import { compactLock, ingestLock, layersChannel, unlessHeld, withLock } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
 /**
@@ -283,10 +282,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
       });
     }
     return {
-      generation: await withWal(
-        async (wal) => (await wal.meta()).generation ?? GENERATION_NONE,
-        () => Promise.reject(destroyed()),
-      ),
+      generation: (await walMetaOrDestroyed()).generation ?? GENERATION_NONE,
     };
   }
 
@@ -305,10 +301,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
   }
 
   async function foldRuns(): Promise<IngestResult> {
-    const head = await withWal(
-      async (wal) => (await wal.meta()).head,
-      () => Promise.reject(destroyed()),
-    );
+    const { head } = await walMetaOrDestroyed();
     // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
     const watched = watching;
     const heard = watched?.pendingBytes ?? 0;
@@ -413,7 +406,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
         quiet(watch);
       },
       (err: unknown) => {
-        if (isClosedDatabase(err)) return;
+        // The WAL database closed under the read.
+        if (hasErrorName(err, "InvalidStateError")) return;
         failed("reading the WAL", err);
       },
     );
@@ -571,6 +565,18 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     }
   }
 
+  /** The WAL database's meta, or undefined when it does not exist. */
+  function walMeta(): Promise<WalMeta | undefined> {
+    return withWal((wal) => wal.meta(), () => undefined);
+  }
+
+  /** The WAL database's meta. Rejects with `destroyed()` when it does not exist. */
+  async function walMetaOrDestroyed(): Promise<WalMeta> {
+    const meta = await walMeta();
+    if (!meta) throw destroyed();
+    return meta;
+  }
+
   /**
    * Resolves the folder once: the pass holds the compaction lock throughout,
    * and `destroyDb` takes it before it removes the folder. Each step opens
@@ -583,7 +589,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     let steps = 0;
     try {
       for (let i = 0; i < MAX_COMPACTION_STEPS && !destroying; i++) {
-        const meta = await withWal((wal) => wal.meta(), () => undefined);
+        const meta = await walMeta();
         if (!meta) return;
         const base = await loadGeneration(fs, meta.generation ?? GENERATION_NONE);
         // Gone when a flush installed a newer generation since: plan again.
@@ -632,7 +638,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     try {
       return await write();
     } catch (err) {
-      if (codeOfError(err) !== "quota" || !(await refused())) throw err;
+      if (!isQuota(err) || !(await refused())) throw err;
       return write();
     }
   }
@@ -644,8 +650,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
    */
   async function refused(): Promise<boolean> {
     if (!watching?.reserveBytes) return false;
-    const head = await walHead();
-    return head !== undefined && onReserve({ kind: "refused", head });
+    const meta = await walMeta();
+    return meta !== undefined && onReserve({ kind: "refused", head: meta.head });
   }
 
   /**
@@ -665,15 +671,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
 
   /** The handlers settled, so every write of theirs is at or below the head read now. */
   async function answered(): Promise<void> {
-    const meta = await withWal((wal) => wal.meta(), () => undefined);
+    const meta = await walMeta();
     if (meta) await onReserve({ kind: "done", head: meta.head, ingestedThrough: meta.ingestedThrough });
-  }
-
-  function walHead(): Promise<Seq | undefined> {
-    return withWal(
-      async (wal) => (await wal.meta()).head,
-      () => undefined,
-    );
   }
 
   /**
@@ -818,15 +817,6 @@ function announceGeneration(dbName: DbName): void {
   const message: BusMessage = { kind: "ingest" };
   bus.postMessage(message);
   bus.close();
-}
-
-function isClosedDatabase(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "InvalidStateError"
-  );
 }
 
 /**

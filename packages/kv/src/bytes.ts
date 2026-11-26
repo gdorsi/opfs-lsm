@@ -77,15 +77,6 @@ export function successor(prefix: Uint8Array): Uint8Array | undefined {
   return undefined;
 }
 
-export function keyToString(key: Uint8Array): string {
-  // Stable map key for in-memory overlays (hex).
-  let s = "";
-  for (let i = 0; i < key.length; i++) {
-    s += (key[i] ?? 0).toString(16).padStart(2, "0");
-  }
-  return s;
-}
-
 /** True when `hay` holds `needle` as a contiguous run of bytes. */
 function containsBytes(hay: Uint8Array, needle: Uint8Array): boolean {
   const first = needle[0];

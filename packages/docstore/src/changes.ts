@@ -1,5 +1,5 @@
 import { ClosedError, CorruptDatabaseError, type ChangeEvent, type ChangeOp } from "@opfs-lsm/kv";
-import { parseCatalog, readableTarget, type BoundCollection, type IndexPlan } from "./catalog.js";
+import { declaredPlan, parseCatalog, type BoundCollection, type IndexPlan } from "./catalog.js";
 import { decodeDocs, indexEntries, type StoredDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import {
@@ -87,16 +87,13 @@ class Run {
   }
 
   private plan(index: string): IndexPlan {
-    const coll = (this.coll ??= this.bound());
-    const r = coll.readable.get(index);
-    // A building index is written like a ready one. Any other state throws here.
-    const plan = r && (!("kind" in r) || r.kind === "building") ? coll.maintained.find((p) => p.name === index) : undefined;
-    if (!plan) readableTarget(coll, index);
-    const t = plan!.target;
+    // A building index is written like a ready one, so before reads it too.
+    const plan = declaredPlan((this.coll ??= this.bound()), index);
+    const t = plan.target;
     if (t.kind === "text" || t.unique || t.include) {
       throw new DocStoreError("query", `before cannot read "${index}"`);
     }
-    return plan!;
+    return plan;
   }
 
   private group(plan: IndexPlan): EntryOps {

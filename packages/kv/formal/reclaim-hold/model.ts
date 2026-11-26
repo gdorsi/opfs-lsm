@@ -6,9 +6,9 @@
  * The tab (`DbImpl` in src/db.ts):
  * - `retrying`: the first attempt takes no reclaim lock. After one finds a
  *   file missing, every later attempt holds the reclaim lock shared
- *   (`holdingFiles` in src/host/protocol.ts) from before its tail read to
+ *   (`holdingFiles` in src/locks.ts) from before its tail read to
  *   its install.
- * - an attempt (`catchUpOnce`, `follow`, `load`, `catchUp`): read the
+ * - an attempt (`catchUpToWal`, `follow`, `load`, `catchUp`): read the
  *   recorded generation from the tail, read its manifest, open each run,
  *   then install it and release the layers it replaces.
  * - `openRun` reuses a run the tab holds open, with no lock and no check.

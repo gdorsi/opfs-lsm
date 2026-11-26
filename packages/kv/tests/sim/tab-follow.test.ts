@@ -38,12 +38,12 @@
  * fail, so the check is shown to be able to.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { compareBytes, keyToString } from "../../src/bytes.js";
+import { compareBytes } from "../../src/bytes.js";
 import type { ChangeEvent, Db, ViewSnapshot } from "../../src/index.js";
 import { TabWal, decodeOps } from "../../src/idb/wal.js";
 import { EngineHost, MemoryFs, createLocalIngestClient, openHarnessDb } from "../../src/testing.js";
 import { checkDatabase, deleteWal, walMeta } from "./check-database.js";
-import { Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
+import { keyToString, Oracle, show, type OracleEntry, type OracleOp } from "./oracle.js";
 
 const DEPTH = Number(process.env.KV_FOLLOW_DEPTH ?? 3);
 /** One sequence to replay, as a failure prints it: `A.put, flush, B.sync`. */

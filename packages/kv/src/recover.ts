@@ -30,8 +30,8 @@ export type Reconciled = {
 /** Attempts when another tab or host changes `meta` under a reconcile. */
 const RECONCILE_TRIES = 8;
 
-/** A generation whose manifest `reconcile` need not check, "recorded" for whichever is recorded, or undefined to check. */
-export type Trusted = Generation | "recorded" | undefined;
+/** A generation whose manifest `reconcile` need not check, or undefined to check. */
+export type Trusted = Generation | undefined;
 
 /**
  * Make IndexedDB record a manifest that pairs with its WAL (design.md,
@@ -58,8 +58,7 @@ export type Trusted = Generation | "recorded" | undefined;
  *    prefix, and recording it moves `head` past its seqs before any of them
  *    is handed out again.
  * 2. Otherwise the recorded manifest, when it is intact. `trusted` skips
- *    the check for a generation the caller has loaded or published itself,
- *    or for whatever is recorded when it is "recorded".
+ *    the check for a generation the caller has loaded or published itself.
  * 3. Otherwise, when the recorded manifest is missing (or none is
  *    recorded), the newest intact manifest numbered past `destroyedTop`, or
  *    the empty generation 0. The ones at or below it predate a destroy.
@@ -225,7 +224,7 @@ async function choose(
   const longer = await longerPrefix(fs, meta, numbers);
   if (longer) return longer;
   if (recorded !== undefined) {
-    if (trusted === "recorded" || trusted === recorded) return undefined;
+    if (trusted === recorded) return undefined;
     const m = await probeManifest(fs, recorded);
     if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${recorded} does not decode`);
     if (m !== "missing") {

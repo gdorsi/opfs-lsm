@@ -13,7 +13,7 @@ export interface Snapshot {
  */
 export type Boundary = { readonly order: Order; readonly value: unknown };
 
-export type Found = { readonly docs: readonly JsonDoc[]; readonly boundary?: Boundary };
+type Found = { readonly docs: readonly JsonDoc[]; readonly boundary?: Boundary };
 
 const FIRST_PAGE = 16;
 const LAST_PAGE = 4096;

@@ -1,4 +1,4 @@
-import { compareBytes, keyToString } from "../../src/bytes.js";
+import { compareBytes } from "../../src/bytes.js";
 import { throughAt } from "../../src/store/marks.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
 import {
@@ -11,7 +11,7 @@ import {
 import { levelOf } from "../../src/store/levels.js";
 import type { SstEntry } from "../../src/store/sst.js";
 import { decodeSst, indexBlob, sstBlockIndex } from "../oracle/sst-ref.js";
-import { show, type OracleEntry } from "./oracle.js";
+import { keyToString, show, type OracleEntry } from "./oracle.js";
 
 /**
  * The analogue of SQLite's `PRAGMA integrity_check` for one database: walks

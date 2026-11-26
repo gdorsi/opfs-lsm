@@ -1,4 +1,4 @@
-import { compareBytes, containsAll, keyToString } from "../../src/bytes.js";
+import { compareBytes, containsAll } from "../../src/bytes.js";
 
 /**
  * The reference model for the kv contract (docs/research/corruption-hardening-test-suite.md,
@@ -291,6 +291,15 @@ function sameEntries(a: readonly OracleEntry[], b: readonly OracleEntry[]): bool
 }
 
 const text = new TextDecoder();
+
+/** `key` in hex, to key a Map by its bytes. */
+export function keyToString(key: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < key.length; i++) {
+    s += (key[i] ?? 0).toString(16).padStart(2, "0");
+  }
+  return s;
+}
 
 /** A key or value for a failure message: text, cut to 24 chars, with its length. */
 export function show(bytes: Uint8Array): string {

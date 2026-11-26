@@ -1,5 +1,5 @@
 import type { EngineHost } from "../src/host/engine-host.js";
-import { unlessHeld } from "../src/host/protocol.js";
+import { unlessHeld } from "../src/locks.js";
 import { reconcile } from "../src/recover.js";
 import { reclaimManifests } from "../src/store/generation.js";
 

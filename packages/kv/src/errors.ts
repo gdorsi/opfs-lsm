@@ -77,26 +77,30 @@ export function codeOfError(err: unknown): ErrorCode | undefined {
   return undefined;
 }
 
+/** Whether `err` is an object named `name`, as a DOMException is. */
+export function hasErrorName(err: unknown, name: string): boolean {
+  return typeof err === "object" && err !== null && "name" in err && err.name === name;
+}
+
+/** Whether the browser refused a write for lack of space. */
+export function isQuota(err: unknown): boolean {
+  return codeOfError(err) === "quota";
+}
+
+const ERROR_OF_CODE: Record<ErrorCode, new (message: string) => OpfsLsmError> = {
+  commit: CommitError,
+  closed: ClosedError,
+  corrupt: CorruptDatabaseError,
+  constraint: ConstraintError,
+  unavailable: StorageUnavailableError,
+  quota: StorageFullError,
+};
+
 /**
  * The error a tab rethrows for a host error that crossed a MessagePort as
  * a code and a message (structured clone drops the class).
  */
 export function errorOfCode(code: ErrorCode | undefined, message: string): Error {
-  switch (code) {
-    case "commit":
-      return new CommitError(message);
-    case "closed":
-      return new ClosedError(message);
-    case "corrupt":
-      return new CorruptDatabaseError(message);
-    case "constraint":
-      return new ConstraintError(message);
-    case "unavailable":
-      return new StorageUnavailableError(message);
-    case "quota":
-      return new StorageFullError(message);
-    default:
-      // No code: a plain Error with the host's message, on purpose.
-      return new Error(message);
-  }
+  // No code: a plain Error with the host's message, on purpose.
+  return code !== undefined && Object.hasOwn(ERROR_OF_CODE, code) ? new ERROR_OF_CODE[code](message) : new Error(message);
 }

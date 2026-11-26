@@ -1,6 +1,6 @@
 import type { AsyncFs, FileWrites, FileWriter, OpenFile, ReadFs, RemovableFolder } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
-import { CorruptDatabaseError } from "../errors.js";
+import { CorruptDatabaseError, hasErrorName } from "../errors.js";
 import { runLock } from "../locks.js";
 import { coalesceReads } from "./coalesce-reads.js";
 
@@ -82,7 +82,7 @@ class BrowserReadFs implements ReadFs {
       file = await (await handle).getFile();
     } catch (err) {
       release();
-      if (isNotFound(err)) return undefined;
+      if (hasErrorName(err, "NotFoundError")) return undefined;
       throw err;
     }
     const read = coalesceReads((offset, length) => file.slice(offset, offset + length).arrayBuffer());
@@ -111,7 +111,7 @@ class BrowserReadFs implements ReadFs {
       const buf = await file.slice(offset, end).arrayBuffer();
       return new Uint8Array(buf);
     } catch (err) {
-      if (isNotFound(err)) return undefined;
+      if (hasErrorName(err, "NotFoundError")) return undefined;
       throw err;
     }
   }
@@ -132,7 +132,7 @@ class BrowserReadFs implements ReadFs {
       }
       return names;
     } catch (err) {
-      if (isNotFound(err)) return [];
+      if (hasErrorName(err, "NotFoundError")) return [];
       throw err;
     }
   }
@@ -179,11 +179,7 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
       { mode: "exclusive", ifAvailable: true },
       async (lock) => {
         if (!lock) return false;
-        try {
-          await this.remove(path);
-        } catch (err) {
-          if (!isNotFound(err)) throw err;
-        }
+        await ignoreNotFound(this.remove(path));
         return true;
       },
     );
@@ -270,7 +266,7 @@ export class BrowserFs extends BrowserReadFs implements AsyncFs {
             written = access!.write(bytes, { at });
           } catch (err) {
             // Safari fails a write no byte of which fits with InvalidStateError: it wrote none.
-            if ((err as { name?: string }).name !== "InvalidStateError") throw err;
+            if (!hasErrorName(err, "InvalidStateError")) throw err;
           }
           at += written;
           // A full disk writes the part that fits, and is a refusal like a full quota.
@@ -315,15 +311,6 @@ export async function fileWrites(): Promise<FileWrites> {
   return undefined;
 }
 
-function isNotFound(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "NotFoundError"
-  );
-}
-
 /** `opfs-lsm/`, the folder that holds every database's folder, created when missing. It names no database. */
 export async function openParent(): Promise<FileSystemDirectoryHandle> {
   return (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm", { create: true });
@@ -352,7 +339,7 @@ async function findFolder(dbName: DbName): Promise<[FileSystemDirectoryHandle, F
     const lsm = await (await navigator.storage.getDirectory()).getDirectoryHandle("opfs-lsm");
     return [lsm, await lsm.getDirectoryHandle(dbName)];
   } catch (err) {
-    if (isNotFound(err)) return undefined;
+    if (hasErrorName(err, "NotFoundError")) return undefined;
     throw err;
   }
 }
@@ -372,7 +359,7 @@ async function ignoreNotFound(removal: Promise<void>): Promise<void> {
   try {
     await removal;
   } catch (err) {
-    if (!isNotFound(err)) throw err;
+    if (!hasErrorName(err, "NotFoundError")) throw err;
   }
 }
 

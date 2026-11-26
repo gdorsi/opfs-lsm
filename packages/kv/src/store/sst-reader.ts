@@ -1,9 +1,9 @@
 import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq } from "../seq.js";
-import { blockScanner, packPatterns, unpackHits } from "./block-scan.js";
 import { bloomHash, bloomMightContain, type BloomFilter } from "./bloom.js";
 import { Miss, type BlockEntry, type LayerCursor, type Maybe, type ScanBounds } from "./cursor.js";
+import { packPatterns, scanBlock, unpackHits } from "./engine.js";
 import { metaKey, pageKey, type Admit, type PageCache, type Sized } from "./page-cache.js";
 import {
   blockBytes,
@@ -104,11 +104,10 @@ export class SstReader {
    * cross back.
    */
   scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
-    const scan = blockScanner();
     const packed = packPatterns(patterns);
     const outside = reverse ? isAtOrAbove : isBelow;
     return this.blocks(bounds, reverse, (block, seek) => {
-      const hits = unpackHits(scan(block.buf.subarray(block.start, block.end), packed));
+      const hits = unpackHits(scanBlock(block.buf.subarray(block.start, block.end), packed));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {

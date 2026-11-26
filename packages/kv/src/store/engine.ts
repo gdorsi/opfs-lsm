@@ -3,8 +3,8 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
-import { useBlockScanner } from "./block-scan.js";
+import { TAG_DEL, TAG_PUT, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
+import { BlockEntry, NO_PREFIX } from "./cursor.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, unavailable } from "../errors.js";
 
@@ -145,8 +145,6 @@ export type FlatEngine = {
   sessionOpen: boolean;
 };
 
-const TAG_PUT = 1;
-const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
 export function flatEngine(instance: { readonly exports: WebAssembly.Exports }): FlatEngine {
@@ -170,7 +168,36 @@ export function flatEngine(instance: { readonly exports: WebAssembly.Exports }):
   return { ex, call, memoryBytes: () => ex.memory.buffer.byteLength, sessionOpen: false };
 }
 
-/** The hits of `patterns` in one block, as `engine` packs them. */
+/** `patterns` as `scanBlockContainsIn` takes them: each a u32 length, then its bytes. */
+export function packPatterns(patterns: readonly Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(patterns.reduce((n, p) => n + 4 + p.length, 0));
+  const view = new DataView(out.buffer);
+  let o = 0;
+  for (const p of patterns) {
+    view.setUint32(o, p.length, true);
+    out.set(p, o + 4);
+    o += 4 + p.length;
+  }
+  return out;
+}
+
+/** The puts of `hits`, records of `u32 keyLen, u32 valueLen, u64 seq, key, value`. */
+export function* unpackHits(hits: Uint8Array): Generator<BlockEntry> {
+  const view = new DataView(hits.buffer, hits.byteOffset, hits.byteLength);
+  let o = 0;
+  while (o < hits.length) {
+    if (o + 16 > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
+    const keyLen = view.getUint32(o, true);
+    const valueLen = view.getUint32(o + 4, true);
+    const seqAt = o + 8;
+    o += 16;
+    if (o + keyLen + valueLen > hits.length) throw new CorruptDatabaseError("sst scan hits truncated");
+    yield new BlockEntry(hits, "put", seqAt, o + keyLen, valueLen, NO_PREFIX, o, keyLen);
+    o += keyLen + valueLen;
+  }
+}
+
+/** The puts of one block whose value holds every pattern, as `engine` packs them. */
 export function scanBlockContainsIn(engine: FlatEngine, block: Uint8Array, patterns: Uint8Array): Uint8Array {
   return engine.call(
     "scan_block_contains",
@@ -424,7 +451,7 @@ export function importEngineWith(imports: () => WebAssembly.Imports): void {
  * Load the module once per context. Rejects with `StorageUnavailableError`
  * when it does not load, and the next call tries again.
  */
-function loadEngine(): Promise<void> {
+export function ensureEngine(): Promise<void> {
   initOnce ??= loadWasm().then(setEngine, (cause: unknown) => {
     initOnce = undefined;
     throw unavailable("the wasm engine", cause);
@@ -432,19 +459,9 @@ function loadEngine(): Promise<void> {
   return initOnce;
 }
 
-let scanHook = false;
-
-/**
- * Load the module, then route block scans through it. Only the tab scans
- * blocks, so the host loads through `loadEngine` and its bundle leaves out
- * the hook.
- */
-export async function ensureEngine(): Promise<void> {
-  await loadEngine();
-  if (scanHook) return;
-  scanHook = true;
-  // It reads `engine` at each call: it is replaced when the instance is.
-  useBlockScanner((block, patterns) => onEngine("sst block corrupt", () => scanBlockContainsIn(engine!, block, patterns)));
+/** The hits of `patterns` in one block, on whichever instance is current. */
+export function scanBlock(block: Uint8Array, patterns: Uint8Array): Uint8Array {
+  return onEngine("sst block corrupt", () => scanBlockContainsIn(engine!, block, patterns));
 }
 
 /**
@@ -468,7 +485,7 @@ function onEngine<T>(what: string, run: () => T): T {
 /** The loaded engine. */
 async function loaded(): Promise<FlatEngine> {
   named = nameStatus;
-  await loadEngine();
+  await ensureEngine();
   return engine!;
 }
 
@@ -481,6 +498,16 @@ function afterTrap(err: unknown): boolean {
   if (!(err instanceof WebAssembly.RuntimeError)) return false;
   restartEngine();
   return true;
+}
+
+/** `call`, restarting the engine if it traps. */
+function guard<T>(call: () => T): T {
+  try {
+    return call();
+  } catch (err) {
+    afterTrap(err);
+    throw err;
+  }
 }
 
 /** A bad status means the bytes are corrupt, or the module ran out of memory, and is thrown as is. */
@@ -511,7 +538,7 @@ export function engineMemoryBytes(): number {
  * back, and the dropped one's memory returns once it is collected. Skipped
  * while a merge session is open, since the session lives in the old
  * instance. Nothing holds a view of the old memory across an await: results
- * are copies, and the scan hook reads `engine` at each call.
+ * are copies, and a block scan reads `engine` at each call.
  */
 export function recycleEngine(maxBytes: number): boolean {
   if (!engine || engine.sessionOpen || engine.memoryBytes() <= maxBytes || !restartEngine()) return false;
@@ -534,12 +561,7 @@ export function __restartEngineForTests(): void {
  */
 export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRun> {
   const wasm = await loaded();
-  try {
-    return encodeRunIn(wasm, entries);
-  } catch (err) {
-    afterTrap(err);
-    throw err;
-  }
+  return guard(() => encodeRunIn(wasm, entries));
 }
 
 /**
@@ -550,14 +572,6 @@ export async function encodeRun(entries: readonly SstEntry[]): Promise<EncodedRu
 export async function openMerge(spec: MergeSpec): Promise<MergeCore> {
   const wasm = await loaded();
   watcher?.reserved((spec.sources.length + 1) * spec.chunkBytes);
-  const guard = <T>(call: () => T): T => {
-    try {
-      return call();
-    } catch (err) {
-      afterTrap(err);
-      throw err;
-    }
-  };
   const core = guard(() => openMergeIn(wasm, spec));
   return {
     pump: () => guard(() => core.pump()),

@@ -19,15 +19,15 @@ import {
   CorruptDatabaseError,
   StorageFullError,
   StorageUnavailableError,
-  codeOfError,
+  isQuota,
   unavailable,
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
+import type { BusMessage, IngestClient, StorageFull, WatchPolicy } from "./host/protocol.js";
 import { storageFullResponder, type StorageFullResponder } from "./host/storage-full.js";
 import { removeDatabase } from "./destroy.js";
-import { layersChannel, openLock, withLock } from "./locks.js";
+import { holdingFiles, layersChannel, openLock, withLock } from "./locks.js";
 import { ROW_POST_MS, rowPost, type RowPost } from "./row-post.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
 import { reconcileOpen } from "./recover.js";
@@ -43,7 +43,7 @@ import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store
 import { ensureEngine } from "./store/engine.js";
 import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
-import { ViewSnapshotImpl, boundsOf, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
+import { ViewSnapshotImpl, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
 import type { ChangeEvent, ChangeListener } from "./changes.js";
 
 export type { Entry } from "./store/cursor.js";
@@ -394,7 +394,7 @@ export async function openOn(
   } catch (cause) {
     // What is left raw is a browser API that is there and refused: OPFS, the SharedWorker or IndexedDB.
     if (!(cause instanceof DOMException)) throw cause;
-    throw codeOfError(cause) === "quota" ? new StorageFullError("the origin's storage is full", { cause }) : unavailable("the browser's storage", cause);
+    throw isQuota(cause) ? new StorageFullError("the origin's storage is full", { cause }) : unavailable("the browser's storage", cause);
   }
 }
 
@@ -595,7 +595,12 @@ class DbImpl implements Db {
   private head: HeadStart | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
-  private readonly catchUpToWal = coalesced(() => this.syncOnce());
+  /** Read the tail and catch up to it. After close the connection is gone, and as in `follow` there is nothing to catch up. */
+  private readonly catchUpToWal = coalesced(async () => {
+    await this.retrying<"done">(() =>
+      this.closed ? Promise.resolve("done") : this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail)),
+    );
+  });
   private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
@@ -707,11 +712,6 @@ class DbImpl implements Db {
     } finally {
       this.announcing = false;
     }
-  }
-
-  private emit(event: ChangeEvent): void {
-    this.unannounced.push(event);
-    this.announce();
   }
 
   /**
@@ -876,10 +876,6 @@ class DbImpl implements Db {
     return this.catchUpToWal();
   }
 
-  private async syncOnce(): Promise<void> {
-    await this.retrying(() => this.catchUpOnce());
-  }
-
   /**
    * Run `attempt` once without the reclaim lock, the usual path. A run or
    * manifest that went missing mid-load was almost always reclaimed after
@@ -904,12 +900,6 @@ class DbImpl implements Db {
         }
       }
     });
-  }
-
-  /** Read the tail and catch up to it. After close the connection is gone, and as in `follow` there is nothing to catch up. */
-  private catchUpOnce(): Promise<"done" | Retry> {
-    if (this.closed) return Promise.resolve("done");
-    return this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail));
   }
 
   /**
@@ -1003,13 +993,13 @@ class DbImpl implements Db {
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
-    warm?: () => Promise<unknown>,
+    warm: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
     // Only its turn: the handle is checked open again below.
     await this.pressure.admit();
     const out = await this.retrying(async () => {
       for (;;) {
-        await warm?.();
+        await warm();
         this.ensureOpen();
         let missing: Generation | undefined;
         let miss: Miss | undefined;
@@ -1240,12 +1230,11 @@ class DbImpl implements Db {
 
   async count(range?: Range): Promise<number> {
     this.ensureOpen();
-    const bounds = boundsOf(range);
     const layers = this.installed;
-    const at = this.point();
+    const step = scanStep(this.mem, layers.levels, this.point(), range);
     this.retain(layers);
     try {
-      return await countOf(scanStep(this.mem.range(bounds), layers.levels, at, bounds, range));
+      return await countOf(step);
     } catch (err) {
       this.ensureOpen();
       throw err;
@@ -1258,9 +1247,8 @@ class DbImpl implements Db {
     return rangeScan({
       start: () => {
         this.ensureOpen();
-        const bounds = boundsOf(range);
         const layers = this.installed;
-        const step = scanStep(this.mem.range(bounds), layers.levels, this.point(), bounds, range);
+        const step = scanStep(this.mem, layers.levels, this.point(), range);
         this.retain(layers);
         return { step, release: () => this.release(layers) };
       },
@@ -1344,7 +1332,8 @@ class DbImpl implements Db {
   async closeFor(reason: "close" | "destroyed"): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.emit({ kind: "closed", reason });
+    this.unannounced.push({ kind: "closed", reason });
+    this.announce();
     this.full.close();
     this.rows?.close();
     this.bus?.close();
