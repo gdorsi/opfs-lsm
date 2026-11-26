@@ -53,6 +53,18 @@ describe("a file written where OPFS has no createWritable", () => {
     expect(dir.origin.open).toBe(0);
   });
 
+  it("takes the bytes of a write at the call, so a merge can fill its buffer again before the write settles", async () => {
+    const { fs } = folder();
+    const writer = await fs.create(PATH);
+    const buffer = utf("first");
+    const first = writer.write(buffer);
+    buffer.set(utf("again"));
+    await first;
+    await writer.write(buffer);
+    await writer.finish();
+    expect(await text(fs, PATH)).toBe("firstagain");
+  });
+
   it("leaves nothing after abort", async () => {
     const { dir, fs } = folder();
     const writer = await fs.create(PATH);
