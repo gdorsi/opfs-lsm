@@ -128,7 +128,9 @@ const YIELD_BYTES = 1 * MiB;
  *
  * with F the flush run size, S the sources of a step, C the window per
  * source (held in wasm, and read in JS before it is fed), and K the
- * per-source buffers. The figures follow from it.
+ * per-source buffers. The input region, which holds every input run's
+ * index, has no term: indexes are small next to C unless keys are long
+ * and share long prefixes. The figures follow from it.
  *
  * - F is 7/8 of min(T, B/16), T being the compaction output run (4 MiB). Wasm
  *   memory grows in steps at power-of-two input sizes, and a run's packed

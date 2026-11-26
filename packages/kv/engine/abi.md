@@ -54,7 +54,8 @@ merge_open(ptr, len, drop_tombstones: i32, target_bytes: f64,
     the host encoded it, and a malformed block traps when a pump reads the
     malformed part. Checks every run's index and keeps its block lengths.
     Reserves the working set: about `chunk_bytes` per source, four bytes
-    per input block, and the output buffer. Returns 0,
+    per input block, and the output buffer. The input region also holds
+    every input run's whole index as the host passed it. Returns 0,
     -12 while a session is open, -5 for a malformed list, -1 for a run
     shorter than a footer, -4 for an index whose CRC does not match, -5
     for an index that is malformed or whose blocks would end past the

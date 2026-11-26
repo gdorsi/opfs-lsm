@@ -17,13 +17,15 @@
  * A change on purpose takes a trailer on a commit after the merge-base:
  *   Engine-Output: changed
  *   Engine-Regression: <memory|work|size> <workload>, <reason>
+ *   Engine-Regression: merge abi, <reason>
  * Changed output then rests on the differential tests against the
  * TypeScript oracles (fuzz/differential.test.ts).
  *
  * Both builds are driven by this checkout's host. After a change to the ABI
  * or to the run format, base cannot merge what that host gives it: the merge
- * rows are then left out of every axis, which also takes `Engine-Output:
- * changed`.
+ * rows are then left out of every comparison, which takes its own trailer,
+ * `Engine-Regression: merge abi`, and head's merge memory is printed alone
+ * for a reviewer to read.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -154,9 +156,14 @@ async function memory(base: BufferSource, head: BufferSource, w: Waivers, merges
   const [b, h] = [await measure(base), await measure(head)];
   const mib = (n: number) => (n / MiB).toFixed(2);
   const names = merges ? (["flush", "merge", "overlap"] as const) : (["flush"] as const);
+  let alone = "";
+  if (!merges) {
+    const probes = memoryProbes(head);
+    alone = ` · head alone: merge ${mib((await probes.merge(shape)).peak)} MiB, overlap ${mib((await probes.merge(shape, 7)).peak)} MiB`;
+  }
   return {
     axis: "memory",
-    text: names.map((k) => `${k} ${mib(b[k])} → ${mib(h[k])} MiB`).join(" · "),
+    text: names.map((k) => `${k} ${mib(b[k])} → ${mib(h[k])} MiB`).join(" · ") + alone,
     fails: names.filter((k) => h[k] > b[k] && !w.regressions.has(`memory ${k}`)).map((k) => `memory ${k}: ${mib(b[k])} → ${mib(h[k])} MiB`),
   };
 }
@@ -255,7 +262,7 @@ const report = (line: Line) => {
   console.log(`  ${line.axis.padEnd(6)}  ${line.text}${waived}`);
 };
 if (broken !== undefined) {
-  const fails = w.output ? [] : [`merge: base cannot run this checkout's merge (${broken})`];
+  const fails = w.regressions.has("merge abi") ? [] : [`merge: base cannot run this checkout's merge (${broken})`];
   report({ axis: "merge", text: `not compared: base cannot run this checkout's merge (${broken})`, fails });
 }
 report(output(openShipped(base), openShipped(head), broken === undefined));

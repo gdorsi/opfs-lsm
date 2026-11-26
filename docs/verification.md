@@ -353,7 +353,7 @@ The gate prints a line per axis and fails on any line but speed:
 
 A change on purpose takes a trailer on one of the branch's commits: `Engine-Output: changed` lets the output differ, which then rests on the differential tests against the TypeScript oracles, and `Engine-Regression: <memory|work|size> <workload>, <reason>` lets one line regress. The size line's workload is `engine.wasm`.
 
-The gate drives both builds with this checkout's host. After a change to the ABI or to the run format, the base build cannot merge what that host gives it. The gate then prints a `merge` line that says so, leaves the merge rows out of every axis, and fails without `Engine-Output: changed`.
+The gate drives both builds with this checkout's host. After a change to the ABI or to the run format, the base build cannot merge what that host gives it. The gate then prints a `merge` line that says so, leaves the merge rows out of every axis, prints head's merge memory alone, and fails without `Engine-Regression: merge abi, <reason>`.
 
 ## Run the static checks
 
