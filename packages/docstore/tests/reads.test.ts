@@ -162,7 +162,7 @@ describe("an index with include", () => {
     meta?: { readonly [key: string]: Json };
   };
   const plain = collection<Issue>().index("byProject", ["project", "updatedAt"]).index("byLabel", ["labels[]", "updatedAt"]);
-  const covering = defineSchema({
+  const including = defineSchema({
     version: 1,
     collections: {
       plain: plain,
@@ -181,7 +181,7 @@ describe("an index with include", () => {
   async function store() {
     const kv = await openKv(freshName());
     open.push(kv);
-    const s = await openDocStore(kv, covering);
+    const s = await openDocStore(kv, including);
     await s.collection("issues").putMany(issues);
     await s.collection("plain").putMany(issues);
     return { issues: s.collection("issues"), plain: s.collection("plain") };
@@ -244,7 +244,7 @@ describe("an index with include", () => {
   it("throws CorruptDatabaseError for an entry whose value is not a JSON object, and only when that entry is on the page", async () => {
     const kv = await openKv(freshName());
     open.push(kv);
-    const c = (await openDocStore(kv, covering)).collection("issues");
+    const c = (await openDocStore(kv, including)).collection("issues");
     await c.putMany(issues.slice(0, 2));
     const keys: Uint8Array[] = [];
     for await (const e of kv.range(prefixBound(await storedPrefix(kv, "issues", "list")))) keys.push(e.key);
@@ -270,7 +270,7 @@ describe("an index with include", () => {
   it("decodes the fields of a merged page only for the entries it returns", async () => {
     const kv = await openKv(freshName());
     open.push(kv);
-    const c = (await openDocStore(kv, covering)).collection("issues");
+    const c = (await openDocStore(kv, including)).collection("issues");
     await c.putMany(issues);
     const keys: Uint8Array[] = [];
     for await (const e of kv.range(prefixBound(await storedPrefix(kv, "issues", "list")))) keys.push(e.key);

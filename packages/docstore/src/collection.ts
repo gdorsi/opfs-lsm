@@ -130,7 +130,7 @@ type Prior = {
  * ready, a row's unique entries are its own.
  */
 const buildingUnique = (coll: BoundCollection) =>
-  coll.maintained.some((p) => p.target.kind === "unique" && p.state.kind === "building");
+  coll.maintained.some((p) => p.target.unique && p.state.kind === "building");
 
 function priorOf(coll: BoundCollection, idb: Uint8Array, bytes: Uint8Array | undefined, doc: StoredDoc | undefined): Prior {
   if (!bytes) return { bytes, before: NONE, owned: NONE };
@@ -339,7 +339,7 @@ export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, 
     const idbs = docIds.map(idBytes);
     return this.store.write(this.name, async (coll): Promise<WritePlan<readonly Slot[]>> => {
       const rowKeys = idbs.map((b) => concat(coll.rows.prefix, b));
-      if (!coll.maintained.some((p) => p.target.kind === "unique")) {
+      if (!coll.maintained.some((p) => p.target.unique)) {
         return {
           keys: rowKeys,
           apply: (olds, tx) => {

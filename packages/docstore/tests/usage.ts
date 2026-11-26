@@ -210,7 +210,7 @@ export async function entryValues(store: DocStore<typeof notesSchema>): Promise<
   return [byTag, bySlug, rows, search, wrong];
 }
 
-const coveringSchema = defineSchema({
+const includeSchema = defineSchema({
   version: 1,
   collections: {
     notes: collection<Note>()
@@ -220,7 +220,7 @@ const coveringSchema = defineSchema({
   },
 });
 
-export async function entryFields(store: DocStore<typeof coveringSchema>): Promise<unknown[]> {
+export async function entryFields(store: DocStore<typeof includeSchema>): Promise<unknown[]> {
   const notes = store.collection("notes");
   const list = (await notes.queryEntries({ index: "list", eq: ["ann"] })).entries;
   const fields: Pick<Note, "slug" | "tags">[] = list.map((e) => e.fields);

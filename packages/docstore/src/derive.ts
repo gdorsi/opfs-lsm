@@ -221,7 +221,7 @@ export function entriesOf(
     const entries = indexEntries(plan, id, doc);
     if (Array.isArray(entries)) {
       for (const e of entries) out.push(e);
-      if (unique && plan.target.kind === "unique") for (const e of entries) unique.push(e);
+      if (unique && plan.target.unique) for (const e of entries) unique.push(e);
     } else if (side === "next") {
       throw new DocStoreError(
         "document",
@@ -233,12 +233,12 @@ export function entriesOf(
 }
 
 export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): Entry[] | Unindexable {
-  const { spec } = plan;
-  const multi = spec.kind === "sorted" && spec.multi;
+  const { target, paths } = plan;
+  const multi = target.kind === "multi";
   const values: Scalar[] = [];
   let firsts: readonly Scalar[] | undefined;
-  for (let i = 0; i < spec.on.length; i++) {
-    const path = spec.on[i]!;
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i]!;
     const v = readPath(doc, path);
     if (v === undefined) return NONE;
     if (i === 0 && multi && Array.isArray(v)) {
@@ -258,30 +258,24 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
 
   let value = id;
   let tail: Uint8Array | undefined = id;
-  switch (spec.kind) {
-    case "sorted":
-      if (spec.unique) tail = undefined;
-      else value = spec.include ? fieldsValue(doc, spec.include) : EMPTY;
-      break;
-    case "text": {
-      const text = readPath(doc, spec.text);
-      if (text === undefined) return NONE;
-      if (text !== null && typeof text !== "string") return { path: spec.text.join("."), why: "text-not-string" };
-      value = textValue(text ?? "");
-      break;
-    }
+  if (plan.text) {
+    const text = readPath(doc, plan.text);
+    if (text === undefined) return NONE;
+    if (text !== null && typeof text !== "string") return { path: plan.text.join("."), why: "text-not-string" };
+    value = textValue(text ?? "");
+  } else if (target.unique) tail = undefined;
+  else value = target.include ? fieldsValue(doc, target.include) : EMPTY;
+
+  if (value.length * (firsts?.length ?? 1) > MAX_FIELDS_BYTES && target.include) {
+    return { path: target.include.join(","), why: "fields-too-large" };
   }
 
-  if (value.length * (firsts?.length ?? 1) > MAX_FIELDS_BYTES && spec.kind === "sorted" && spec.include) {
-    return { path: spec.include.join(","), why: "fields-too-large" };
-  }
-
-  const prefix = plan.target.prefix;
+  const prefix = target.prefix;
   const out: Entry[] = [];
   for (const first of firsts ?? [values[0]!]) {
     values[0] = first;
     const key = encodeTuple(values, prefix, tail);
-    if (key.length > MAX_KEY_BYTES) return { path: spec.on.map((p) => p.join(".")).join(","), why: "key-too-long" };
+    if (key.length > MAX_KEY_BYTES) return { path: paths.map((p) => p.join(".")).join(","), why: "key-too-long" };
     out.push({ key, value });
   }
   return out;
@@ -289,7 +283,7 @@ export function indexEntries(plan: IndexPlan, id: Uint8Array, doc: StoredDoc): E
 const EMPTY = new Uint8Array(0);
 
 /**
- * A covering entry's value. `JSON.stringify` writes an object with a
+ * The value of an entry of an index with `include`. `JSON.stringify` writes an object with a
  * prototype several times faster than one without, so only a field named
  * "__proto__", which such an object cannot hold, takes the slow one.
  */
