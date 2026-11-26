@@ -414,7 +414,7 @@ While you are changing product code and using verify-kv, follow that skill's "In
 
 These exist on main and have no feature file and no formal check. Leave them out of the feature map until a maintain pass adds a recipe.
 
-- A refused WAL append in a real browser. Chrome's `Storage.overrideQuotaForOrigin` refuses OPFS writes and lets IndexedDB commits through, so `drive quota` proves the reserve on a refused flush only. The retry of a refused append (`make-room`, the new connection) runs in `tests/wal-full.test.ts`, over a fake-indexeddb transaction that aborts the way Chromium and Firefox were measured to.
+- A refused WAL append in a real browser. Chrome's `Storage.overrideQuotaForOrigin` refuses OPFS writes and lets IndexedDB commits through, so `drive quota` proves the reserve on a refused flush only. The retry of a refused append (`makeRoom`, the new connection) runs in `tests/wal-full.test.ts`, over a fake-indexeddb transaction that aborts the way Chromium and Firefox were measured to.
 - The reserve in Firefox and Safari. No drive runs there.
 - The staged writer in Safari. Every drive of it runs in Chrome, in a dedicated Worker of the testing build. The writer that ships ran by hand in the SharedWorker of Safari 18.6, and no drive runs it there.
 - The reserve with several hosts, as two SharedWorkers of two builds are. Each host posts its own offer and knows its own tabs' `reserveBytes` only ([reserve.md](reserve.md#several-hosts)). `tests/two-hosts.test.ts` pins both with `it.fails`: the handlers are called again before a flush holds what they wrote, and a handle that passes `reserveBytes` 0 on one host removes the reserve of another. Until one state of the reserve is shared, the host of a dedicated Worker writes no file.

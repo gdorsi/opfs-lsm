@@ -1,5 +1,5 @@
 import { ClosedError, errorOfCode } from "../errors.js";
-import type { ClientToHost, HostToClient, IngestClient } from "./protocol.js";
+import { HOST_CALLS, type ClientToHost, type HostCall, type HostToClient, type IngestClient } from "./protocol.js";
 
 /** What the client talks over: a SharedWorker's port, or a dedicated Worker, which it terminates at `close`. */
 type Port = Pick<MessagePort, "addEventListener" | "removeEventListener" | "postMessage"> & {
@@ -7,59 +7,24 @@ type Port = Pick<MessagePort, "addEventListener" | "removeEventListener" | "post
   terminate?(): void;
 };
 
-/** Tab-side client over a port. */
+/** Tab-side client over a port: each call of `HOST_CALLS` posts its method name and arguments. */
 export function createPortIngestClient(port: Port): IngestClient {
   let nextId = 1;
-  const pending = new Map<
-    number,
-    { resolve: (v: HostToClient) => void; reject: (e: Error) => void }
-  >();
+  let closed = false;
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
-  const onMessage = (ev: MessageEvent<HostToClient>) => {
+  const listener = ((ev: MessageEvent<HostToClient>) => {
     const msg = ev.data;
     const p = pending.get(msg.id);
     if (!p) return;
     pending.delete(msg.id);
-    if (msg.type === "err") p.reject(errorOfCode(msg.code, msg.message));
-    else p.resolve(msg);
-  };
-  const listener = onMessage as unknown as EventListener;
+    if ("message" in msg) p.reject(errorOfCode(msg.code, msg.message));
+    else p.resolve(msg.value);
+  }) as unknown as EventListener;
   port.addEventListener("message", listener);
   port.start?.();
 
-  let closed = false;
-  const request = (msg: ClientToHost & { id: number }) =>
-    new Promise<HostToClient>((resolve, reject) => {
-      // No listener is left to settle it.
-      if (closed) return reject(new ClosedError("database is closed"));
-      pending.set(msg.id, { resolve, reject });
-      port.postMessage(msg);
-    });
-
-  return {
-    async ingest(name: string, waitForCompaction = false) {
-      const res = await request({ type: "ingest", id: nextId++, name, waitForCompaction });
-      return { generation: (res as Extract<HostToClient, { type: "ingest-ok" }>).generation };
-    },
-    watch(name, policy) {
-      port.postMessage({ type: "watch", name, ...policy } satisfies ClientToHost);
-    },
-    unwatch(name) {
-      port.postMessage({ type: "unwatch", name } satisfies ClientToHost);
-    },
-    async makeRoom(name) {
-      await request({ type: "make-room", id: nextId++, name });
-    },
-    async repair(name) {
-      await request({ type: "repair", id: nextId++, name });
-    },
-    async destroy(name) {
-      await request({ type: "destroy", id: nextId++, name });
-    },
-    async stats(name) {
-      const res = await request({ type: "stats", id: nextId++, name });
-      return (res as Extract<HostToClient, { type: "stats-ok" }>).stats;
-    },
+  const client: Record<string, unknown> = {
     close() {
       closed = true;
       port.removeEventListener("message", listener);
@@ -68,4 +33,17 @@ export function createPortIngestClient(port: Port): IngestClient {
       pending.clear();
     },
   };
+  for (const method of Object.keys(HOST_CALLS) as HostCall[]) {
+    client[method] = HOST_CALLS[method]
+      ? (...args: unknown[]) =>
+          new Promise((resolve, reject) => {
+            // No listener is left to settle it.
+            if (closed) return reject(new ClosedError("database is closed"));
+            const id = nextId++;
+            pending.set(id, { resolve, reject });
+            port.postMessage({ id, method, args } as ClientToHost);
+          })
+      : (...args: unknown[]) => port.postMessage({ method, args } as ClientToHost);
+  }
+  return client as IngestClient;
 }

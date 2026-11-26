@@ -47,9 +47,9 @@ once more when that failure removed the file. Any other refused write fails with
 `StorageFullError`: the acked writes stay in the WAL, and the host flushes again after another
 1 MiB of writes or the next `openDb`.
 
-**Refused append.** A WAL group that aborts with `QuotaExceededError` sends `make-room` to the
+**Refused append.** A WAL group that aborts with `QuotaExceededError` calls `makeRoom` on the
 host, which handles it as a refused write, then opens a new IndexedDB connection and adds the
-same records once more. Groups refused together share one `make-room` and keep the order they
+same records once more. Groups refused together share one `makeRoom` and keep the order they
 were issued in. An `update` refused in a transaction of its own runs its `body` again. A second
 refusal fails every write of the group with `StorageFullError`, whose `cause` is the browser's
 error. The connection is replaced after every such abort, and no write transaction starts while
