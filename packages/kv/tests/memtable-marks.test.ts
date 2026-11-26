@@ -3,7 +3,7 @@ import { compareBytes } from "../src/bytes.js";
 import type { CheckedKey, CheckedValue, ResolvedOp, ResolvedSeq } from "../src/check.js";
 import { asSeq } from "../src/seq.js";
 import { throughAt, type Mark } from "../src/store/marks.js";
-import { Memtable, type MemRow, type MemRows } from "../src/store/memtable.js";
+import { Memtable, type MemRange, type MemRow, type MemRows } from "../src/store/memtable.js";
 
 /**
  * The memtable under range deletes, against a model. Bounds sit on stored
@@ -12,7 +12,13 @@ import { Memtable, type MemRow, type MemRows } from "../src/store/memtable.js";
  */
 const key = (i: number) => Uint8Array.of(0x6b, i >> 4, i & 15) as CheckedKey;
 const KEYS = 96;
-const show = (rows: readonly MemRow[]) => rows.map((r) => `${r.key.join(".")}@${r.seq}:${r.kind}`);
+function rowsOf(range: MemRange): MemRow[] {
+  const out: MemRow[] = [];
+  const cursor = range.cursor();
+  for (let row = cursor.peek(); row; cursor.next(), row = cursor.peek()) out.push(row as MemRow);
+  return out;
+}
+const show = (rows: readonly MemRow[] | MemRange) => (Array.isArray(rows) ? rows : rowsOf(rows as MemRange)).map((r) => `${r.key.join(".")}@${r.seq}:${r.kind}`);
 
 function run(seed: number): void {
   let state = seed;
@@ -22,7 +28,7 @@ function run(seed: number): void {
   let marks: Mark[] = [];
   let seq = 0;
   let ingested = 0;
-  const pins: { rows: MemRows; want: string[] }[] = [];
+  const pins: { pin?: MemRows; live?: MemRange; want: string[] }[] = [];
   const rows = () => [...model.values()].sort((a, b) => compareBytes(a.key, b.key));
   const overhead = (() => {
     const one = new Memtable();
@@ -65,7 +71,8 @@ function run(seed: number): void {
       expect(mem.apply({ seq: asSeq(seq), ops })).toBe("applied");
       marks = [...marks, ...added];
     } else if (roll < 15) {
-      pins.push({ rows: mem.pin(), want: show(rows()) });
+      // A pin, or a range of the live table, which keeps what it read the same way.
+      pins.push(rnd(2) === 0 ? { pin: mem.pin(), want: show(rows()) } : { live: mem.range(), want: show(rows()) });
     } else if (roll < 16) {
       // The generation a tab installs never passes what it applied by more than a jump, and never goes back.
       const through = Math.max(ingested, seq - rnd(12));
@@ -85,7 +92,7 @@ function run(seed: number): void {
       expect(mem.appliedThrough).toBe(Math.max(seq, ingested));
     }
 
-    const held = mem.range();
+    const held = rowsOf(mem.range());
     expect(show(held), `seed ${seed} step ${step}`).toEqual(show(rows()));
     const fields = (m: Mark) => ({ start: m.start, endExclusive: m.endExclusive, through: m.through, at: m.at });
     expect(mem.marks.map(fields), `seed ${seed} step ${step}: marks`).toEqual(marks.map(fields));
@@ -100,7 +107,7 @@ function run(seed: number): void {
       expect(mem.get(key(a))?.seq).toBe(model.get(a)?.seq);
     }
   }
-  for (const pin of pins) expect(show(pin.rows.range())).toEqual(pin.want);
+  for (const { pin, live, want } of pins) expect(show(pin ? pin.range() : live!), `seed ${seed}: reads what it read when taken`).toEqual(want);
 }
 
 it("the memtable under range deletes holds the rows a model holds, the marks of what it applied, and no covered row", () => {

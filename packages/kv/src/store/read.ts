@@ -1,11 +1,9 @@
 import { compareBytes, copyOut, sharedPrefix } from "../bytes.js";
-import type { MemRow } from "./memtable.js";
+import type { MemRange, MemRow } from "./memtable.js";
 import {
   allMissed,
   compareEntries,
-  entryCursor,
   filterCursor,
-  lowerBoundKeys,
   Miss,
   untilHit,
   type LayerCursor,
@@ -399,7 +397,7 @@ export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse 
 /**
  * The live puts in `bounds` whose current value holds every pattern, in key
  * order (descending with `reverse`), each key once. `rows` is the memtable
- * slice for `bounds`, ascending and newer than every level.
+ * range for `bounds`, newer than every level.
  *
  * Each source filters on its own: memtable rows in JS, each level's runs in
  * wasm per block, so a block with no hit costs no JS per row. The newest
@@ -410,7 +408,7 @@ export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse 
  * from untouched, so a scan does not count as reuse in the cache.
  */
 export function matchingStep(
-  rows: readonly MemRow[],
+  rows: MemRange,
   levels: readonly RunLevel[],
   patterns: readonly Uint8Array[],
   marks: Marks,
@@ -418,7 +416,7 @@ export function matchingStep(
   reverse = false,
 ): ScanStep {
   const merge = new Merge(
-    [filterCursor(entryCursor(rows, reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse, marks))],
+    [filterCursor(rows.cursor(reverse), patterns), ...levels.map((level) => level.scanContains(patterns, bounds, reverse, marks))],
     reverse,
     boundsPrefix(bounds),
   );
@@ -433,8 +431,7 @@ export function matchingStep(
       // The merge moves only in `next`, so a held match still has its source.
       const { source } = merge;
       if (source > 0) {
-        const i = lowerBoundKeys(rows, entry.key);
-        if (i < rows.length && compareBytes(rows[i]!.key, entry.key) === 0) continue;
+        if (rows.get(entry.key)) continue;
         const newer = shadowed(levels, source - 1, entry.key);
         if (newer instanceof Miss) {
           held = entry;

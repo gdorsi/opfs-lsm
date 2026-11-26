@@ -2,7 +2,7 @@ import { checkKey } from "./check.js";
 import { ClosedError, ConstraintError } from "./errors.js";
 import type { Range } from "./db.js";
 import type { MemRows } from "./store/memtable.js";
-import { entryCursor, entryOf, keyOf, Miss, untilHit, valueOf, type Entry, type LayerEntry, type ScanBounds } from "./store/cursor.js";
+import { entryOf, keyOf, Miss, untilHit, valueOf, type Entry, type LayerEntry, type ScanBounds } from "./store/cursor.js";
 import type { Marks } from "./store/marks.js";
 import {
   countOf,
@@ -71,7 +71,7 @@ export function scanStep(mem: MemRows, levels: readonly RunLevel[], at: Marks, r
   const step =
     patterns && patterns.length > 0
       ? matchingStep(rows, levels, patterns, at, bounds, reverse)
-      : liveStep([entryCursor(rows, reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse, bounds);
+      : liveStep([rows.cursor(reverse), ...levels.map((level) => level.cursor(bounds, reverse, at))], at, reverse, bounds);
   const limit = range?.limit ?? Number.POSITIVE_INFINITY;
   let skip = range?.offset ?? 0;
   // A whole number or Infinity, which has no remainder to compare.

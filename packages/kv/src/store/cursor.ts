@@ -210,19 +210,6 @@ export function lowerBoundKeys(
   return lo;
 }
 
-export function entryCursor(entries: readonly LayerEntry[], reverse = false): LayerCursor {
-  const step = reverse ? -1 : 1;
-  let i = reverse ? entries.length - 1 : 0;
-  return {
-    peek() {
-      return entries[i];
-    },
-    next() {
-      i += step;
-    },
-  };
-}
-
 /** A cache key and the value loaded for it. */
 export type Fill = readonly [key: number, value: unknown];
 
