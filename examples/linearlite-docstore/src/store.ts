@@ -8,7 +8,6 @@ type Docs = DocStore<typeof schema>;
 const issuesOf = (docs: Docs) => docs.collection("issues");
 const detailsOf = (docs: Docs) => docs.collection("details");
 type Issues = ReturnType<typeof issuesOf>;
-type IssueQuery = Parameters<Issues["query"]>[0];
 
 export type Store = { readonly db: Db; readonly issues: Issues; readonly details: ReturnType<typeof detailsOf> };
 
@@ -53,7 +52,9 @@ export function orderOf(filter: Filter): (a: Issue, b: Issue) => number {
 }
 
 /** A run of entries of one index: the whole index, or the entries under a status, a priority, or both. */
-type Range = { readonly index: "byModified" | "byCreated" | "byStatus" | "byPriority"; readonly eq?: readonly Code[] };
+type Range =
+  | { readonly index: "byModified" | "byCreated" }
+  | { readonly index: "byStatus" | "byPriority"; readonly eq: readonly [Code] | readonly [Code, Code] };
 
 const sorted = (codes: readonly Code[]) => [...codes].sort((a, b) => a - b);
 
@@ -73,7 +74,7 @@ const sum = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0);
  */
 function rangeView(issues: Issues, list: readonly Range[], reverse: boolean, path: "index" | "ranges"): View {
   const order = reverse ? list.toReversed() : list;
-  const query = (r: Range) => ({ index: r.index, ...(r.eq && { eq: r.eq }), ...(reverse && { reverse: true }) }) as IssueQuery;
+  const query = (r: Range) => ({ ...r, ...(reverse && { reverse: true }) });
   let counted: Promise<number[]> | undefined;
   const counts = () => (counted ??= Promise.all(order.map((r) => issues.count(query(r)))));
   const cursors = order.map(() => new Map<number, Cursor>());
@@ -85,7 +86,7 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean, pat
     let base = 0;
     for (const at of known.keys()) if (at <= skip && at > base) base = at;
     if (base === skip) return known.get(base);
-    const { next } = await issues.queryIds({ ...query(order[i]!), limit: skip - base, ...(base > 0 && { after: known.get(base) }) } as IssueQuery);
+    const { next } = await issues.queryIds({ ...query(order[i]!), limit: skip - base, ...(base > 0 && { after: known.get(base) }) });
     if (next === undefined) return null;
     known.set(skip, next);
     return next;
@@ -105,7 +106,7 @@ function rangeView(issues: Issues, list: readonly Range[], reverse: boolean, pat
       for (; out.length < n && i < order.length; i++, skip = 0) {
         const after = await cursorAt(i, skip);
         if (after === null) continue;
-        const { docs, next } = await issues.query({ ...query(order[i]!), limit: n - out.length, ...(after !== undefined && { after }) } as IssueQuery);
+        const { docs, next } = await issues.query({ ...query(order[i]!), limit: n - out.length, ...(after !== undefined && { after }) });
         if (next !== undefined) cursors[i]!.set(skip + docs.length, next);
         out.push(...docs);
       }
@@ -131,7 +132,7 @@ function scanView(issues: Issues, filter: Filter): View {
   const scanTo = (rows: number) =>
     (scanning = scanning.then(async () => {
       while (!done && matches.length < rows) {
-        const { docs, next } = await issues.query({ index, limit: step, reverse: filter.dir === "desc", ...(after !== undefined && { after }) } as IssueQuery);
+        const { docs, next } = await issues.query({ index, limit: step, reverse: filter.dir === "desc", ...(after !== undefined && { after }) });
         for (const doc of docs) if (keep(doc)) matches.push(doc);
         after = next;
         done = next === undefined;
@@ -142,7 +143,7 @@ function scanView(issues: Issues, filter: Filter): View {
   const counted = ranges(filter, filter.status.length > 0 ? "status" : "priority");
   return {
     path: "scan",
-    total: () => Promise.all(counted.map((r) => issues.count({ index: r.index, eq: r.eq } as IssueQuery))).then(sum),
+    total: () => Promise.all(counted.map((r) => issues.count(r))).then(sum),
     async read(offset, n) {
       await scanTo(offset + n);
       return matches.slice(offset, offset + n);

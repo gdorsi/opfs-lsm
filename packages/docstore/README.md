@@ -344,6 +344,15 @@ await users.put({ id: "u5", email: "\uD800" });
 
 A query names an index and a range in it. Without `index`, it reads the documents in id order.
 
+`index` can be a union, such as a sort the user picks. The query then type-checks if it suits every index in the union.
+
+```ts
+declare const sort: "open" | "search";
+await todos.queryIds({ index: sort, reverse: true, limit: 20 });
+await todos.queryIds({ index: sort, match: "milk" }); // type error,
+// open is not a text index
+```
+
 ### Bounds
 
 `eq` fixes the first fields of `by`. `gt`, `gte`, `lt`, and `lte` bound the next one.

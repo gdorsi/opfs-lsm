@@ -221,13 +221,20 @@ type EqOf<E extends readonly unknown[]> = E extends readonly []
 /** One slot of `eq`: a value, or, on an index that is not unique, a list of the values the field can have. */
 type Slot<H, Lists> = Lists extends true ? H | readonly H[] : H;
 
-/** One member per k: `eq` fixes the first k components and the bound has the type of component k + 1. */
-type Where<V extends readonly unknown[], Lists, E extends readonly unknown[] = []> = V extends readonly [
+/**
+ * Two members per k. In one, `eq` fixes the first k components and a bound
+ * has the type of component k + 1. In the other, `eq` fixes at most k
+ * components and no bound follows: these are what other indexes share.
+ */
+type Where<V extends readonly unknown[], Lists, E extends readonly unknown[] = [], Eqs = readonly []> = V extends readonly [
   infer H,
   ...infer R,
 ]
-  ? (EqOf<E> & Bound<H>) | Where<R, Lists, [...E, Slot<H, Lists>]>
-  : EqOf<E> & Bound<never>;
+  ?
+      | (EqOf<E> & Bound<H>)
+      | ({ readonly eq?: Eqs | undefined } & Bound<never>)
+      | Where<R, Lists, [...E, Slot<H, Lists>], Eqs | Readonly<[...E, Slot<H, Lists>]>>
+  : { readonly eq?: Eqs | undefined } & Bound<never>;
 
 type PageOptions = {
   /** Most results to return. Absent: all of them. `count` stops at it. */
@@ -240,28 +247,29 @@ type PageOptions = {
   readonly reverse?: boolean | undefined;
 };
 
-type IndexQuery<I, V extends readonly unknown[], D> = { readonly index: I } & Where<V, D extends { readonly unique: true } ? false : true> &
-  PageOptions &
+/** What index `D` takes, less `index` and the page options: a union of shapes. */
+type Takes<T, D> = Where<ValuesOf<T, D> extends readonly unknown[] ? ValuesOf<T, D> : never, D extends { readonly unique: true } ? false : true> &
   (D extends { readonly text: string }
     ? {
-        /** Keep entries where every word of `match` occurs inside a word of the text. */
+        /** Keep entries where every word of `match` occurs inside a word of the text. A match with no words keeps every entry. */
         readonly match?: string | undefined;
       }
     : { readonly match?: undefined });
 
+/** The indexes of `Ix` that take every query of shape `W`. */
+type TakenBy<T, Ix, W> = { [J in keyof Ix & string]: W extends Takes<T, Ix[J]> ? J : never }[keyof Ix & string];
+
+/** Each shape, with `index` any index that takes it, so an index picked at runtime among them needs no cast. */
+type Shaped<T, Ix, W> = W extends unknown ? { readonly index: TakenBy<T, Ix, W> } & W & PageOptions : never;
+
 /** No index: the rows in id order. The id is the one component. */
 type RowsQuery = { readonly index?: undefined; readonly match?: undefined } & Where<readonly [string], false> & PageOptions;
 
-/** Everything `query`, `queryIds` and `count` accept for a collection with indexes `Ix`. */
-export type Query<T, Ix> =
-  | RowsQuery
-  | {
-      [I in keyof Ix & string]: IndexQuery<
-        I,
-        ValuesOf<T, Ix[I]> extends readonly unknown[] ? ValuesOf<T, Ix[I]> : never,
-        Ix[I]
-      >;
-    }[keyof Ix & string];
+/**
+ * Everything `query`, `queryIds` and `count` accept for a collection with
+ * indexes `Ix`. `index` can be a union: the query must then suit each index in it.
+ */
+export type Query<T, Ix> = RowsQuery | { [I in keyof Ix & string]: Shaped<T, Ix, Takes<T, Ix[I]>> }[keyof Ix & string];
 
 export type Page<T> = { readonly docs: T[]; readonly next?: Cursor };
 export type IdPage = { readonly ids: string[]; readonly next?: Cursor };
@@ -282,8 +290,8 @@ type EntryFields<T, Ix, I> = I extends keyof Ix
     ? Pick<T, K>
     : never
   : never;
-/** What `queryEntries` on index `I` (undefined: the rows) returns. */
-export type EntryPageOf<T, Ix, I> = EntryPage<EntryValues<T, Ix, I>, EntryFields<T, Ix, I>>;
+/** What `queryEntries` on index `I` (undefined: the rows) returns. A union `I` gives a union of pages. */
+export type EntryPageOf<T, Ix, I> = I extends unknown ? EntryPage<EntryValues<T, Ix, I>, EntryFields<T, Ix, I>> : never;
 
 export type QueryInput = {
   readonly index?: string | undefined;
