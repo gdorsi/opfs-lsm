@@ -4,9 +4,10 @@ import { CorruptDatabaseError } from "../src/errors.js";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
 import { RunLevel } from "../src/store/read.js";
 import type { SstEntry } from "../src/store/sst.js";
-import type { SstReader } from "../src/store/sst-reader.js";
+import { PageCache } from "../src/store/page-cache.js";
+import { SstReader } from "../src/store/sst-reader.js";
 import type { LayerCursor } from "../src/store/cursor.js";
-import { drain, readerOfBytes } from "./runs.js";
+import { bytesFile, drain, readerOfBytes } from "./runs.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -67,10 +68,12 @@ describe("SstReader.scanContains", () => {
   });
 
   it("reports a corrupt block as CorruptDatabaseError", async () => {
-    const sst = (await encodeRun(entries)).body;
-    const head = new DataView(sst.buffer, sst.byteOffset);
+    const { body, end } = await encodeRun(entries);
+    const head = new DataView(body.buffer, body.byteOffset);
     head.setUint32(0, head.getUint32(0, true) + 1, true);
-    await expect(drain(readerOfBytes(sst).scanContains(pats(" w3")))).rejects.toThrow(CorruptDatabaseError);
+    // The run's manifest entry is its encoder's: only the file changed.
+    const reader = new SstReader(bytesFile(body), new PageCache(), end);
+    await expect(drain(reader.scanContains(pats(" w3")))).rejects.toThrow(CorruptDatabaseError);
   });
 
   it("walks every run of a level in key order", async () => {

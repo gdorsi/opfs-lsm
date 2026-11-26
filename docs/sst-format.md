@@ -3,9 +3,9 @@
 The byte layout of a run, `l<n>/*.sst`. How a tab reads one is in
 [design.md](design.md#reading-a-run).
 
-A run is data blocks, a bloom filter, a block index and a fixed-size footer, back to back. A
-writer produces the sections in that order without knowing the key count up front. A reader
-finds the footer as the last 40 bytes of the file.
+A run is data blocks, a bloom filter and a fixed-size footer, back to back. A writer produces
+the sections in that order without knowing the key count up front. A reader finds the footer as
+the last 24 bytes of the file.
 
 ```
 ================================== SST file ==================================
@@ -15,16 +15,16 @@ finds the footer as the last 40 bytes of the file.
 ------------------------------------------------------------------------------
 | bloom bits                                                                 |
 ------------------------------------------------------------------------------
-| index entry 0                                                              |
-| ...                                                                        |
-| index entry N-1                                                            |
-------------------------------------------------------------------------------
-| footer (40 bytes)                                                          |
+| footer (24 bytes)                                                          |
 ==============================================================================
 ```
 
-Entries are sorted by key, with one entry per key. A reader rejects a file whose sections are
-not contiguous.
+Entries are sorted by key, with one entry per key.
+
+The file holds no index of its blocks. Its writer reports one, and the manifest that lists the
+run records it ([manifest-format.md](manifest-format.md)). The blocks sit back to back from
+offset 0, so a reader with the file alone finds each one where the block before it ends: a
+block's record count gives how many records follow its prefix and how long its offset table is.
 
 ## Data block
 
@@ -62,45 +62,29 @@ Varints are unsigned LEB128, at most 5 bytes.
 | value                                               (puts only)            |
 ```
 
-## Index entry
-
-One entry per data block, in block order.
-
-```layout
-| u32 first key length                                                       |
-| first key       the smallest key of the block                              |
-| u32 last key length                                                        |
-| last key        the largest key of the block                               |
-| u32 block offset                                    from the start of file |
-| u32 block length                                                           |
-```
-
-## Footer (40 bytes)
+## Footer (24 bytes)
 
 ```
 <----------------------------------- 4 bytes ----------------------------------->
 | entry count                                                                   |
-| block count                                                                   |
-| bloom offset                                                                  |
-| bloom length                                                                  |
+| data length                                                                   |
 | bloom hash count                                                              |
-| index offset                                                                  |
-| index length                                                                  |
 | crc32                                                                         |
 | version                                                                       |
 | magic                                                                         |
 ```
 
-`bloom offset` is also the length of the data section.
+`data length` is the size of the data blocks together. The bloom filter runs from that offset to
+the footer.
 
 `crc32` is the IEEE CRC-32 of every byte before the field.
 
-`version` must be 2. Any other version is rejected.
+`version` must be 3. Any other version is rejected.
 
 `magic` must be `OLST` (0x4f4c5354).
 
-A reader also rejects a footer that names more than 32 bloom hashes, or more blocks than the
-index has room for, before either sets a loop count or an allocation.
+A reader also rejects a footer whose `data length` passes the start of the footer, or that names
+more than 32 bloom hashes, before the count sets a loop.
 
 ## Bloom filter
 

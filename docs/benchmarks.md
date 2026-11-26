@@ -210,8 +210,8 @@ Importing `@opfs-lsm/kv` adds **19.3 kB** of JavaScript to your main bundle (gzi
 | | gzip | raw | loaded |
 | --- | ---: | ---: | --- |
 | Main-thread JS | 19.3 kB | 56.4 kB | at import |
-| SharedWorker chunk | 13.5 kB | 39.8 kB | on the first `openDb` |
-| wasm engine | 6.5 kB | 16.3 kB | on the first `openDb`, one file for the tab and the SharedWorker |
-| **Total after open** | **39.4 kB** | **112.6 kB** | |
+| SharedWorker chunk | 13.4 kB | 39.4 kB | on the first `openDb` |
+| wasm engine | 6.6 kB | 16.2 kB | on the first `openDb`, one file for the tab and the SharedWorker |
+| **Total after open** | **39.3 kB** | **112.0 kB** | |
 
-For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.1 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.3 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).
+For comparison, Dexie is 31.3 kB gzip and `y-indexeddb` adds 1.1 kB on top of Yjs. A page that imports kv but never opens a database never downloads the other 20.0 kB. Each file is compressed on its own (gzip -9), as a server sends it, and CI fails if the main-thread JS passes 19.3 kB gzip or the after-open brotli total passes its budget. To measure it yourself, run `pnpm bench:size`; see [bench/README.md](../bench/README.md#bundle-size).

@@ -106,7 +106,7 @@ const SOURCE_BYTES = 16 * KiB;
 const MIN_CHUNK_BYTES = 64 * KiB;
 const MAX_CHUNK_BYTES = 256 * KiB;
 const CHUNK_STEP = 32 * KiB;
-/** Usually a run's whole footer, bloom and index, so one read opens it. */
+/** Usually a run's whole footer and bloom, so one read opens it. */
 const TAIL_BYTES = 128 * KiB;
 /**
  * The most sources a step reads. A step reads all of L1 with random keys, so

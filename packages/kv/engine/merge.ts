@@ -3,7 +3,8 @@
  * engine holds a window of each input instead of the whole input
  * (abi.md, "Merge session").
  *
- * The host opens a session with the sizes of the input runs and pumps it.
+ * The host opens a session with the size and the block index of each input
+ * run, as the run's manifest entry records them, and pumps it.
  * Each pump stops between two keys and asks the host for one thing: read
  * some bytes (NEED), take output bytes (WRITE), close the output run
  * (RUN_END), give the event loop a turn (YIELD), or install the result
@@ -15,11 +16,11 @@
  * within a source, the last duplicate wins, across block, read and run
  * boundaries.
  *
- * What it holds, whatever the inputs' size: per source about `chunkBytes` of
- * blocks (more only for a block, or a run's bloom and index, that is larger)
- * and two entries; for the output, one open block, a bloom hash and an index
- * row per key and block of the open run, and up to `chunkBytes` plus one
- * block of bytes not yet written.
+ * What it holds: per source about `chunkBytes` of blocks (more only for a
+ * block, or a run's bloom, that is larger), two entries and the length of
+ * each block of its runs; for the output, one open block, a bloom hash per
+ * key and an index entry per block of the open run, and up to `chunkBytes`
+ * plus one block of bytes not yet written.
  *
  * Every step returns a status: 0 or a stop code to go on, a negative error
  * code to stop.
@@ -37,7 +38,6 @@ import {
   NO_VALUE,
   OUT_OF_ORDER,
   RunEnd,
-  TRAILING_GARBAGE,
   TRUNCATED,
   Writer,
 } from "./sst";
@@ -52,11 +52,14 @@ export const RUN_END: i32 = 3;
 export const YIELD: i32 = 4;
 export const DONE: i32 = 5;
 
-/** Room for what `finish` appends past `chunkBytes`: the last block and the footer. A run's bloom and index can pass it and grow `out`. */
+/** Room for what `finish` appends past `chunkBytes`: the last block and the footer. A run's bloom can pass it and grow `out`. */
 const OUT_SLACK: usize = 2 * BLOCK_TARGET;
 
 /** Bytes of a demand record: u32 source, run, offset and length. */
 const DEMAND: usize = 16;
+
+/** Bytes of what a reader keeps of a run: the u32 size of its file, then by its index how many blocks it has and how long its data is. */
+const RUN: usize = 12;
 
 /** Input block bytes opened since the pump began. The module holds one session. */
 let consumed: usize = 0;
@@ -105,9 +108,9 @@ class Slot {
 }
 
 // What a source is reading of its current run.
-/** The run's tail: its footer and as much of the bloom and index as fit. */
+/** The run's tail: its footer and as much of the bloom as fits. */
 const TAIL: u8 = 0;
-/** The rest of the run's bloom and index. The tail already sits at the end of `chunk[..size - layout.dataLen]`. */
+/** The rest of the run's bloom. The tail already sits at the end of `chunk[..size - layout.dataLen]`. */
 const META_REST: u8 = 1;
 /** Data blocks, in file order. */
 const BLOCKS: u8 = 2;
@@ -130,8 +133,10 @@ const GOT_WAIT: i32 = 2;
 @final @unmanaged
 class Reader {
   index: u32 = 0;
-  /** The size of each run. */
+  /** A `RUN` record per run. */
   runs: Bytes = new Bytes();
+  /** The u32 length of each data block of each run, in file order. Blocks are contiguous from offset 0, so their offsets are running sums. */
+  lengths: Bytes = new Bytes();
   run: usize = 0;
   read: u8 = TAIL;
   ask: u8 = IDLE;
@@ -142,12 +147,13 @@ class Reader {
   tailBytes: usize = 0;
   layout: Layout = new Layout();
 
-  // The current run, from its footer and index.
+  // The current run, from its footer and its index.
   dataLen: usize = 0;
   entryCount: usize = 0;
   entriesSeen: usize = 0;
-  /** Length of each data block, in file order. Blocks are contiguous from offset 0, so their offsets are running sums. */
-  blocks: Bytes = new Bytes();
+  /** Its blocks: `blockCount` of `lengths`, from `blockAt`. */
+  blockAt: usize = 0;
+  blockCount: usize = 0;
   /** Blocks asked for, arrived in `chunk`, and opened, in that order. */
   requested: usize = 0;
   arrived: usize = 0;
@@ -173,7 +179,71 @@ class Reader {
   storedCrc: u32 = 0;
 
   @inline size(): usize {
-    return this.runs.u32(this.run);
+    return load<u32>(this.runs.ptr + this.run * RUN);
+  }
+
+  /** The length of block `n` of the current run. */
+  @inline blockLen(n: usize): usize {
+    return this.lengths.u32(this.blockAt + n);
+  }
+
+  /**
+   * Take the `runs` runs of the source list at `list` (abi.md, "Wire
+   * formats"): each run's size, and its block lengths from its index. Returns
+   * how many bytes of the list they are, or an error status.
+   */
+  take(list: usize, runs: usize): i64 {
+    if (!this.runs.tryCapacity(runs * RUN)) return OUT_OF_MEMORY;
+    let o: usize = 0;
+    for (let r: usize = 0; r < runs; r++) {
+      const size = load<u32>(list + o);
+      const len = <usize>load<u32>(list + o, 4);
+      const from = this.lengths.count;
+      const dataLen = this.indexBlocks(list + o + 8, len, <usize>size - FOOTER_BYTES);
+      if (dataLen < 0) return dataLen;
+      const run = this.runs.ptr + this.runs.len;
+      store<u32>(run, size);
+      store<u32>(run, <u32>(this.lengths.count - from), 4);
+      store<u32>(run, <u32>dataLen, 8);
+      this.runs.len += RUN;
+      o += 8 + len;
+    }
+    return o;
+  }
+
+  /**
+   * Append to `lengths` the length of each block the `len` bytes of a run's
+   * index name (abi.md, "Wire formats"):
+   *   u32 blocks | per block: varint separator length, varint block length
+   *   | separators | u32 crc32
+   * Blocks sit back to back from offset 0 and end at or before `limit`.
+   * Returns where they end, or an error status. The separators are not read.
+   */
+  private indexBlocks(index: usize, len: usize, limit: usize): i64 {
+    if (len < 8) return TRUNCATED;
+    const end = len - 4;
+    if (crc32(index, end) != load<u32>(index + end)) return CRC_MISMATCH;
+    const count = <usize>load<u32>(index);
+    // A block takes two bytes at least, so a count the bytes cannot hold sizes nothing.
+    if (count > (end - 4) >> 1) return TRUNCATED;
+    const lengths = this.lengths;
+    if (!lengths.tryReserve(count << 2)) return OUT_OF_MEMORY;
+    const walk = this.walk;
+    walk.at = 4;
+    let seps: u64 = 0;
+    let next: usize = 0;
+    for (let i: usize = 0; i < count; i++) {
+      const sep = walk.varint(index, end);
+      const length = walk.varint(index, end);
+      if (sep < 0 || length < 0 || <usize>length > limit - next) return TRUNCATED;
+      seps += sep;
+      next += <usize>length;
+      store<u32>(lengths.ptr + lengths.len, <u32>length);
+      lengths.len += 4;
+    }
+    // Not a ternary: its arms would meet as `usize`, and the status would read as a length.
+    if (seps != <u64>(end - walk.at)) return TRUNCATED;
+    return next;
   }
 
   /** Append this reader's outstanding ask to `demands` as a demand record. */
@@ -207,7 +277,7 @@ class Reader {
         this.entriesSeen += 1;
         return GOT_ENTRY;
       }
-      if (this.opened == this.blocks.count) {
+      if (this.opened == this.blockCount) {
         status = this.endRun();
       } else if (this.opened < this.arrived) {
         status = this.openBlock();
@@ -240,7 +310,7 @@ class Reader {
   }
 
   private openBlock(): i32 {
-    const len = <usize>this.blocks.u32(this.opened);
+    const len = this.blockLen(this.opened);
     const status = this.walk.start(this.chunk.ptr + this.chunkPos, len);
     if (status < 0) return status;
     this.isOpen = true;
@@ -272,8 +342,8 @@ class Reader {
     const status = layout.read(this.chunk.ptr + at + len - FOOTER_BYTES, size);
     if (status < 0) return status;
     if (layout.dataLen < tailAt) {
-      // The bloom or index starts before the tail: read the rest in front of
-      // it, so the meta is one slice.
+      // The bloom starts before the tail: read the rest in front of it, so the
+      // meta is one slice.
       const metaLen = size - layout.dataLen;
       if (metaLen > this.chunk.len && !this.chunk.tryResize(metaLen)) return OUT_OF_MEMORY;
       memory.copy(this.chunk.ptr + metaLen - len, this.chunk.ptr + at, len);
@@ -291,13 +361,13 @@ class Reader {
     this.chunkLen = layout.dataLen;
     const taken = this.takeDataBytes(0, layout.dataLen);
     if (taken < 0) return taken;
-    this.requested = this.blocks.count;
-    this.arrived = this.blocks.count;
+    this.requested = this.blockCount;
+    this.arrived = this.blockCount;
     this.nextOffset = layout.dataLen;
     return 0;
   }
 
-  /** Check and index the run from its meta: `chunk[..end]` ends with the run's last bytes and holds all of its bloom, index and footer. */
+  /** Check the run's meta against its index: `chunk[..end]` ends with the run's last bytes and holds all of its bloom and footer. */
   private parseMeta(end: usize): i32 {
     const layout = this.layout;
     const base = this.size() - end;
@@ -306,9 +376,10 @@ class Reader {
     this.crcMeta = crc32(meta, crcLen);
     this.metaCrcLen = crcLen;
     this.storedCrc = load<u32>(meta + crcLen);
-    const index = meta + layout.indexStart - layout.dataLen;
-    const status = indexBlocks(index, layout.indexEnd - layout.indexStart, layout.blockCount, layout.dataLen, this.blocks);
-    if (status < 0) return status;
+    // The index's blocks must end where the footer says the data does.
+    const run = this.runs.ptr + this.run * RUN;
+    if (<usize>load<u32>(run, 8) != layout.dataLen) return TRUNCATED;
+    this.blockCount = load<u32>(run, 4);
 
     this.dataLen = layout.dataLen;
     this.entryCount = layout.entryCount;
@@ -336,9 +407,9 @@ class Reader {
     const room = this.chunkBytes > this.chunkLen ? this.chunkBytes - this.chunkLen : 0;
     let len: usize = 0;
     let n = this.requested;
-    const count = this.blocks.count;
+    const count = this.blockCount;
     while (n < count) {
-      const block = <usize>this.blocks.u32(n);
+      const block = this.blockLen(n);
       if (n > this.requested && len + block > room) break;
       len += block;
       n += 1;
@@ -359,7 +430,7 @@ class Reader {
    */
   readAhead(): i32 {
     const low = this.chunkLen - this.chunkPos < this.chunkBytes / 2;
-    if (this.read == BLOCKS && this.ask == IDLE && this.requested < this.blocks.count && low) {
+    if (this.read == BLOCKS && this.ask == IDLE && this.requested < this.blockCount && low) {
       const status = this.askData();
       return status < 0 ? status : 1;
     }
@@ -385,51 +456,20 @@ class Reader {
 
   private endRun(): i32 {
     if (this.entriesSeen != this.entryCount) return COUNT_MISMATCH;
+    this.blockAt += this.blockCount;
     this.run += 1;
-    this.read = this.run < this.runs.count ? TAIL : READ_DONE;
+    this.read = this.run * RUN < this.runs.len ? TAIL : READ_DONE;
     return 0;
   }
 
   free(): void {
     this.runs.free();
-    this.blocks.free();
+    this.lengths.free();
     this.chunk.free();
     heap.free(changetype<usize>(this.layout));
     heap.free(changetype<usize>(this.walk));
     heap.free(changetype<usize>(this));
   }
-}
-
-/**
- * The length of each block, from the index rows
- *   u32 len | first key | u32 len | last key | u32 offset | u32 length
- * Blocks must tile the data region from 0, which a run the writer wrote
- * always does, so a block's offset is the sum before it.
- */
-function indexBlocks(index: usize, end: usize, count: usize, dataLen: usize, blocks: Bytes): i32 {
-  blocks.clear();
-  // A row is at least 16 bytes, so this bounds the rows that can parse.
-  if (!blocks.tryReserve(min(count, end / 16) << 2)) return OUT_OF_MEMORY;
-  let o: usize = 0;
-  let next: usize = 0;
-  for (let i: usize = 0; i < count; i++) {
-    for (let k = 0; k < 2; k++) {
-      if (end - o < 4) return TRUNCATED;
-      const len = <usize>load<u32>(index + o);
-      o += 4;
-      if (len > end - o) return TRUNCATED;
-      o += len;
-    }
-    if (end - o < 8) return TRUNCATED;
-    const offset = <usize>load<u32>(index + o);
-    const length = <usize>load<u32>(index + o, 4);
-    o += 8;
-    if (offset != next || length > dataLen - offset) return TRUNCATED;
-    next += length;
-    blocks.pushU32(<u32>length);
-  }
-  if (o != end) return TRAILING_GARBAGE;
-  return next == dataLen ? 0 : TRUNCATED;
 }
 
 // Where a source stands in finding the last duplicate of its next key.
@@ -542,44 +582,48 @@ export class MergeSession {
 
   /**
    * Reserve the working set of a session over the sources of the source
-   * list at `list`, checked by the caller, that drops every winner a mark of
-   * the `marksLen` bytes at `marks` covers. False when it cannot be
-   * reserved, so a host that cannot afford it learns so before it reads
-   * anything.
+   * list at `list`, whose lengths the caller checked, that drops every
+   * winner a mark of the `marksLen` bytes at `marks` covers. Returns 0, the
+   * status of a run's index that does not check out, or `OUT_OF_MEMORY` when
+   * the set cannot be reserved, so a host that cannot afford it learns so
+   * before it reads anything.
    */
-  reserve(list: usize, marks: usize, marksLen: usize, chunkBytes: usize, tailBytes: usize): bool {
+  reserve(list: usize, marks: usize, marksLen: usize, chunkBytes: usize, tailBytes: usize): i32 {
     const n = <usize>load<u32>(list);
-    if (!this.sources.tryCapacity(n << 2)) return false;
+    if (!this.sources.tryCapacity(n << 2)) return OUT_OF_MEMORY;
     // Objects before buffers. Only a buffer can report OUT_OF_MEMORY, and a chunk reserved first could take the room the next source's objects need.
     for (let i: usize = 0; i < n; i++) this.sources.pushU32(<u32>changetype<usize>(new Source()));
-    let ok = true;
     let o: usize = 4;
-    for (let i: usize = 0; i < n && ok; i++) {
+    for (let i: usize = 0; i < n; i++) {
       const runs = <usize>load<u32>(list + o);
-      o += 4;
       const source = this.source(<u32>i);
       const reader = source.reader;
       reader.index = <u32>i;
       reader.chunkBytes = max<usize>(chunkBytes, 1);
       reader.tailBytes = max(tailBytes, FOOTER_BYTES);
       reader.read = runs ? TAIL : READ_DONE;
-      ok =
-        reader.runs.tryCapacity(runs << 2) &&
+      const ok =
         reader.chunk.tryResize(reader.chunkBytes) &&
         source.cur.key.tryCapacity(64) &&
         source.cur.value.tryCapacity(256) &&
         source.look.key.tryCapacity(64) &&
         source.look.value.tryCapacity(256);
-      if (ok) reader.runs.append(list + o, runs << 2);
-      o += runs << 2;
+      if (!ok) return OUT_OF_MEMORY;
+      const taken = reader.take(list + o + 4, runs);
+      if (taken < 0) return <i32>taken;
+      o += 4 + <usize>taken;
     }
-    ok = ok && this.heap.tryCapacity(n << 2) && this.pending.tryCapacity(n << 2) && this.demands.tryCapacity(n * DEMAND);
     const slack = chunkBytes + OUT_SLACK;
-    ok = ok && this.out.tryCapacity(slack < chunkBytes ? usize.MAX_VALUE : slack) && this.marks.tryCapacity(marksLen);
-    if (!ok) return false;
+    const ok =
+      this.heap.tryCapacity(n << 2) &&
+      this.pending.tryCapacity(n << 2) &&
+      this.demands.tryCapacity(n * DEMAND) &&
+      this.out.tryCapacity(slack < chunkBytes ? usize.MAX_VALUE : slack) &&
+      this.marks.tryCapacity(marksLen);
+    if (!ok) return OUT_OF_MEMORY;
     for (let i: u32 = 0; i < <u32>n; i++) this.pending.pushU32(i);
     this.marks.append(marks, marksLen);
-    return true;
+    return 0;
   }
 
   /**

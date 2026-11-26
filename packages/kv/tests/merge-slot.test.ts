@@ -3,6 +3,7 @@ import { inMergeSlot } from "../src/host/merge-slot.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { ensureEngine, openMerge, type MergeSpec } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
+import { NO_BLOCKS } from "./runs.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -46,7 +47,7 @@ describe("inMergeSlot", () => {
 
 describe("the wasm engine's session", () => {
   const spec: MergeSpec = {
-    sources: [[1000]],
+    sources: [[{ size: 1000, index: NO_BLOCKS }]],
     dropTombstones: false,
     marks: NO_MARKS,
     targetBytes: 4 * 1024 * 1024,

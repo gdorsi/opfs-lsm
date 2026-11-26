@@ -12,7 +12,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { encodeRunIn, flatEngine, openMergeIn, type FlatEngine } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
-import type { SstEntry } from "../src/store/sst.js";
+import type { EncodedRun, SstEntry } from "../src/store/sst.js";
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
@@ -70,23 +70,22 @@ export function memoryProbes(wasm: BufferSource) {
   async function merge({ sources, flushMiB, chunk, tail }: Shape, flushEvery?: number): Promise<{ open: number; peak: number }> {
     const { engine, bytes } = await fresh();
     const maker = await fresh();
-    const files: Uint8Array[][] = [];
+    const files: EncodedRun[][] = [];
     let seq = 1;
     for (let i = 0; i < sources - 1; i++) {
       const entries = sortedEntries(flushMiB * MiB, seq);
       seq += entries.length;
-      files.push([encodeRunIn(maker.engine, entries).body.slice()]);
+      files.push([encodeRunIn(maker.engine, entries)]);
     }
     const perRun = Math.floor((4 * MiB) / 133);
     const ids = [...new Set(Array.from({ length: 10 * perRun }, () => random() % POOL))].sort((a, b) => a - b);
-    const l1: Uint8Array[] = [];
+    const l1: EncodedRun[] = [];
     for (let at = 0; at < ids.length; at += perRun) {
-      const slice = ids.slice(at, at + perRun).map((id, i) => entry(id, 1 + i));
-      l1.push(encodeRunIn(maker.engine, slice).body.slice());
+      l1.push(encodeRunIn(maker.engine, ids.slice(at, at + perRun).map((id, i) => entry(id, 1 + i))));
     }
     files.push(l1);
     const core = openMergeIn(engine, {
-      sources: files.map((runs) => runs.map((run) => run.byteLength)),
+      sources: files.map((runs) => runs.map((run) => ({ size: run.body.byteLength, index: run.end.index }))),
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 4 * MiB,
@@ -107,7 +106,7 @@ export function memoryProbes(wasm: BufferSource) {
         encodeRunIn(engine, flushEntries);
         peak = Math.max(peak, bytes());
       }
-      for (const d of stop.demands) core.feed(d.source, files[d.source]![d.run]!.slice(d.offset, d.offset + d.length));
+      for (const d of stop.demands) core.feed(d.source, files[d.source]![d.run]!.body.slice(d.offset, d.offset + d.length));
       peak = Math.max(peak, bytes());
     }
     core.close();

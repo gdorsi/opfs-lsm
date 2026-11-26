@@ -8,14 +8,13 @@
  */
 import { readFile } from "node:fs/promises";
 import { engineMemory, ensureEngine, readEngineWith } from "../../src/store/engine.js";
-import { decodeIndex } from "../../src/store/sst.js";
+import { decodeIndex, type BlockIndex } from "../../src/store/sst.js";
 import {
   checkDecodeSst,
   checkManifest,
   checkRunRead,
   checkWalRow,
   fixManifestCrc,
-  footerOf,
   repairSst,
   type Repair,
   watchWasmMemory,
@@ -29,22 +28,13 @@ const REPAIRS: readonly Repair[] = ["none", "crc", "trailer", "trailer"];
 const PATTERN = new TextEncoder().encode(" hot");
 const FIXED_KEYS = ["", "todo/000005", "t/a", "zzzz"].map((k) => new TextEncoder().encode(k));
 
-/** The first and last keys the index names, read without trusting it. */
-function indexKeys(buf: Uint8Array): Uint8Array[] {
-  const f = footerOf(buf);
-  if (!f) return [];
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+/** The separators of the first blocks the index names: keys at the edges of those blocks. */
+function indexKeys({ sepBytes, sepEnd }: BlockIndex): Uint8Array[] {
   const keys: Uint8Array[] = [];
-  let o = f.indexStart;
-  for (let i = 0; i < Math.min(f.blockCount, 8); i++) {
-    for (let k = 0; k < 2; k++) {
-      if (o + 4 > buf.byteLength) return keys;
-      const len = view.getUint32(o, true);
-      if (o + 4 + len > buf.byteLength || len > 256) return keys;
-      keys.push(buf.slice(o + 4, o + 4 + len));
-      o += 4 + len;
-    }
-    o += 8;
+  for (let b = 0; b < Math.min(sepEnd.length, 8); b++) {
+    const from = b === 0 ? 0 : sepEnd[b - 1]!;
+    if (sepEnd[b]! - from > 256) break;
+    keys.push(sepBytes.slice(from, sepEnd[b]!));
   }
   return keys;
 }
@@ -73,10 +63,10 @@ export async function sstRead(data: Uint8Array): Promise<void> {
   const run = (await checkManifest(manifest, false))?.runs[0];
   const buf = repaired(data.slice(fileAt), data[0]!);
   if (!run) return;
-  const { blockStart, sepEnd } = decodeIndex(run.index, run.bytes);
-  if (blockStart[sepEnd.length]! > buf.byteLength) return;
+  const index = decodeIndex(run.index, run.bytes);
+  if (index.blockStart[index.sepEnd.length]! > buf.byteLength) return;
   await (engine ??= ensureEngine());
-  const keys = [...indexKeys(buf), ...(run.range ? [run.range.smallest, run.range.largest] : []), ...FIXED_KEYS];
+  const keys = [...indexKeys(index), ...(run.range ? [run.range.smallest, run.range.largest] : []), ...FIXED_KEYS];
   await checkRunRead(buf, { keys, run: { ...run, bytes: buf.byteLength }, pattern: PATTERN });
 }
 

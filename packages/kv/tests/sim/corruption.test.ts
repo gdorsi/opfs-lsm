@@ -283,24 +283,16 @@ describe("a corrupt run: tabs check no CRC, compaction does", () => {
     expect(refused(r.compact)).toBe(true);
   });
 
-  it("L0, the index offset field inflated", async () => {
-    const r = await run("L0 run: footer index offset inflated", standard, async (f) =>
+  it("L0, the data length field inflated", async () => {
+    const r = await run("L0 run: footer data length inflated", standard, async (f) =>
       corruptFile(f.fs, await l0(f), (b) => {
-        new DataView(b.buffer).setUint32(b.byteLength - SST_FOOTER_BYTES + 20, 0x7fffffff, true);
+        new DataView(b.buffer).setUint32(b.byteLength - SST_FOOTER_BYTES + 4, 0x7fffffff, true);
         return b;
       }),
     );
     expect(crashes(r)).toEqual([]);
     expect(wrongAnswers(r)).toEqual([]);
-  });
-
-  // KT2 (fuzz/findings.test.ts): one flipped bit in the high byte of the
-  // footer's block count made a tab allocate 2^24 x 8 bytes before it read
-  // the index. A tab now reads no block count from a run.
-  it("L0, the footer's block count high byte flipped", async () => {
-    const r = await run("L0 run: block count bit 24 flipped", standard, async (f) => corruptFile(f.fs, await l0(f), flipAt((n) => n - SST_FOOTER_BYTES + 7, 0x01)));
-    expect(crashes(r)).toEqual([]);
-    expect(wrongAnswers(r)).toEqual([]);
+    expect(refused(r.compact)).toBe(true);
   });
 
   it("L2, a flipped data byte", async () => {
@@ -331,6 +323,22 @@ describe("a corrupt manifest: CRC-checked everywhere", () => {
     const r = await run("manifest: recorded one, byte flipped", standard, async (f) => corruptFile(f.fs, await recorded(f), flipAt(() => 50)));
     expect(crashes(r)).toEqual([]);
     expect(r.open).toBe("corrupt");
+  });
+
+  // KT2 (fuzz/findings.test.ts): one flipped bit in the high byte of a
+  // block count made a tab allocate 2^24 x 8 bytes before it read the
+  // index. The count is in the run's index, under the index's CRC.
+  it("the recorded manifest, a flipped bit in the last run's block index: open succeeds, a read of that run fails as corrupt, and compaction refuses it", async () => {
+    const r = await run("manifest: recorded one, a run's block index flipped", standard, async (f) => {
+      const path = await recorded(f);
+      const { runs } = decodeGeneration((await f.fs.read(path, 0, Number.POSITIVE_INFINITY))!);
+      // The file ends with the last run's index, which starts with its block count.
+      await corruptFile(f.fs, path, flipAt((n) => n - runs.at(-1)!.index.byteLength + 3, 0x01));
+    });
+    expect(crashes(r)).toEqual([]);
+    expect(wrongAnswers(r)).toEqual([]);
+    expect(r).toMatchObject({ open: "ok", range: "corrupt" });
+    expect(refused(r.compact)).toBe(true);
   });
 
   it("the recorded manifest truncated: open fails as corrupt", async () => {

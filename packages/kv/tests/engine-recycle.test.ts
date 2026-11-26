@@ -9,6 +9,7 @@ import {
   type MergeSpec,
 } from "../src/store/engine.js";
 import { NO_MARKS } from "../src/store/marks.js";
+import { NO_BLOCKS } from "./runs.js";
 import {
   __resetMemoryFsForTests,
   openHarnessDb,
@@ -54,7 +55,7 @@ describe("recycleEngine", () => {
 
   describe("with a merge session", () => {
     const spec: MergeSpec = {
-      sources: [[1000]],
+      sources: [[{ size: 1000, index: NO_BLOCKS }]],
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 4 * MiB,
@@ -79,7 +80,7 @@ describe("recycleEngine", () => {
 
     it("reports the most a session was asked to reserve: a window per source and one for the output", async () => {
       await ensureEngine();
-      const wide: MergeSpec = { ...spec, sources: Array.from({ length: 9 }, () => [1000]), chunkBytes: MiB };
+      const wide: MergeSpec = { ...spec, sources: Array.from({ length: 9 }, () => [{ size: 1000, index: NO_BLOCKS }]), chunkBytes: MiB };
 
       (await openMerge(wide)).close();
       (await openMerge(spec)).close();

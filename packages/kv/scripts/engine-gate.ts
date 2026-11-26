@@ -19,6 +19,11 @@
  *   Engine-Regression: <memory|work|size> <workload>, <reason>
  * Changed output then rests on the differential tests against the
  * TypeScript oracles (fuzz/differential.test.ts).
+ *
+ * Both builds are driven by this checkout's host. After a change to the ABI
+ * or to the run format, base cannot merge what that host gives it: the merge
+ * rows are then left out of every axis, which also takes `Engine-Output:
+ * changed`.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -73,9 +78,9 @@ function workloads(): Record<string, (ex: EngineExports) => void> {
     seq: i + 1,
   }));
   const shipped = flatEngine({ exports: openShipped() });
-  const run = (from: number) => encodeRunIn(shipped, puts.slice(from, from + 2000).map((e, i) => ({ ...e, seq: from + i + 1 }))).body.slice();
+  const run = (from: number) => encodeRunIn(shipped, puts.slice(from, from + 2000).map((e, i) => ({ ...e, seq: from + i + 1 })));
   const sources = [run(0), run(1000), run(2000), run(3000)];
-  const blocks = blocksOf(sources[0]!);
+  const blocks = blocksOf(sources[0]!.body);
   const patterns = packPatterns([new Uint8Array([r.int(256)])]);
   return {
     encode: (ex) => void encodeRunIn(flatEngine({ exports: ex }), puts),
@@ -85,7 +90,7 @@ function workloads(): Record<string, (ex: EngineExports) => void> {
     },
     merge: (ex) => {
       const core = openMergeIn(flatEngine({ exports: ex }), {
-        sources: sources.map((s) => [s.byteLength]),
+        sources: sources.map((s) => [{ size: s.body.byteLength, index: s.end.index }]),
         dropTombstones: false,
         marks: NO_MARKS,
         targetBytes: 4 * MiB,
@@ -94,7 +99,7 @@ function workloads(): Record<string, (ex: EngineExports) => void> {
         yieldBytes: MiB,
       });
       for (let stop = core.pump(); stop.kind !== "done"; stop = core.pump()) {
-        if (stop.kind === "need") for (const d of stop.demands) core.feed(d.source, sources[d.source]!.subarray(d.offset, d.offset + d.length));
+        if (stop.kind === "need") for (const d of stop.demands) core.feed(d.source, sources[d.source]!.body.subarray(d.offset, d.offset + d.length));
       }
       core.close();
     },
@@ -103,7 +108,17 @@ function workloads(): Record<string, (ex: EngineExports) => void> {
 
 type Line = { readonly axis: string; readonly text: string; readonly fails: readonly string[] };
 
-function output(base: EngineExports, head: EngineExports): Line {
+/** Why base cannot run this checkout's merge workload, or undefined when it can. */
+function mergeBreak(base: Uint8Array, run: ReturnType<typeof workloads>): string | undefined {
+  try {
+    run.merge!(openShipped(base));
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+function output(base: EngineExports, head: EngineExports, merges: boolean): Line {
   const r = xorshift(1);
   const fails: string[] = [];
   const family = <C>(name: string, cases: number, next: () => C, drive: (ex: EngineExports, c: C) => Transcript) => {
@@ -121,24 +136,24 @@ function output(base: EngineExports, head: EngineExports): Line {
   const text = [
     family("encode", 300, () => encodeCase(r), driveEncode),
     family("scan", 300, () => scanCase(r, base), driveScan),
-    family("merge", 100, () => mergeCase(r, base), driveMerge),
+    ...(merges ? [family("merge", 100, () => mergeCase(r, base), driveMerge)] : []),
   ].join(" · ");
   return { axis: "output", text, fails };
 }
 
-async function memory(base: BufferSource, head: BufferSource, w: Waivers): Promise<Line> {
+async function memory(base: BufferSource, head: BufferSource, w: Waivers, merges: boolean): Promise<Line> {
   const shape = { sources: 49, flushMiB: 1.75, chunk: 128 * KiB, tail: 128 * KiB };
   const measure = async (wasm: BufferSource) => {
     const probes = memoryProbes(wasm);
     return {
       flush: await probes.flush(1.75),
-      merge: (await probes.merge(shape)).peak,
-      overlap: (await probes.merge(shape, 7)).peak,
+      merge: merges ? (await probes.merge(shape)).peak : 0,
+      overlap: merges ? (await probes.merge(shape, 7)).peak : 0,
     };
   };
   const [b, h] = [await measure(base), await measure(head)];
   const mib = (n: number) => (n / MiB).toFixed(2);
-  const names = ["flush", "merge", "overlap"] as const;
+  const names = merges ? (["flush", "merge", "overlap"] as const) : (["flush"] as const);
   return {
     axis: "memory",
     text: names.map((k) => `${k} ${mib(b[k])} → ${mib(h[k])} MiB`).join(" · "),
@@ -229,15 +244,22 @@ const base = new Uint8Array(git("show", `${rev}:packages/kv/wasm/engine.wasm`));
 const head = new Uint8Array(readFileSync(SHIPPED));
 if (!process.env.KV_CHECKED_DIR) await ensureChecked();
 console.log(`engine gate: head ${git("rev-parse", "--short", "HEAD").toString().trim()} against base ${rev.slice(0, 8)} (${checkedFile("engine.wasm")})`);
-const run = workloads();
+const all = workloads();
+const broken = mergeBreak(base, all);
+/** The workloads base and head are compared on. */
+const run = Object.fromEntries(Object.entries(all).filter(([name]) => name !== "merge" || broken === undefined));
 const lines: Line[] = [];
 const report = (line: Line) => {
   lines.push(line);
   const waived = line.axis === "output" && w.output && line.fails.length ? " (waived: Engine-Output: changed)" : "";
   console.log(`  ${line.axis.padEnd(6)}  ${line.text}${waived}`);
 };
-report(output(openShipped(base), openShipped(head)));
-report(await memory(base, head, w));
+if (broken !== undefined) {
+  const fails = w.output ? [] : [`merge: base cannot run this checkout's merge (${broken})`];
+  report({ axis: "merge", text: `not compared: base cannot run this checkout's merge (${broken})`, fails });
+}
+report(output(openShipped(base), openShipped(head), broken === undefined));
+report(await memory(base, head, w, broken === undefined));
 report(work(await baseTwin(rev), run, w));
 report(speed(openShipped(base), openShipped(head), run));
 report(size(base, head, w));

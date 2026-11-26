@@ -10,9 +10,9 @@ export type Mutation =
   | { readonly kind: "flip"; readonly at: number; readonly bit: number }
   | { readonly kind: "truncate"; readonly at: number }
   | { readonly kind: "extend"; readonly bytes: Uint8Array }
-  /** Overwrite a u32 with a large value: a length or count field inflated. `field` 0-6 aims at that footer field. */
+  /** Overwrite a u32 with a large value: a length or count field inflated. `field` 0-2 aims at that footer field. */
   | { readonly kind: "inflate"; readonly at: number; readonly field: number; readonly value: number }
-  /** Add a small delta to a u32: a count or offset off by a little. `field` 0-6 aims at that footer field. */
+  /** Add a small delta to a u32: a count or offset off by a little. `field` 0-2 aims at that footer field. */
   | { readonly kind: "nudge"; readonly at: number; readonly field: number; readonly delta: number }
   /** Overwrite five bytes with a varint near 2^32. */
   | { readonly kind: "varint"; readonly at: number }
@@ -23,8 +23,8 @@ export type Mutation =
 
 /** Unbiased: fast-check otherwise favours 0 and 1, the ends of the input. */
 const frac = fc.noBias(fc.double({ min: 0, max: 1, maxExcluded: true, noNaN: true }));
-/** A footer field (0-6), or -1 for anywhere in the input. */
-const field = fc.oneof(fc.constant(-1), fc.integer({ min: 0, max: 6 }));
+/** A footer field (0-2), or -1 for anywhere in the input. */
+const field = fc.oneof(fc.constant(-1), fc.integer({ min: 0, max: 2 }));
 
 const mutationArb: fc.Arbitrary<Mutation> = fc.oneof(
   fc.record({ kind: fc.constant("flip" as const), at: frac, bit: fc.integer({ min: 0, max: 7 }) }),
