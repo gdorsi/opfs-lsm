@@ -15,7 +15,7 @@ export type DocChange<T extends JsonDoc> = {
 
 export type CollectionChange<T extends JsonDoc> =
   | { readonly kind: "append"; readonly seq: number; readonly changes: readonly DocChange<T>[] }
-  /** What the listener holds may be stale: read again. Sent for kv's `gap`, and when the collection was cleared or dropped. */
+  /** What the listener holds may be stale: read again. Sent for kv's `gap`, when the collection was cleared or dropped, and for any range delete over its documents. */
   | { readonly kind: "gap" }
   /** The last event. `reason` is kv's: "close" for the kv handle's `close()`, "destroyed" when its database was removed. */
   | { readonly kind: "closed"; readonly reason: "close" | "destroyed" };

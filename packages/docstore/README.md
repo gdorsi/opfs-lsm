@@ -377,7 +377,7 @@ await users.queryIds({
 
 ### Pages
 
-`next` is exclusive, and each page reads one kv snapshot. An `after` made before a `clear` goes on over the documents written since. One made before the index was redefined throws `"cursor"`.
+`next` is exclusive, and each page reads one kv snapshot. An `after` made before a `clear` stays valid and resumes after its position, so documents written since that sort at or before it are skipped. One made before the index was redefined throws `"cursor"`.
 
 ```ts
 const first = await todos.queryIds({ index: "open", limit: 2 });

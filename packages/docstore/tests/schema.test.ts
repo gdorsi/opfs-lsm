@@ -564,7 +564,7 @@ describe("clear", () => {
     expect(await writer.count({ index: "byCreated" })).toBe(6);
   });
 
-  it("leaves every entry once a backfill held before its write commits over the same rows written again after a clear", async () => {
+  it("leaves only the new entries once a backfill held before its write commits after a clear and a rewrite with other values", async () => {
     const name = freshName();
     const first = await at(name, v1);
     const writer = first.store.collection("todos");
@@ -574,11 +574,12 @@ describe("clear", () => {
     const opening = openOn(held.db, v2);
     await held.arrived(3);
     await writer.clear();
-    await writer.putMany(rows(1_500));
+    // Other `done` values than the held chunk read, so an entry it wrote after the clear would be one too many.
+    await writer.putMany(rows(1_500).map((r) => ({ ...r, done: !r.done })));
     held.release();
     const todos = (await opening).collection("todos");
     expect(await keysUnder(kv, await storedPrefix(kv, "todos", "byDone"))).toBe(1_500);
-    expect(await todos.count({ index: "byDone", eq: [true] })).toBe(500);
+    expect(await todos.count({ index: "byDone", eq: [true] })).toBe(1_000);
   });
 
   it("clears documents with 800 multi entries each in one write, and reads see nothing once it resolves", async () => {

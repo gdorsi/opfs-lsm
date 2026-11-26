@@ -248,8 +248,8 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
 
   /**
    * The range delete goes in the batch that writes the catalog, so no write
-   * planned against the catalog before it lands after it, and a backfill of
-   * the collection retries, then finds its index ready.
+   * commits against the old catalog after it, and a backfill of the
+   * collection retries, then finds its index ready.
    */
   clear(name: string): Promise<void> {
     return this.editCatalog((c) => clearCollection(c, name));
