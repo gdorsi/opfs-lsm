@@ -154,9 +154,9 @@ The memtable is therefore always one exact prefix of the log. Every read depends
 The memtable also holds the marks of the range deletes in its records. Applying a range delete
 removes the rows it covers at once, so a row the memtable holds is never covered.
 
-A `view` pins the memtable without copying it. The pin copies the array of chunk references and
-marks every chunk as shared. The live table copies a shared chunk before its next write to it,
-and a range delete rebuilds the table from the rows it keeps.
+A `view` pins the memtable, and a scan the chunks in its bounds, by copying the array of chunk
+references and marking those chunks shared. The live table copies a shared chunk before its next
+write to it, and a range delete replaces each chunk it changes and drops each it empties.
 
 When the installed generation moves forward, the memtable drops the rows that the newly ingested
 seqs wrote, and the marks of the newly ingested records.

@@ -4,6 +4,7 @@ import { compareBytes, containsAll } from "../src/bytes.js";
 import { Miss, untilHit, type LayerCursor, type ScanBounds } from "../src/store/cursor.js";
 import { countOf, latestSstEntry, liveStep, matchingStep, runLevels, type RunLevel } from "../src/store/read.js";
 import { scanStep } from "../src/view.js";
+import { NO_ROWS } from "../src/store/memtable.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef, sstBlockIndex, sstRunEnd } from "./oracle/sst-ref.js";
 import { bytesFile, SstReader } from "../src/store/sst-reader.js";
@@ -244,9 +245,9 @@ describe("a scan under range deletes", () => {
           const want = (await mergeCursors(levels.map((l) => l.cursor(bounds, reverse)), marks, undefined, reverse)).map(show);
           const got = (await mergeCursors(levels.map((l) => l.cursor(bounds, reverse, marks)), marks, undefined, reverse)).map(show);
           expect(got).toEqual(want);
-          const matching = (await entries(matchingStep([], levels, patterns, marks, bounds, reverse))).map(show);
+          const matching = (await entries(matchingStep(NO_ROWS, levels, patterns, marks, bounds, reverse))).map(show);
           expect(matching).toEqual(want.filter((row) => containsAll(enc.encode(row.split("=")[1]!), patterns)));
-          expect(await countOf(matchingStep([], levels, patterns, marks, bounds, reverse))).toBe(matching.length);
+          expect(await countOf(matchingStep(NO_ROWS, levels, patterns, marks, bounds, reverse))).toBe(matching.length);
         }
       }),
       { numRuns: 300 },
@@ -269,7 +270,7 @@ describe("the layers a view reads", () => {
           scanContains: (p: readonly Uint8Array[], b: ScanBounds | undefined, r: boolean, m?: Marks) => (seen.push(m), level.scanContains(p, b, r, m)),
         }),
       );
-      await entries(scanStep({ get: () => undefined, range: () => [] }, spied, marks, range));
+      await entries(scanStep({ get: () => undefined, range: () => NO_ROWS }, spied, marks, range));
       expect(seen.length).toBeGreaterThan(0);
       expect(seen.every((m) => m === marks)).toBe(true);
     }

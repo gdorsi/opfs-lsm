@@ -25,7 +25,7 @@ export const SIZE_ROWS: readonly SizeRow[] = [
     source: `export { openDb } from "@opfs-lsm/kv";`,
     note: "openDb: main-thread JS + SharedWorker + wasm",
     budget: 36_500,
-    importBudget: 19_700,
+    importBudget: 19_800,
   },
   {
     id: "docstore",

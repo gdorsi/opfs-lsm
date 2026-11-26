@@ -1,8 +1,8 @@
 import { compareBytes } from "../bytes.js";
 import { ROW_OVERHEAD, type ResolvedOp } from "../check.js";
 import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
-import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
-import { NO_MARKS, throughAt, type Marks } from "./marks.js";
+import { lowerBoundKeys, type LayerCursor, type ScanBounds } from "./cursor.js";
+import { NO_MARKS, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
@@ -21,8 +21,8 @@ export type WalRecord = {
 /** Reads over rows in key order, live or pinned. */
 export interface MemRows {
   get(key: Uint8Array): MemRow | undefined;
-  /** The rows inside `bounds`, in key order. */
-  range(bounds?: ScanBounds): readonly MemRow[];
+  /** The rows inside `bounds`, as they are now. Later writes don't change what it reads. */
+  range(bounds?: ScanBounds): MemRange;
 }
 
 /** Rows per chunk after a split. A chunk splits when it passes twice this. */
@@ -72,24 +72,66 @@ class Chunks implements MemRows {
     return row && compareBytes(row.key, key) === 0 ? row : undefined;
   }
 
-  range(bounds?: ScanBounds): readonly MemRow[] {
-    const out: MemRow[] = [];
-    let c = bounds?.start ? chunkFor(this.firsts, bounds.start) : 0;
-    let i = bounds?.start ? lowerBoundKeys(this.chunks[c]!, bounds.start) : 0;
+  range(bounds?: ScanBounds): MemRange {
+    const { chunks, firsts } = this;
+    const start = bounds?.start;
     const end = bounds?.endExclusive;
-    for (; c < this.chunks.length; c++, i = 0) {
-      const rows = this.chunks[c]!;
-      const last = rows[rows.length - 1];
-      const stop =
-        end && last && compareBytes(last.key, end) >= 0
-          ? lowerBoundKeys(rows, end)
-          : rows.length;
-      for (; i < stop; i++) out.push(rows[i]!);
-      if (stop < rows.length) return out;
-    }
-    return out;
+    const c = start ? chunkFor(firsts, start) : 0;
+    let d = end ? chunkFor(firsts, end) : chunks.length - 1;
+    const lo = start ? lowerBoundKeys(chunks[c]!, start) : 0;
+    let hi = end ? lowerBoundKeys(chunks[d]!, end) : chunks[d]!.length;
+    // An end at the first key of a chunk reads none of it, so the range does not share it.
+    if (hi === 0 && d > c) hi = chunks[--d]!.length;
+    if (d < c || (d === c && hi <= lo)) return NO_ROWS;
+    this.share(c, d);
+    return new MemRange(chunks.slice(c, d + 1), firsts.slice(c, d + 1), lo, hi);
+  }
+
+  /** Chunks `c..d` are now read by a range: a pin never writes, so nothing to do. */
+  protected share(_c: number, _d: number): void {}
+}
+
+/**
+ * The rows of chunks that are never written again, from `lo` in the first
+ * to `hi` in the last. A scan reads them in place, so `range({ limit })`
+ * copies chunk references, not rows. `get` answers for keys inside the
+ * bounds it was taken with.
+ */
+export class MemRange extends Chunks {
+  constructor(
+    chunks: MemRow[][],
+    firsts: Uint8Array[],
+    private readonly lo: number,
+    private readonly hi: number,
+  ) {
+    super(chunks, firsts);
+  }
+
+  cursor(reverse = false): LayerCursor {
+    const { chunks, lo, hi } = this;
+    const last = chunks.length - 1;
+    const step = reverse ? -1 : 1;
+    let c = reverse ? last : 0;
+    let i = reverse ? hi - 1 : lo;
+    return {
+      peek() {
+        for (;;) {
+          const rows = chunks[c];
+          if (!rows) return undefined;
+          if (i >= (c === 0 ? lo : 0) && i < (c === last ? hi : rows.length)) return rows[i];
+          c += step;
+          i = reverse ? (chunks[c]?.length ?? 0) - 1 : 0;
+        }
+      },
+      next() {
+        i += step;
+      },
+    };
   }
 }
+
+/** A range with no rows. */
+export const NO_ROWS = new MemRange([[]], [new Uint8Array(0)], 0, 0);
 
 /**
  * One tab's in-memory view of the WAL: the records above the installed
@@ -102,12 +144,12 @@ class Chunks implements MemRows {
  * row held is covered by `marks`, and a manifest's marks, whose `through`
  * is below its own `through`, cover none either.
  *
- * A pin shares chunks with the live table. The live table copies a shared
- * chunk before it writes to it, so a pin costs one array of chunk
- * references.
+ * A pin and a range share chunks with the live table. The live table
+ * copies a shared chunk before it writes to it, so either costs one array
+ * of chunk references.
  */
 export class Memtable extends Chunks {
-  /** `owned[i]` is false while a pin may still read chunk `i`. */
+  /** `owned[i]` is false while a pin or a range may still read chunk `i`. */
   private owned: boolean[] = [true];
   private applied = SEQ_ZERO;
   private ingested = SEQ_ZERO;
@@ -138,6 +180,10 @@ export class Memtable extends Chunks {
     return this.held;
   }
 
+  protected override share(c: number, d: number): void {
+    this.owned.fill(false, c, d + 1);
+  }
+
   /** The rows as they are now. Later writes don't change what it reads. */
   pin(): MemRows {
     this.owned.fill(false);
@@ -157,17 +203,45 @@ export class Memtable extends Chunks {
           this.put({ key: op.key, seq: record.seq, kind: "del" });
           break;
         case "deleteRange": {
-          const mark = { ...op, at: record.seq };
-          const marks = [mark];
           // The rows' own seqs are below this record, so op order does not matter.
-          this.rebuild(this.range().filter((row) => row.seq > throughAt(marks, row.key)));
-          if (op.through > 0) this.held = [...this.held, mark];
+          if (op.through > 0) {
+            this.removeCovered(op.start, op.endExclusive, op.through);
+            this.held = [...this.held, { ...op, at: record.seq }];
+          }
           break;
         }
       }
     }
     this.applied = record.seq;
     return "applied";
+  }
+
+  /**
+   * Removes the rows in `[start, end)` at or below `through`. A chunk it
+   * changes becomes a new array, so a pin keeps what it read, and one it
+   * empties goes, except the first, whose first key is the empty key.
+   */
+  private removeCovered(start: Uint8Array, end: Uint8Array | undefined, through: Seq): void {
+    const first = chunkFor(this.firsts, start);
+    for (let c = end ? chunkFor(this.firsts, end) : this.chunks.length - 1; c >= first; c--) {
+      const rows = this.chunks[c]!;
+      const lo = lowerBoundKeys(rows, start);
+      const hi = end ? lowerBoundKeys(rows, end) : rows.length;
+      const keep: MemRow[] = [];
+      for (const [i, row] of rows.entries()) {
+        if (i < lo || i >= hi || row.seq > through) keep.push(row);
+        else this.live -= rowBytes(row);
+      }
+      if (keep.length === rows.length) continue;
+      if (keep.length === 0 && c > 0) {
+        this.chunks.splice(c, 1);
+        this.firsts.splice(c, 1);
+        this.owned.splice(c, 1);
+      } else {
+        this.chunks[c] = keep;
+        this.owned[c] = true;
+      }
+    }
   }
 
   private put(row: MemRow): void {
@@ -205,7 +279,7 @@ export class Memtable extends Chunks {
     const jumped = through > this.applied;
     if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
     this.applied = through > this.applied ? through : this.applied;
-    this.rebuild(jumped ? [] : this.range().filter((row) => row.seq > through));
+    this.rebuild(jumped ? [] : this.chunks.flat().filter((row) => row.seq > through));
     return jumped;
   }
 
