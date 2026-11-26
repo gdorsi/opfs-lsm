@@ -1,4 +1,4 @@
-import type { Unsubscribe } from "../model/live.ts";
+import type { Unsubscribe } from "../model/backend.ts";
 
 /** Awaited between the steps of a count, so the page can paint and take input between them. */
 export type Pause = () => Promise<void>;

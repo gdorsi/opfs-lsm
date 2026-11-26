@@ -62,7 +62,7 @@ describe("the kv backend", () => {
 
   it("loads about one window of issues for a list by modified or by priority, not the fifth that share a priority", async () => {
     for (const sort of ["modified", "priority"] as const) {
-      const query = windowQuery(backend.collection("issues"), parseIssueFilter({ sort, dir: "desc" }), WINDOW);
+      const query = windowQuery(backend.collection("issues"), parseIssueFilter({ sort, dir: "desc" }), { offset: 0, limit: WINDOW });
       await query.preload();
       const held = backend.collection("issues").size;
       await query.cleanup();
@@ -72,7 +72,7 @@ describe("the kv backend", () => {
 
   it("lets go of a window's issues within a second of its last subscriber leaving", async () => {
     const issues = backend.collection("issues");
-    const query = windowQuery(issues, parseIssueFilter({ sort: "created", dir: "asc" }), WINDOW);
+    const query = windowQuery(issues, parseIssueFilter({ sort: "created", dir: "asc" }), { offset: 0, limit: WINDOW });
     await query.preload();
     assert.ok(issues.has("i0"), "the window holds the first issue created");
     for (let waited = 0; issues.has("i0") && waited < 1000; waited += 10) await new Promise((resolve) => setTimeout(resolve, 10));
