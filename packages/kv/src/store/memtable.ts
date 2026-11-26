@@ -2,7 +2,7 @@ import { compareBytes } from "../bytes.js";
 import { ROW_OVERHEAD, type ResolvedOp } from "../check.js";
 import { nextSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import { lowerBoundKeys, type ScanBounds } from "./cursor.js";
-import { NO_MARKS, type Marks } from "./marks.js";
+import { NO_MARKS, throughAt, type Marks } from "./marks.js";
 
 /** The latest op for one user key, and the WAL seq that wrote it. */
 export type MemRow = {
@@ -156,14 +156,11 @@ export class Memtable extends Chunks {
           this.put({ key: op.key, seq: record.seq, kind: "del" });
           break;
         case "deleteRange": {
-          const { start, endExclusive: end, through } = op;
+          const mark = { ...op, at: record.seq };
+          const marks = [mark];
           // The rows' own seqs are below this record, so op order does not matter.
-          this.rebuild(
-            this.range().filter(
-              (row) => row.seq > through || compareBytes(row.key, start) < 0 || (end !== undefined && compareBytes(row.key, end) >= 0),
-            ),
-          );
-          if (through > 0) this.held = [...this.held, { ...op, at: record.seq }];
+          this.rebuild(this.range().filter((row) => row.seq > throughAt(marks, row.key)));
+          if (op.through > 0) this.held = [...this.held, mark];
           break;
         }
       }
