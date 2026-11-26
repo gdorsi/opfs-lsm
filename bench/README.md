@@ -182,6 +182,8 @@ Every run record carries peaks sampled every 100 ms over CDP: `Runtime.getHeapUs
 
 `node bench/probes/cpu-profile.ts <workload> <phase> [--contender kv/kv]` records a V8 CPU profile of one phase, in the tab and in the SharedWorker, and prints self time per function. The build is not minified, so the names are the source's. It writes each `.cpuprofile` to `bench/results/` for DevTools. Profiling slows the run, so compare the shares between functions, not the wall time.
 
+`node bench/probes/open-paired.ts --a <packages/kv> [--b <packages/kv>]` compares the cold `openDb` of two builds of kv, one database of 100,000 entries per build: each round opens each once in a fresh tab, and the probe prints the median per build and the median difference per round. With one build it shows how far two runs of that build differ. It then prints one open as a timeline of its browser calls: locks, OPFS, IndexedDB and wasm.
+
 ## Main thread
 
 kv answers reads on the tab's main thread, while IndexedDB works in the browser process, so latency alone hides what kv costs a frame. A phase with `mainThread: true` records the tab's main thread while it runs:

@@ -35,7 +35,7 @@ import { Miss, ReadSet, type Entry, type Maybe } from "./store/cursor.js";
 import { coalesced } from "./turns.js";
 import type { OpenFile, ReadFs, RemovableFolder } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
-import { loadGeneration, runsOfCopy, type GenerationMeta } from "./store/generation.js";
+import { loadGeneration, manifestNumbers, runsOfCopy, type GenerationMeta } from "./store/generation.js";
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
@@ -396,6 +396,8 @@ async function openStores(
   // What the catch below closes: the Db once it exists, else the WAL and an owned port.
   let heldWal: TabWal | undefined;
   let heldDb: DbImpl | undefined;
+  const head: HeadStart = { files: new Map() };
+  headStart(tabFs, head).catch(() => undefined);
   try {
     const wal = await TabWal.open(
       name,
@@ -422,7 +424,7 @@ async function openStores(
       parts.rowPostMs,
     );
     heldDb = db;
-    await db.boot(recovering);
+    await db.boot(recovering, head);
     // The host takes the smallest limit across tabs, so this tab's soft cap counts as one.
     db.watch({
       maxWalBytes: Math.min(parts.maxWalBytes, caps.soft),
@@ -439,6 +441,12 @@ async function openStores(
       heldWal?.close();
     }
     throw err;
+  } finally {
+    // The files no load took close, and the head start opens no more.
+    head.taken = true;
+    head.manifest = undefined;
+    for (const file of head.files.values()) file.then((f) => f?.close()).catch(() => undefined);
+    head.files.clear();
   }
 }
 
@@ -503,6 +511,35 @@ type Layers = {
 const OPEN_CONCURRENCY = 16;
 
 /**
+ * What an open reads of the newest manifest in `m/` while IndexedDB opens,
+ * for the load of that generation to take: IndexedDB names the generation,
+ * and in a cold tab it answers after the folder does. Nothing here decides
+ * anything. A load of another generation reads its own files.
+ */
+type HeadStart = {
+  generation?: Generation;
+  /** Until a load takes it. */
+  manifest?: Promise<GenerationMeta | undefined> | undefined;
+  /** Open files of the manifest's first runs, each until a load takes it. */
+  readonly files: Map<string, Promise<OpenFile | undefined>>;
+  /** A load asked, or the open ended: nothing more is opened. */
+  taken?: boolean;
+};
+
+async function headStart(fs: ReadFs, head: HeadStart): Promise<void> {
+  const [newest] = await manifestNumbers(fs);
+  if (newest === undefined || head.taken) return;
+  head.generation = newest;
+  const meta = await (head.manifest = loadGeneration(fs, newest));
+  if (!meta || head.taken) return;
+  for (const { path } of meta.runs.slice(0, OPEN_CONCURRENCY)) {
+    const file = fs.open(path);
+    file.catch(() => undefined);
+    head.files.set(path, file);
+  }
+}
+
+/**
  * A row that lands within this long of the tab's last post waits, and one
  * message carries the rows of the wait (design.md, "Seeing other tabs'
  * writes"). The cost of a post is per message, and a tab that awaits each
@@ -544,6 +581,8 @@ class DbImpl implements Db {
   };
   /** The newest generation loaded and not yet installed. */
   private loaded: Layers | undefined = undefined;
+  /** What the open read ahead of IndexedDB, from `boot` until its first load. */
+  private head: HeadStart | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
   private readonly catchUpToWal = coalesced(() => this.syncOnce());
@@ -718,7 +757,13 @@ class DbImpl implements Db {
    */
   private async load(generation: Generation, ahead: boolean, copy?: Uint8Array): Promise<boolean> {
     if (this.has(generation, ahead)) return true;
-    const manifest = loadGeneration(this.fs, generation);
+    // Only the first load of an open takes the head start. A retry reads the manifest again, which the host may
+    // have been writing when the head start read it, and opens its files under the reclaim lock.
+    const { head } = this;
+    this.head = undefined;
+    if (head) head.taken = true;
+    const early = head?.generation === generation ? head.manifest : undefined;
+    const manifest = early ?? loadGeneration(this.fs, generation);
     const paths = runsOfCopy(copy, generation) ?? (await manifest)?.runs.map((r) => r.path);
     if (!paths) return false;
     const runs: (Run | undefined)[] = [];
@@ -727,7 +772,7 @@ class DbImpl implements Db {
     const openNext = async (): Promise<void> => {
       while (next < paths.length && !gone) {
         const i = next++;
-        runs[i] = await this.openRun(paths[i]!, i, manifest);
+        runs[i] = await this.openRun(paths[i]!, i, manifest, head?.files);
         if (!runs[i]) gone = true;
       }
     };
@@ -760,10 +805,12 @@ class DbImpl implements Db {
    * generation retries handle. Reads no run bytes: the reader loads its
    * blocks and its Bloom filter on first use.
    */
-  private async openRun(path: string, i: number, manifest: Promise<GenerationMeta | undefined>): Promise<Run | undefined> {
+  private async openRun(path: string, i: number, manifest: Promise<GenerationMeta | undefined>, early?: HeadStart["files"]): Promise<Run | undefined> {
     let run = this.runs.get(path);
     if (!run) {
-      const file = await this.fs.open(path);
+      const opened = early?.get(path);
+      early?.delete(path);
+      const file = await (opened ?? this.fs.open(path));
       if (!file) return undefined;
       // A manifest that does not decode fails the load, which awaits it too.
       const meta = (await manifest.catch(() => undefined))?.runs[i];
@@ -890,7 +937,8 @@ class DbImpl implements Db {
    * recovery checks, and the tail applies when recovery wrote nothing.
    * Otherwise the tail is not one any more, and a sync reads again.
    */
-  async boot(recovering: Promise<boolean>): Promise<void> {
+  async boot(recovering: Promise<boolean>, head?: HeadStart): Promise<void> {
+    this.head = head;
     // The runs open while the records are read. The read settles once the
     // load has, so no load installs its generation after the fallback below.
     let loading: Promise<boolean> | undefined;

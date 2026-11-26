@@ -300,13 +300,13 @@ acked before the call. The broadcast is an optimization. The WAL tail is the sou
 
 ### Installing a generation
 
-A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation
-never holds a seq past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the
-manifest and opens its runs outside the transaction, then reads the tail again. An open starts that load when the
-transaction names the generation, before it reads the records. A flush or a compaction records the manifest's head in
-`meta.manifest` with its generation, and such a tail reads it: when the copy decodes to that generation, the tab
-opens the runs it names while it reads the manifest file for their block indexes. The load fails without the file: a
-power loss can keep the copy and lose the file and its runs. Recovery never reads the copy.
+A tab installs a generation only when the WAL tail tells it to, during `sync` or an append. The installed generation never holds a seq
+past `appliedThrough`. If the tail names a generation the tab has not loaded, the tab loads the manifest and opens its runs outside the
+transaction, then reads the tail again. An open starts that load before it reads the records. A flush or a compaction records the
+manifest's head in `meta.manifest`, and such a tail reads it: when the copy decodes to that generation, the tab opens its runs while it
+reads the manifest file for their block indexes. The load fails without the file, which a power loss can lose while the copy stays.
+Recovery never reads the copy. An open also reads ahead of IndexedDB, which answers last in a cold tab: meanwhile it lists `m/`, reads the
+newest manifest and opens its first 16 runs. The first load takes the open runs, and the manifest when it is its generation's. The open closes the rest.
 
 After a flush or a compaction step, the host posts `{ kind: "ingest" }` on the channel, and
 tabs call `sync`.
