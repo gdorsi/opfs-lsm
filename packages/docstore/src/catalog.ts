@@ -192,6 +192,9 @@ function isCollection(c: unknown): boolean {
 function isSpec(s: unknown): boolean {
   if (!isObject(s) || !isStrings(s["by"]) || typeof s["unique"] !== "boolean") return false;
   const { kind, text, include } = s;
+  const by = s["by"] as readonly string[];
+  // `kind` and the `[]` mark say the same thing: only a multi index marks a field, and only its first.
+  if (by.length === 0 || by.length > MAX_FIELDS || !by.every((f, i) => f.endsWith("[]") === (kind === "multi" && i === 0))) return false;
   if (kind === "text") return typeof text === "string" && include === undefined && !s["unique"];
   return (kind === "sorted" || kind === "multi") && text === undefined && (include === undefined || (isStrings(include) && !s["unique"]));
 }

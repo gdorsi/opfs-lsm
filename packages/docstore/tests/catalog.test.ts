@@ -173,6 +173,24 @@ describe("stored bytes", () => {
     expect(() => parseCatalog(new TextEncoder().encode("12345678not json"))).toThrow(CorruptDatabaseError);
   });
 
+  it("refuses as corrupt a stored index whose kind and fields disagree", () => {
+    const c = open(undefined, 1, { c: { x: { by: "a" }, m: { by: ["t[]", "a"] } } });
+    const withSpec = (name: "x" | "m", spec: object) => {
+      const i = c.collections["c"]!.indexes[name]!;
+      return { ...c, collections: { c: { ...c.collections["c"]!, indexes: { ...c.collections["c"]!.indexes, [name]: { ...i, spec: { ...i.spec, ...spec } } } } } };
+    };
+    expect(() => parseCatalog(encodeCatalog(withSpec("m", {}) as StoredCatalog))).not.toThrow();
+    for (const bad of [
+      withSpec("x", { by: ["t[]"] }),
+      withSpec("m", { by: ["t"] }),
+      withSpec("m", { by: ["a", "t[]"] }),
+      withSpec("x", { by: [] }),
+      withSpec("x", { by: Array.from({ length: 9 }, (_, i) => `f${i}`) }),
+    ]) {
+      expect(() => parseCatalog(encodeCatalog(bad as StoredCatalog))).toThrow(CorruptDatabaseError);
+    }
+  });
+
   it("refuses as corrupt a stored unique index that includes fields", () => {
     const c = open(undefined, 1, { c: { x: { by: "a", include: ["t"] } } });
     const x = c.collections["c"]!.indexes["x"]!;
