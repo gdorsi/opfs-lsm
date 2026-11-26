@@ -13,8 +13,8 @@ export const SST_FOOTER_BYTES = 24;
  */
 const MAX_BLOOM_HASHES = 32;
 
-const TAG_PUT = 1;
-const TAG_DEL = 2;
+export const TAG_PUT = 1;
+export const TAG_DEL = 2;
 
 /**
  * A block stores the offset of every `OFFSET_STRIDE`th record after

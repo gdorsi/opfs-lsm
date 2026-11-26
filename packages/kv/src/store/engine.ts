@@ -3,7 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
+import { TAG_DEL, TAG_PUT, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
 import { BlockEntry, NO_PREFIX } from "./cursor.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, unavailable } from "../errors.js";
@@ -145,8 +145,6 @@ export type FlatEngine = {
   sessionOpen: boolean;
 };
 
-const TAG_PUT = 1;
-const TAG_DEL = 2;
 const TWO_32 = 0x1_0000_0000;
 
 export function flatEngine(instance: { readonly exports: WebAssembly.Exports }): FlatEngine {
