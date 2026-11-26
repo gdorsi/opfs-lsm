@@ -194,8 +194,8 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   declaredBuilds(): Promise<unknown> {
     const builds = [...this.bound.collections.values()].flatMap((coll) =>
       coll.maintained.flatMap((plan) => {
-        const r = coll.readable.get(plan.name);
-        return r && "kind" in r && r.kind === "building" ? [this.jobs.get(backfillKey(coll, plan))] : [];
+        const declared = coll.readable.get(plan.name) === plan;
+        return declared && plan.state.kind === "building" ? [this.jobs.get(backfillKey(coll, plan))] : [];
       }),
     );
     return Promise.all(builds);

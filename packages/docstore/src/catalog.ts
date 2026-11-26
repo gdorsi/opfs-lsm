@@ -346,7 +346,7 @@ export type IndexPlan = {
   readonly text: Path | undefined;
 };
 
-export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Exclude<IndexState, { kind: "ready" }>;
+export type Unreadable = { readonly kind: "missing" } | { readonly kind: "spec-changed" } | Extract<IndexState, { kind: "failed" }>;
 
 export type BoundCollection = {
   readonly name: string;
@@ -354,7 +354,7 @@ export type BoundCollection = {
   readonly rows: Extract<ScanTarget, { readonly kind: "rows" }>;
   /** Every building or ready index in the catalog, declared by this handle or not. Writes derive entries for exactly these. */
   readonly maintained: readonly IndexPlan[];
-  /** By declared index name: the plan if this handle may query it, else why not. */
+  /** By declared index name: the plan if writes maintain it under the declared spec, ready or building, else why not. */
   readonly readable: ReadonlyMap<string, IndexPlan | Unreadable>;
 };
 
@@ -366,17 +366,24 @@ export type Bound = {
 };
 
 export function readableTarget(coll: BoundCollection, index: string): ScanTarget {
+  const plan = declaredPlan(coll, index);
+  if (plan.state.kind === "building") {
+    throw new DocStoreError("schema", `a newer schema is building index "${index}" of "${coll.name}"`);
+  }
+  return plan.target;
+}
+
+/** The plan of declared `index`, ready or building. Throws why writes do not maintain it under the declared spec. */
+export function declaredPlan(coll: BoundCollection, index: string): IndexPlan {
   const r = coll.readable.get(index);
   if (r === undefined) throw new DocStoreError("schema", `"${coll.name}" has no index "${index}" in this schema`);
-  if (!("kind" in r)) return r.target;
+  if (!("kind" in r)) return r;
   const where = `index "${index}" of "${coll.name}"`;
   switch (r.kind) {
     case "missing":
       throw new DocStoreError("schema", `the stored catalog has no ${where}`);
     case "spec-changed":
       throw new DocStoreError("schema", `a newer schema redefined ${where}`);
-    case "building":
-      throw new DocStoreError("schema", `a newer schema is building ${where}`);
     case "failed":
       throw new DocStoreError("index-failed", `${where} cannot hold the stored data (${r.reason})`, r.ids);
   }
@@ -399,7 +406,7 @@ export function bind(bytes: Uint8Array, catalog: StoredCatalog, declared: Declar
       const i = stored.indexes[index];
       if (!i) readable.set(index, { kind: "missing" });
       else if (!sameSpec(i.spec, spec)) readable.set(index, { kind: "spec-changed" });
-      else readable.set(index, i.state.kind === "ready" ? maintained.get(index)! : i.state);
+      else readable.set(index, i.state.kind === "failed" ? i.state : maintained.get(index)!);
     }
     collections.set(name, { name, id, rows: { kind: "rows", prefix: rows }, maintained: [...maintained.values()], readable });
   }
