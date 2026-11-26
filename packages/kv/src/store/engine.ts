@@ -474,12 +474,14 @@ function corrupt(err: unknown, what: string): unknown {
   return new CorruptDatabaseError(`${what}: ${String(err)}`);
 }
 
-function restartEngine(): void {
-  if (!wasmModule) return;
+/** A fresh instance in place of the current one. False when there is no memory for a second one: the old one stays. */
+function restartEngine(): boolean {
+  if (!wasmModule) return false;
   try {
     setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
+    return true;
   } catch {
-    // No memory for a second instance: the old one stays.
+    return false;
   }
 }
 
@@ -497,13 +499,7 @@ export function engineMemoryBytes(): number {
  * are copies, and the scan hook reads `engine` at each call.
  */
 export function recycleEngine(maxBytes: number): boolean {
-  if (!engine || !wasmModule || engine.sessionOpen || engine.memoryBytes() <= maxBytes) return false;
-  try {
-    setEngine(flatEngine(new WebAssembly.Instance(wasmModule, engineImports())));
-  } catch {
-    // No memory for a second instance: the old one still works.
-    return false;
-  }
+  if (!engine || engine.sessionOpen || engine.memoryBytes() <= maxBytes || !restartEngine()) return false;
   watcher?.recycled();
   return true;
 }
