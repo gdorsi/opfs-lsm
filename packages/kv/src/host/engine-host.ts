@@ -4,7 +4,7 @@ import { openExistingWal, uningestedBytes, type IdBWal, type WalMeta } from "../
 import type { AsyncFs, FileWrites } from "../opfs/async-fs.js";
 import { fileWrites } from "../opfs/browser-fs.js";
 import { reconcile, recordEmpty, type Trusted } from "../recover.js";
-import { asGeneration, GENERATION_NONE, type Generation, type Seq } from "../seq.js";
+import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
 import { loadGeneration } from "../store/generation.js";
 import { listRuns, liveRuns, reclaimManifests, reclaimRuns } from "./reclaim.js";
 import { recycleEngine } from "../store/engine.js";
