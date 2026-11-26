@@ -18,9 +18,12 @@ import { installStep, mergeNextStep } from "./compact.js";
 import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
+  HOST_CALLS,
   unlessHeld,
   type BusMessage,
   type ClientToHost,
+  type HostCall,
+  type HostCalls,
   type HostStats,
   type HostToClient,
   type IngestClient,
@@ -106,9 +109,10 @@ type IngestWatch = {
  * OPFS publisher + ingest owner. Runs in the SharedWorker in production;
  * tests use the same class in-process or behind a MessagePort. It keeps one
  * `HostedDb` per database name, for as long as the host lives. It never
- * creates a database: only `openDb` does.
+ * creates a database: only `openDb` does. Its methods of `HOST_CALLS` are
+ * the handlers both clients call.
  */
-export class EngineHost {
+export class EngineHost implements HostCalls {
   private readonly dbs = new Map<DbName, HostedDb>();
 
   /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
@@ -164,6 +168,7 @@ export class EngineHost {
   }
 
   /** Record a manifest that pairs with the WAL of `name`. See `IngestClient.repair`. */
+  // fallow-ignore-next-line unused-class-member -- the clients call every host method through HOST_CALLS, which fallow cannot follow
   async repair(name: string): Promise<void> {
     await this.db(name).repair();
   }
@@ -855,68 +860,31 @@ export function attachEngineHostPort(
   port: MessagePort,
   served: EngineHost | Promise<EngineHost>,
 ): () => void {
-  const onMessage = async (ev: MessageEvent<ClientToHost>) => {
-    const msg = ev.data;
-    const reply = (m: HostToClient) => port.postMessage(m);
+  const listener = (async (ev: MessageEvent<ClientToHost | null>) => {
+    const id = ev.data?.id;
     try {
+      // A message that is not a call throws here, and gets no answer.
+      const { method, args } = ev.data!;
       const host = await served;
-      switch (msg.type) {
-        case "ingest": {
-          const { generation } = await host.ingest(msg.name, msg.waitForCompaction);
-          reply({ type: "ingest-ok", id: msg.id, generation });
-          return;
-        }
-        case "watch":
-          host.watch(msg.name, msg);
-          return;
-        case "unwatch":
-          host.unwatch(msg.name);
-          return;
-        case "make-room":
-          await host.makeRoom(msg.name);
-          reply({ type: "make-room-ok", id: msg.id });
-          return;
-        case "stats":
-          reply({ type: "stats-ok", id: msg.id, stats: await host.stats(msg.name) });
-          return;
-        case "repair":
-          await host.repair(msg.name);
-          reply({ type: "repair-ok", id: msg.id });
-          return;
-        case "destroy":
-          await host.destroy(msg.name);
-          reply({ type: "destroy-ok", id: msg.id });
-          return;
-        default: {
-          const unknown: never = msg;
-          // A tab of a newer build: answer, so its request does not wait forever.
-          throw new StorageUnavailableError(`the SharedWorker does not serve "${(unknown as { type: string }).type}"`);
-        }
-      }
+      // A tab of a newer build: answer, so its request does not wait forever.
+      if (!Object.hasOwn(HOST_CALLS, method)) throw new StorageUnavailableError(`the SharedWorker does not serve "${method}"`);
+      const value: unknown = await Reflect.apply(host[method], host, args);
+      if (id !== undefined) port.postMessage({ id, value } satisfies HostToClient);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (msg && typeof msg === "object" && "id" in msg) {
-        const id = (msg as { id: number }).id;
-        const code = codeOfError(err);
-        reply(code ? { type: "err", id, message, code } : { type: "err", id, message });
-      }
+      if (id !== undefined) port.postMessage({ id, message, code: codeOfError(err) } satisfies HostToClient);
     }
-  };
-  const listener = onMessage as unknown as EventListener;
+  }) as unknown as EventListener;
   port.addEventListener("message", listener);
   port.start?.();
   return () => port.removeEventListener("message", listener);
 }
 
+/** An in-process client: each call of `HOST_CALLS` calls `host` directly. */
 export function createLocalIngestClient(host: EngineHost): IngestClient {
-  return {
-    ingest: (name, waitForCompaction) => host.ingest(name, waitForCompaction),
-    watch: (name, policy) => host.watch(name, policy),
-    unwatch: (name) => host.unwatch(name),
-    makeRoom: (name) => host.makeRoom(name),
-    repair: (name) => host.repair(name),
-    destroy: (name) => host.destroy(name),
-    stats: (name) => host.stats(name),
-    close: () => undefined,
-  };
+  const client: Record<string, unknown> = { close: () => undefined };
+  for (const method of Object.keys(HOST_CALLS) as HostCall[]) {
+    client[method] = (...args: unknown[]) => Reflect.apply(host[method], host, args);
+  }
+  return client as IngestClient;
 }
