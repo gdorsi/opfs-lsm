@@ -8,37 +8,25 @@ import {
   normalizeSchema,
   parseCatalog,
   reconcile,
-  removeDropped,
   sameCatalog,
   settleIndex,
   type Bound,
   type BoundCollection,
   type DeclaredSchema,
-  type DroppedPrefix,
+  type Edit,
   type IndexPlan,
   type StoredCatalog,
 } from "./catalog.js";
 import { CollectionImpl, RETRY, type Collection } from "./collection.js";
 import { decodeDoc, docEncoder, indexEntries, type Unindexable } from "./derive.js";
 import { DocStoreError } from "./errors.js";
-import {
-  CATALOG_KEY,
-  after,
-  bytesEqual,
-  collectionPrefix,
-  idOf,
-  indexPrefix,
-  keyString,
-  touches,
-  type CollectionId,
-  type IndexId,
-} from "./keys.js";
+import { CATALOG_KEY, after, bytesEqual, idOf, keyString, touches, type CollectionId, type IndexId } from "./keys.js";
 import type { CollectionName, DocOf, IndexInfo, IndexesOf, InputOf, Schema } from "./schema.js";
 
 export interface DocStore<S extends Schema> {
   /** A typed handle. Operations on a collection the stored catalog lacks throw "schema". */
   collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>, InputOf<S, C>>;
-  /** Resolves when this handle's background backfills and sweeps have finished. */
+  /** Resolves when this handle's background backfills have finished. */
   whenIdle(): Promise<void>;
 }
 
@@ -66,9 +54,7 @@ export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise
       const current = stored && parseCatalog(stored);
       const next = reconcile(current, declared);
       if (!next) return { bytes: stored!, catalog: current! };
-      const out = encodeCatalog(next);
-      tx.put(CATALOG_KEY, out);
-      return { bytes: out, catalog: next };
+      return { bytes: storeEdit(tx, next), catalog: next.catalog };
     }));
   const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared), schema.collections);
   store.startJobs();
@@ -110,6 +96,15 @@ function collectionOf(bound: Bound, name: string): BoundCollection {
 }
 
 const NO_CATALOG = new Uint8Array(0);
+
+/** Write `edit` into `tx`: the catalog, then a range delete for each prefix it drops. Returns the catalog's bytes. */
+function storeEdit(tx: BatchTx, edit: Edit): Uint8Array {
+  const bytes = encodeCatalog(edit.catalog);
+  tx.put(CATALOG_KEY, bytes);
+  // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
+  for (const prefix of edit.drop) tx.deleteRange(prefixBound(prefix));
+  return bytes;
+}
 
 const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
 
@@ -238,7 +233,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
       }
       const out = await this.kv.update([CATALOG_KEY, ...plan.keys], ([catalog, ...values], tx) => {
         if (!catalog) {
-          tx.put(CATALOG_KEY, encodeCatalog(reconcile(undefined, this.declared)!));
+          storeEdit(tx, reconcile(undefined, this.declared)!);
           return RETRY;
         }
         if (!sameCatalog(catalog, bound.bytes)) {
@@ -251,9 +246,13 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     }
   }
 
-  async clear(name: string): Promise<void> {
-    await this.editCatalog((c) => clearCollection(c, name));
-    this.startJobs();
+  /**
+   * The range delete goes in the batch that writes the catalog, so no write
+   * planned against the catalog before it lands after it, and a backfill of
+   * the collection retries, then finds its index ready.
+   */
+  clear(name: string): Promise<void> {
+    return this.editCatalog((c) => clearCollection(c, name));
   }
 
   /**
@@ -262,16 +261,16 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
    * result once this resolves: kv announces a write before it resolves it
    * (the contract on kv's `ChangeEvent`), and `follow` binds it.
    */
-  private async editCatalog(edit: (c: StoredCatalog, tx: BatchTx) => StoredCatalog | undefined): Promise<void> {
+  private async editCatalog(edit: (c: StoredCatalog) => Edit | undefined): Promise<void> {
     await this.kv.update([CATALOG_KEY], ([stored], tx) => {
-      const next = edit(this.adopt(stored).catalog, tx);
-      if (next) tx.put(CATALOG_KEY, encodeCatalog(next));
+      const next = edit(this.adopt(stored).catalog);
+      if (next) storeEdit(tx, next);
     });
   }
 
   /** The catalog `bytes` bound, or `bound` itself when it is the same catalog. Leaves `bound` alone. */
   private boundIn(bytes: Uint8Array | undefined): Bound {
-    if (!bytes) return bind(NO_CATALOG, reconcile(undefined, this.declared)!, this.declared);
+    if (!bytes) return bind(NO_CATALOG, reconcile(undefined, this.declared)!.catalog, this.declared);
     return sameCatalog(bytes, this.bound.bytes) ? this.bound : bind(bytes, parseCatalog(bytes), this.declared);
   }
 
@@ -288,15 +287,12 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
         if (plan.state.kind === "building") this.job(backfillKey(coll, plan), () => this.backfill(coll.id, plan.id));
       }
     }
-    for (const p of this.bound.catalog.dropped) {
-      this.job(`sweep ${p.collection} ${"index" in p ? p.index : "all"}`, () => this.sweep(p));
-    }
   }
 
   private job(key: string, run: () => Promise<void>): void {
     if (this.jobs.has(key)) return;
     // Start on the next task: kv's first scan copies every memtable row in its
-    // bounds at once, which would otherwise run inside the caller's `clear`.
+    // bounds at once, which would otherwise run inside `openDocStore`'s call.
     const job = new Promise((r) => setTimeout(r)).then(run).finally(() => this.jobs.delete(key));
     job.catch(() => undefined);
     this.jobs.set(key, job);
@@ -308,6 +304,8 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
    * since its chunk was scanned makes the chunk rescan: the write that changed
    * it diffed against the old row, so an entry both versions derive may be in
    * neither the write nor this index yet.
+   * Each chunk commits only under the catalog it was planned against, so a
+   * `clear`, which marks the index ready, makes the next chunk find it settled.
    * A crash leaves the index building and the next open starts over.
    * Progress is not stored, because storing it in the catalog would make
    * every concurrent writer retry once per chunk.
@@ -386,21 +384,9 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
       if (out === RETRY) continue;
       if (out) {
         await this.editCatalog((c) => settleIndex(c, collection, index, { kind: "failed", reason: out.reason, ids: out.ids }));
-        this.startJobs();
         return;
       }
       from = rows.at(-1)!.key;
     }
-  }
-
-  private async sweep(p: DroppedPrefix): Promise<void> {
-    const collection = p.collection as CollectionId;
-    const prefix = "index" in p ? indexPrefix(collection, p.index as IndexId) : collectionPrefix(collection);
-    // Not `tupleBounds`: index id 255 is `64 CC CC FF`, which `tupleBounds(64 CC CC)` would exclude.
-    await this.editCatalog((c, tx) => {
-      const next = removeDropped(c, p);
-      if (next) tx.deleteRange(prefixBound(prefix));
-      return next;
-    });
   }
 }

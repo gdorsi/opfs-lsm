@@ -64,9 +64,9 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
   /** One transaction. Returns how many of the distinct ids existed. */
   deleteMany(ids: readonly string[]): Promise<number>;
   /**
-   * Remove every document with one catalog write: the collection gets a new
-   * id, so every reader and writer stops seeing the old keys at once. The old
-   * keys are deleted in the background. The cost does not depend on the size.
+   * Remove every document and index entry with one kv range delete, in the
+   * batch that writes the catalog, so every reader and writer stops seeing
+   * them at once. The cost does not depend on the size.
    */
   clear(): Promise<void>;
 

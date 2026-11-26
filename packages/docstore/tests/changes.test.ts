@@ -167,7 +167,7 @@ describe("changes", () => {
     await settled(() => expect(seen).toEqual([{ id: "before", a: 1 }, { id: "after", a: 2 }]));
   });
 
-  it("sends a gap for clear(), then reports the writes made after it, and nothing of the sweep", async () => {
+  it("sends one gap for clear(), then reports the writes made after it", async () => {
     const { store, c } = await handle();
     await c.putMany([{ id: "old1", a: 1 }, { id: "old2", a: 2 }]);
     const { events } = listen(c);
@@ -192,13 +192,15 @@ describe("changes", () => {
     await settled(() => expect(summary(events)).toEqual(["+after"]));
   });
 
-  it("sends no gap for catalog writes that leave the collection's id alone", async () => {
+  it.each([
+    ["adds an index", { byA: "a", byB: "b" }],
+    ["drops an index, deleting its entries", {}],
+  ])("sends no gap for a catalog write that %s", async (_, indexes: Record<string, string>) => {
     type Row = { id: string; a?: number; b?: number };
     const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
-    const v2 = defineSchema({
-      version: 2,
-      collections: { rows: collection<Row>().index("byA", "a").index("byB", "b") },
-    });
+    let declared = collection<Row>();
+    for (const [index, by] of Object.entries(indexes)) declared = declared.index(index, by as "a") as never;
+    const v2 = defineSchema({ version: 2, collections: { rows: declared } });
     const name = freshName();
     const kvA = await openKv(name);
     const kvB = await openKv(name);
