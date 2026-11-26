@@ -72,9 +72,9 @@ function sourceSync(): string[] {
   const need = (file: string, re: RegExp, what: string) => {
     if (!re.test(read(file))) out.push(`${file}: ${what}`);
   };
-  need("host/protocol.ts", /export function holdingFiles<T>\(name: string, fn: \(\) => Promise<T>\): Promise<T> \{\s*return withLock\(reclaimLock\(name\), fn, "shared"\);/, "a tab holds the reclaim lock shared");
+  need("locks.ts", /export function holdingFiles<T>\(name: string, fn: \(\) => Promise<T>\): Promise<T> \{\s*return withLock\(reclaimLock\(name\), fn, "shared"\);/, "a tab holds the reclaim lock shared");
   need(
-    "host/protocol.ts",
+    "locks.ts",
     /export async function unlessHeld[\s\S]*?manager\.request\(reclaimLock\(name\), \{ mode: "exclusive", ifAvailable: true \}, async \(lock\) => \{\s*if \(!lock\) return false;\s*await fn\(\);/,
     "the host removes under the reclaim lock taken exclusively, only when available",
   );

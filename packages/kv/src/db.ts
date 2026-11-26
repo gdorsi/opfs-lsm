@@ -24,10 +24,10 @@ import {
 } from "./errors.js";
 import { compactionMemoryOf, DEFAULT_MAX_WAL_BYTES, reserveOf } from "./host/budget.js";
 import { createPortIngestClient } from "./host/port-client.js";
-import { holdingFiles, type BusMessage, type IngestClient, type StorageFull, type WatchPolicy } from "./host/protocol.js";
+import type { BusMessage, IngestClient, StorageFull, WatchPolicy } from "./host/protocol.js";
 import { storageFullResponder, type StorageFullResponder } from "./host/storage-full.js";
 import { removeDatabase } from "./destroy.js";
-import { layersChannel, openLock, withLock } from "./locks.js";
+import { holdingFiles, layersChannel, openLock, withLock } from "./locks.js";
 import { ROW_POST_MS, rowPost, type RowPost } from "./row-post.js";
 import { TabWal, decodeOps, encodeOps, resolveOps, rowValid, type WalTail } from "./idb/wal.js";
 import { reconcileOpen } from "./recover.js";

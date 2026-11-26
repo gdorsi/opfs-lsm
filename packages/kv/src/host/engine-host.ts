@@ -19,7 +19,6 @@ import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   HOST_CALLS,
-  unlessHeld,
   type BusMessage,
   type ClientToHost,
   type HostCall,
@@ -29,7 +28,7 @@ import {
   type IngestClient,
   type WatchPolicy,
 } from "./protocol.js";
-import { compactLock, ingestLock, layersChannel, withLock } from "../locks.js";
+import { compactLock, ingestLock, layersChannel, unlessHeld, withLock } from "../locks.js";
 import { coalesced, serial } from "../turns.js";
 
 /**

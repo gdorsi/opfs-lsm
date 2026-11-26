@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { checkDbName } from "../src/check.js";
-import { holdingFiles } from "../src/host/protocol.js";
+import { holdingFiles } from "../src/locks.js";
 import { openExistingWal } from "../src/idb/wal.js";
 import type { Db } from "../src/index.js";
 import { loadGeneration } from "../src/store/generation.js";
