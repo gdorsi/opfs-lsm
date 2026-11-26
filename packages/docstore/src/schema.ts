@@ -293,6 +293,15 @@ type EntryFields<T, Ix, I> = I extends keyof Ix
 /** What `queryEntries` on index `I` (undefined: the rows) returns. A union `I` gives a union of pages. */
 export type EntryPageOf<T, Ix, I> = I extends unknown ? EntryPage<EntryValues<T, Ix, I>, EntryFields<T, Ix, I>> : never;
 
+/** The indexes of `Ix` whose entries are their key alone: sorted and multi indexes that are not unique and include no field. */
+export type KeyOnlyIndex<Ix> = {
+  [I in keyof Ix & string]: Ix[I] extends { readonly unique: true } | { readonly text: string } | { readonly include: readonly unknown[] }
+    ? never
+    : I;
+}[keyof Ix & string];
+/** An entry of index `I`, as `queryEntries` returns it. */
+export type EntryOf<T, Ix, I> = IndexEntry<EntryValues<T, Ix, I>>;
+
 export type QueryInput = {
   readonly index?: string | undefined;
   readonly eq?: readonly (Scalar | readonly Scalar[])[] | undefined;

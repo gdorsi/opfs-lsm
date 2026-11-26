@@ -1,7 +1,7 @@
 import { createList, type Change } from "./list.ts";
 import { DEFAULT_FILTER, describe, type Detail, type Filter, type Issue } from "./model.ts";
 import { failed, post } from "./protocol.ts";
-import { createIssue, detailOf, editIssue, writeIssues, type Draft, type Store } from "./store.ts";
+import { createIssue, detailOf, editIssue, matches, placeBefore, writeIssues, type Draft, type Store } from "./store.ts";
 
 /** A run of generated issues: the first ones into the empty database, or more beside the ones it holds. */
 export type Generating = { readonly written: number; readonly count: number };
@@ -55,8 +55,6 @@ export function createApp(store: Store) {
     return shown.rows;
   }
 
-  /** Issues this tab is writing for the first time: the change feed says what an issue is now, not that it is new. */
-  const born = new Set<string>();
   /** Set while this tab writes generated issues, all of them new. */
   let appending = false;
 
@@ -77,28 +75,25 @@ export function createApp(store: Store) {
     }
   }
 
-  // Every write to an issue, from this tab or another, arrives here. The list moves the rows it holds and its total
-  // by what changed. It reads again only when it cannot tell what an issue was before: a gap, or a write by another
-  // tab to an issue this one holds no copy of.
+  // Every write to an issue, from this tab or another, arrives here. Each change says where the issue was, from the
+  // index entries the write replaced, and what it is now, so the list moves its rows and its total without a read.
   store.issues.changes((event) => {
     if (event.kind === "gap") return void resync().catch(failed);
     if (event.kind !== "append") return;
     if (appending) {
       const { status, priority, q } = state.filter;
       const open = status.length === 0 && priority.length === 0 && q === "";
-      const total = list.grow(open ? event.changes.length : event.changes.filter((c) => !c.deleted && list.keeps(c.doc!)).length);
+      const keep = matches(state.filter);
+      const total = list.grow(open ? event.changes.length : event.changes.filter((c) => !c.deleted && keep(c.doc!)).length);
       if (total !== undefined) set({ total });
       return;
     }
     const changes: Change[] = [];
     for (const change of event.changes) {
-      const after = change.deleted ? undefined : change.doc;
-      const open = state.issue?.id === change.id;
-      const before = open ? state.issue : list.find(change.id);
-      if (!before && !born.delete(change.id)) return void resync().catch(failed);
-      changes.push({ before, after });
+      const after = change.doc;
+      changes.push({ before: placeBefore(change), after });
       // A deleted issue closes the issue page.
-      if (open) set(after ? { issue: after } : { issue: undefined, detail: undefined });
+      if (state.issue?.id === change.id) set(after ? { issue: after } : { issue: undefined, detail: undefined });
     }
     const total = list.apply(changes);
     if (total === undefined) void resync().catch(failed);
@@ -143,7 +138,6 @@ export function createApp(store: Store) {
 
     create(draft: Draft) {
       const id = crypto.randomUUID();
-      born.add(id);
       if (state.empty) set({ empty: false });
       createIssue(store, id, draft).catch(failed);
     },

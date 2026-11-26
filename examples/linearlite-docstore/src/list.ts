@@ -1,5 +1,5 @@
 import { DEFAULT_FILTER, type Filter, type Issue } from "./model.ts";
-import { keeps, orderOf, viewOf, type ReadPath, type Store, type View } from "./store.ts";
+import { keeps, orderOf, viewOf, type Place, type ReadPath, type Store, type View } from "./store.ts";
 
 export const ROW = 40;
 const PAGE = 50;
@@ -7,8 +7,8 @@ const OVERSCAN = 8;
 const reportedByCaller = () => undefined;
 const same = (a: Issue, b: Issue) => (Object.keys(b) as (keyof Issue)[]).every((key) => a[key] === b[key]);
 
-/** One issue of a write: as the list held it before, and as it is stored now. Absent on a side where it does not exist. */
-export type Change = { readonly before: Issue | undefined; readonly after: Issue | undefined };
+/** One issue of a write: where it was before, and as it is stored now. Absent on a side where it does not exist. */
+export type Change = { readonly before: Place | undefined; readonly after: Issue | undefined };
 
 /**
  * What the list draws: its height in rows, and the places in view with their issue, or none while its page is unread.
@@ -88,7 +88,7 @@ export function createList(store: Store) {
   }
 
   /** Takes `issue` out of the rows. Rows after it move up one place, whether or not its own row was read. */
-  function remove(issue: Issue) {
+  function remove(issue: Place) {
     let at: number | undefined;
     for (const [i, row] of rows) if (row.id === issue.id) at = i;
     const next = new Map<number, Issue>();
@@ -186,10 +186,12 @@ export function createList(store: Store) {
 
     /**
      * Follows writes: each issue leaves the place it had and takes the one it has now, and the total moves with it.
-     * Returns the new total, or undefined when the list has no total yet and must be read again.
+     * Returns the new total, or undefined when the list must be read again: it has no total yet, it is a search,
+     * whose test needs the title an issue had, or the write moves more issues than a page holds, which costs more to
+     * place one by one than to read.
      */
     apply(changes: readonly Change[]): number | undefined {
-      if (total === undefined || loading > 0) return undefined;
+      if (total === undefined || loading > 0 || filter.q !== "" || changes.length > PAGE) return undefined;
       for (const { before, after } of changes) {
         if (before && keep(before)) remove(before);
         if (after && keep(after)) insert(after);
@@ -208,13 +210,5 @@ export function createList(store: Store) {
       for (const listener of listeners) listener(snapshot);
       return total;
     },
-
-    /** The issue of a row read so far. */
-    find(id: string): Issue | undefined {
-      for (const row of rows.values()) if (row.id === id) return row;
-      return undefined;
-    },
-
-    keeps: (issue: Issue) => keep(issue),
   };
 }

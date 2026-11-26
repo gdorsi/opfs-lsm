@@ -36,9 +36,13 @@ An issue's description and comments are one document of a second collection, `de
 
 Each edit of a title, a status or a priority is one `modify` of the issue. A new issue is two writes: its description, then the issue. Every write goes through the collection's schema, which rejects a document of another shape and stores nothing.
 
-The list does not read again after a write. It listens to the collection's change feed (`changes`), which sends every written issue, from this tab or another. For each one the list takes the row out of its old place and puts it in its new one, and moves the total by one where the filter gains or loses the issue. The feed says what an issue is now, not what it was, so the list uses the copy it holds: a row it has read, or the open issue. When it holds none, as after a write from another tab to an issue it never read, it reads the rows in view again and counts from the index entries.
+The list does not read again after a write. It listens to the collection's change feed (`changes`), which sends every written issue, from this tab or another. Each change gives the issue as it is now, and with `before` its entries in `byStatus` and `byCreated` before the write: its status, priority, modified and created times, which set its place in every list (`placeBefore` in `src/store.ts`). Every issue has an entry in both, so none means the write created it. The list takes the row out of its old place and puts it in its new one, and moves the total by one where the filter gains or loses the issue, whether or not it has read that row.
+
+It reads the rows in view again and counts from the index entries in three cases: after a gap, during a title search, since no entry holds the title an issue had, and for a write of more issues than a page holds, which costs more to place one by one than to read.
 
 Generated issues arrive through the same feed. While this tab writes them the list adds them to its total, and it reads the rows in view again after each batch.
+
+`pnpm --filter @opfs-lsm/example-linearlite-docstore test` checks the list against the store, without the page: two handles on one database stand in for two tabs, and the list follows the other one's writes under each kind of read.
 
 ## Timings
 

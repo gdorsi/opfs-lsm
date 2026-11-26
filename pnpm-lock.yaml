@@ -114,6 +114,12 @@ importers:
       '@solidjs/vite-plugin':
         specifier: ^3.0.1
         version: 3.0.1(@babel/core@7.29.13)(@solidjs/web@2.0.3(solid-js@2.0.3))(solid-js@2.0.3)(vite@8.3.6(@types/node@26.6.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
+      fake-indexeddb:
+        specifier: ^6.2.7
+        version: 6.2.7
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
