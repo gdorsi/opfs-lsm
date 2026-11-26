@@ -7,7 +7,7 @@
  * engine, which scans a tab's blocks.
  */
 import { readFile } from "node:fs/promises";
-import { engineMemory, ensureEngine, readEngineWith } from "../../src/store/engine.js";
+import { engineMemoryBytes, ensureEngine, readEngineWith } from "../../src/store/engine.js";
 import { decodeIndex, type BlockIndex } from "../../src/store/sst.js";
 import {
   checkDecodeSst,
@@ -21,7 +21,7 @@ import {
 } from "../targets.js";
 
 readEngineWith((url) => readFile(url));
-watchWasmMemory(() => engineMemory().wasmBytes);
+watchWasmMemory(engineMemoryBytes);
 let engine: Promise<void> | undefined;
 
 const REPAIRS: readonly Repair[] = ["none", "crc", "trailer", "trailer"];
