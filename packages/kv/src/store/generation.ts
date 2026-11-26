@@ -237,11 +237,8 @@ export async function readManifest(
   fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | "missing" | "corrupt"> {
-  if (generation === GENERATION_NONE) return GENERATION_ZERO;
-  const buf = await fs.read(manifestPath(generation), 0, Number.POSITIVE_INFINITY);
-  if (!buf?.byteLength) return "missing";
   try {
-    return decodeGeneration(buf);
+    return (await loadGeneration(fs, generation)) ?? "missing";
   } catch (err) {
     if (err instanceof CorruptDatabaseError) return "corrupt";
     throw err;
@@ -253,9 +250,9 @@ export async function loadGeneration(
   fs: ReadFs,
   generation: Generation,
 ): Promise<GenerationMeta | undefined> {
-  const m = await readManifest(fs, generation);
-  if (m === "corrupt") throw new CorruptDatabaseError(`manifest ${generation} does not decode`);
-  return m === "missing" ? undefined : m;
+  if (generation === GENERATION_NONE) return GENERATION_ZERO;
+  const buf = await fs.read(manifestPath(generation), 0, Number.POSITIVE_INFINITY);
+  return buf?.byteLength ? decodeGeneration(buf) : undefined;
 }
 
 /** True when every run `meta` lists is on disk and not empty. */
