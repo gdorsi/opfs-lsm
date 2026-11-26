@@ -1,4 +1,4 @@
-import type { AsyncFs, FileWriter, OpenFile, ReadFs, RemovableFs } from "./async-fs.js";
+import type { AsyncFs, FileWriter, OpenFile, ReadFs, RemovableFolder } from "./async-fs.js";
 import { checkDbName, type DbName } from "../check.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { runLock } from "../locks.js";
@@ -255,7 +255,7 @@ async function ignoreNotFound(removal: Promise<void>): Promise<void> {
 }
 
 /** `parent` is `opfs-lsm/`, so `removeFolder` can remove `root` itself. */
-class RemovableBrowserFs extends BrowserFs implements RemovableFs {
+class RemovableBrowserFs extends BrowserReadFs implements RemovableFolder {
   constructor(
     private readonly parent: FileSystemDirectoryHandle,
     root: FileSystemDirectoryHandle,
@@ -271,7 +271,7 @@ class RemovableBrowserFs extends BrowserFs implements RemovableFs {
 }
 
 /** The folder `destroyDb` removes, found as `findBrowserFs` finds it. */
-export async function findRemovableBrowserFs(dbName: DbName): Promise<RemovableFs | undefined> {
+export async function findRemovableBrowserFs(dbName: DbName): Promise<RemovableFolder | undefined> {
   const found = await findFolder(dbName);
   return found && new RemovableBrowserFs(found[0], found[1], dbName);
 }
