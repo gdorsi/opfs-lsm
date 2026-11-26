@@ -373,15 +373,21 @@ async function readRecords(
   for (let lo = after + 1; lo <= head; lo += TAIL_CHUNK) {
     const hi = Math.min(head, lo + TAIL_CHUNK - 1);
     chunks.push(
-      reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi))).then((values) => {
-        if (values.length !== hi - lo + 1) {
-          throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
-        }
-        return values.map((value, i) => ({ seq: asSeq(lo + i), ops: decodeOps(value, asSeq(lo + i)) }));
-      }),
+      readRange(wal, lo, hi).then((values) =>
+        values.map((value, i) => ({ seq: asSeq(lo + i), ops: decodeOps(value, asSeq(lo + i)) })),
+      ),
     );
   }
   return (await Promise.all(chunks)).flat();
+}
+
+/** The values of seqs `lo..hi`. Committed seqs are gapless above ingestedThrough, so a short range is a gap and throws. */
+async function readRange(wal: IDBObjectStore, lo: number, hi: number): Promise<unknown[]> {
+  const values = await reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi)));
+  if (values.length !== hi - lo + 1) {
+    throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
+  }
+  return values;
 }
 
 /**
@@ -402,10 +408,7 @@ async function readRecordsUpTo(
   let span = 1;
   for (let lo = after + 1; lo <= head; ) {
     const hi = Math.min(head, lo + span - 1);
-    const values = await reqToPromise(wal.getAll(IDBKeyRange.bound(lo, hi)));
-    if (values.length !== hi - lo + 1) {
-      throw new CommitError(`wal gap in seqs ${lo}..${hi}`);
-    }
+    const values = await readRange(wal, lo, hi);
     for (const [i, value] of values.entries()) {
       const at = asSeq(lo + i);
       const ops = decodeOps(value, at);
@@ -916,6 +919,21 @@ export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
 }
 
 /**
+ * The oldest records with seq > ingestedThrough whose `flushBytes` fit in
+ * `maxBytes`, and at least one, read in one transaction, with the head
+ * that transaction read.
+ */
+async function readUningested(wal: IdBWal, maxBytes: number): Promise<{ readonly records: WalRecord[]; readonly head: Seq }> {
+  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
+  const done = txDone(tx);
+  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
+  const head = await headOf(tx, through);
+  const records = await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes);
+  await done;
+  return { records, head };
+}
+
+/**
  * `flushBytes` of the records above ingestedThrough, read from the records.
  * The read stops once the next record would pass `cap`. The
  * answer is then at least `cap`: the bytes already read, when those
@@ -923,13 +941,7 @@ export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
  * with `maxWalBytes`, so a long WAL still trips the limit.
  */
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
-  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
-  const done = txDone(tx);
-  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
-  const head = await headOf(tx, through);
-  const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, cap);
-  await done;
+  const { records, head } = await readUningested(wal, cap);
   let bytes = 0;
   for (const record of records) bytes += flushBytes(record.ops);
   const last = records[records.length - 1]?.seq ?? head;
@@ -942,15 +954,7 @@ export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number>
  * than the cap comes alone.
  */
 export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
-  const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
-  const done = txDone(tx);
-  const meta = tx.objectStore(META_STORE);
-  const through = await metaSeq(meta, META_INGESTED);
-  const head = await headOf(tx, through);
-  const store = tx.objectStore(WAL_STORE);
-  const records = await readRecordsUpTo(store, through, head, limit.maxBytes);
-  await done;
-  return records;
+  return (await readUningested(wal, limit.maxBytes)).records;
 }
 
 /**
