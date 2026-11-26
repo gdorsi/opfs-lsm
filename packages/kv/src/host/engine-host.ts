@@ -183,6 +183,12 @@ export class EngineHost {
  * it for one L0 run at a time. Compaction merges without it and holds it
  * only to install the merged run.
  *
+ * What it holds in memory is this host's own. After another host
+ * published, `trusted` names an older generation, which costs one check of
+ * the recorded manifest, and `pendingBytes` counts records that host
+ * folded, which costs one flush that finds nothing. The reserve's state is
+ * not shared either (docs/reserve.md, "Several hosts").
+ *
  * It opens the WAL database and the folder for each operation, and only if
  * they exist, so an operation after `destroyDb` finds them gone and stops.
  * A database born again under the name starts its seqs and manifest
@@ -823,9 +829,10 @@ function isClosedDatabase(err: unknown): boolean {
  * SharedWorker, or, in a dedicated Worker, to the page that started it. A
  * SharedWorker's host writes run files the way `fileWrites` finds. A
  * dedicated Worker's host writes none: each handle starts its own, and
- * several hosts flushing one database is not verified. Where `fileWrites`
- * has to try, the ports are served at once and each request waits for the
- * host, so no connect event and no request is lost.
+ * several hosts do not share one reserve (docs/reserve.md, "Several
+ * hosts"). Where `fileWrites` has to try, the ports are served at once and
+ * each request waits for the host, so no connect event and no request is
+ * lost.
  */
 export function serveWorker(build: (writes: FileWrites) => EngineHost): void {
   // Read off `globalThis`, so the main tsc build needs no webworker lib.
