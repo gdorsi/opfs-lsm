@@ -115,6 +115,33 @@ describe("MessagePort ingest host (SharedWorker protocol)", () => {
     port2.close();
   });
 
+  it("ignores a message that is not a call, and answers the next one", async () => {
+    const { port1, port2 } = new MessageChannel();
+    attachEngineHostPort(port1, new EngineHost(() => new MemoryFs()));
+    const replies: unknown[] = [];
+    const reply = new Promise<{ id: number; code?: string }>((resolve) => {
+      port2.onmessage = (ev) => {
+        replies.push(ev.data);
+        resolve(ev.data);
+      };
+    });
+    const unhandled = vi.fn<(reason: unknown) => void>();
+    process.on("unhandledRejection", unhandled);
+    try {
+      port2.postMessage(null);
+      port2.postMessage("not a call");
+      port2.postMessage({ method: "fromANewerBuild", id: 8, args: [] });
+      expect(await reply).toMatchObject({ id: 8 });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(replies).toHaveLength(1);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      port1.close();
+      port2.close();
+    }
+  });
+
   it("answers every request about a name no openDb created, creates neither store, and serves the name once it is opened", async () => {
     const fs = new MemoryFs();
     const { port1, port2 } = new MessageChannel();

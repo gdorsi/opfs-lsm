@@ -168,7 +168,7 @@ export class EngineHost implements HostCalls {
   }
 
   /** Record a manifest that pairs with the WAL of `name`. See `IngestClient.repair`. */
-  // fallow-ignore-next-line unused-class-member -- the clients call it through HOST_CALLS
+  // fallow-ignore-next-line unused-class-member -- the clients call every host method through HOST_CALLS, which fallow cannot follow
   async repair(name: string): Promise<void> {
     await this.db(name).repair();
   }
@@ -860,9 +860,11 @@ export function attachEngineHostPort(
   port: MessagePort,
   served: EngineHost | Promise<EngineHost>,
 ): () => void {
-  const listener = (async (ev: MessageEvent<ClientToHost>) => {
-    const { id, method, args } = ev.data;
+  const listener = (async (ev: MessageEvent<ClientToHost | null>) => {
+    const id = ev.data?.id;
     try {
+      // A message that is not a call throws here, and gets no answer.
+      const { method, args } = ev.data!;
       const host = await served;
       // A tab of a newer build: answer, so its request does not wait forever.
       if (!Object.hasOwn(HOST_CALLS, method)) throw new StorageUnavailableError(`the SharedWorker does not serve "${method}"`);

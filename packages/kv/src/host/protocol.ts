@@ -109,8 +109,8 @@ export async function unlessHeld(name: string, fn: () => Promise<void>): Promise
 export type HostCalls = Omit<IngestClient, "close">;
 export type HostCall = keyof HostCalls;
 
-/** Each call, and whether the host answers it. One it does not answer is fire-and-forget. */
-export const HOST_CALLS: Readonly<Record<HostCall, boolean>> = {
+/** Each call, and whether the host answers it: exactly the calls that return a promise. One it does not answer is fire-and-forget. */
+export const HOST_CALLS: { readonly [M in HostCall]: ReturnType<HostCalls[M]> extends Promise<unknown> ? true : false } = {
   ingest: true,
   watch: false,
   unwatch: false,
@@ -120,7 +120,11 @@ export const HOST_CALLS: Readonly<Record<HostCall, boolean>> = {
   stats: true,
 };
 
-/** A call over the port. Only an answered one carries an `id`. */
+/**
+ * A call over the port. Only an answered one carries an `id`. `args` names
+ * what each call takes; both clients pass a call's arguments through as
+ * they are, and `EngineHost implements HostCalls` is what checks them.
+ */
 export type ClientToHost = {
   [M in HostCall]: { readonly id?: number; readonly method: M; readonly args: Parameters<HostCalls[M]> };
 }[HostCall];
