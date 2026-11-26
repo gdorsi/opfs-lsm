@@ -595,7 +595,12 @@ class DbImpl implements Db {
   private head: HeadStart | undefined = undefined;
   /** Open runs of every held generation by path. Paths are immutable, so a hit never goes stale. */
   private readonly runs = new Map<string, Run>();
-  private readonly catchUpToWal = coalesced(() => this.syncOnce());
+  /** Read the tail and catch up to it. After close the connection is gone, and as in `follow` there is nothing to catch up. */
+  private readonly catchUpToWal = coalesced(async () => {
+    await this.retrying<"done">(() =>
+      this.closed ? Promise.resolve("done") : this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail)),
+    );
+  });
   private readonly listeners = new Set<ChangeListener>();
   /** Applied and not yet announced, in seq order. Drained outside IndexedDB callbacks. */
   private unannounced: ChangeEvent[] = [];
@@ -707,11 +712,6 @@ class DbImpl implements Db {
     } finally {
       this.announcing = false;
     }
-  }
-
-  private emit(event: ChangeEvent): void {
-    this.unannounced.push(event);
-    this.announce();
   }
 
   /**
@@ -876,10 +876,6 @@ class DbImpl implements Db {
     return this.catchUpToWal();
   }
 
-  private async syncOnce(): Promise<void> {
-    await this.retrying(() => this.catchUpOnce());
-  }
-
   /**
    * Run `attempt` once without the reclaim lock, the usual path. A run or
    * manifest that went missing mid-load was almost always reclaimed after
@@ -904,12 +900,6 @@ class DbImpl implements Db {
         }
       }
     });
-  }
-
-  /** Read the tail and catch up to it. After close the connection is gone, and as in `follow` there is nothing to catch up. */
-  private catchUpOnce(): Promise<"done" | Retry> {
-    if (this.closed) return Promise.resolve("done");
-    return this.wal.tail(this.mem.appliedThrough, this.installed.generation).then((tail) => this.follow(tail));
   }
 
   /**
@@ -1003,13 +993,13 @@ class DbImpl implements Db {
    */
   private async write<R>(
     plan: () => Maybe<{ readonly ops: readonly CheckedOp[]; readonly result: R }>,
-    warm?: () => Promise<unknown>,
+    warm: () => Promise<unknown>,
   ): Promise<{ readonly seq: Seq | undefined; readonly result: R }> {
     // Only its turn: the handle is checked open again below.
     await this.pressure.admit();
     const out = await this.retrying(async () => {
       for (;;) {
-        await warm?.();
+        await warm();
         this.ensureOpen();
         let missing: Generation | undefined;
         let miss: Miss | undefined;
@@ -1342,7 +1332,8 @@ class DbImpl implements Db {
   async closeFor(reason: "close" | "destroyed"): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.emit({ kind: "closed", reason });
+    this.unannounced.push({ kind: "closed", reason });
+    this.announce();
     this.full.close();
     this.rows?.close();
     this.bus?.close();

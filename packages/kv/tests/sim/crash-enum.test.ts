@@ -392,7 +392,7 @@ describe("risks to target first (research note)", () => {
 });
 
 describe("risks to target first: false corruption", () => {
-  // Risk 4. `syncOnce` reads the tail, loads the manifest it names and opens
+  // Risk 4. `sync` reads the tail, loads the manifest it names and opens
   // that generation's runs. The host's reclaim removes any run no tab holds
   // open, and a tab holds a run only once its open returns. Here tab B's run
   // opens are slow, and before each one returns the host flushes four times

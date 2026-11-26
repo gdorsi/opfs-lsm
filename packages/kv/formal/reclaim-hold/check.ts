@@ -83,7 +83,7 @@ function sourceSync(): string[] {
     /const first = await attempt\(\);\s*if \(finished\(first\)\) return first;\s*return holdingFiles\(this\.name, async \(\) => \{\s*for \(let gone = 0; ; \) \{\s*const step = await attempt\(\);/,
     "the first attempt takes no reclaim lock, and every retry runs whole under it",
   );
-  need("db.ts", /return this\.wal\.tail\(this\.mem\.appliedThrough, this\.installed\.generation\)\.then\(\(tail\) => this\.follow\(tail\)\);/, "an attempt reads the tail inside the attempt");
+  need("db.ts", /this\.retrying<"done">\(\(\) =>\s*this\.closed \? Promise\.resolve\("done"\) : this\.wal\.tail\(this\.mem\.appliedThrough, this\.installed\.generation\)\.then\(\(tail\) => this\.follow\(tail\)\),/, "an attempt reads the tail inside the attempt");
   need(
     "db.ts",
     /let run = this\.runs\.get\(path\);\s*if \(!run\) \{\s*const opened = early\?\.get\(path\);\s*early\?\.delete\(path\);\s*const file = await \(opened \?\? this\.fs\.open\(path\)\);\s*if \(!file\) return undefined;/,
