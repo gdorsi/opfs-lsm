@@ -4,7 +4,7 @@ import type { BusMessage, StorageFull } from "./protocol.js";
 
 type StorageFullHandler = (full: StorageFull) => Promise<void>;
 
-/** A tab's side of the reserve offer (docs/reserve.md, "Answer"). */
+/** A tab's side of the reserve offer (docs/reserve.md, "Answer"). Runs in the tab; host/reserve.ts is the host's side. */
 export type StorageFullResponder = {
   /** Add a handler. While this handle has one, it asks for the full lock. Returns unsubscribe. */
   readonly on: (handler: StorageFullHandler) => () => void;

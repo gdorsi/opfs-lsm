@@ -18,7 +18,7 @@ export type RowPost = {
    * follows. A hidden page posts every row at once.
    */
   readonly add: (row: BusRow, bytes: number) => void;
-  /** Post the rows that wait, and stop. The caller closes the channel. */
+  /** Post the rows that wait, and stop. The caller adds no row after this, then closes the channel. */
   readonly close: () => void;
 };
 
