@@ -50,7 +50,10 @@ async function putRows(db: Db, from: number, to: number): Promise<void> {
   });
 }
 
-describe("a flush stopped on a full L0", () => {
+// Cross-host exclusion is the Web Lock, which Node has from 24.
+const NO_LOCKS = !navigator.locks;
+
+describe.skipIf(NO_LOCKS)("a flush stopped on a full L0", () => {
   it("resumes after the pass of another host that compacts", async () => {
     let lift!: () => void;
     let reached!: () => void;
@@ -98,7 +101,7 @@ describe("a flush stopped on a full L0", () => {
   });
 });
 
-describe("two writing hosts on a full origin", () => {
+describe.skipIf(NO_LOCKS)("two writing hosts on a full origin", () => {
   /**
    * Two handles with a reserve, each on its own host, both settled over the
    * reserve file, then a limit that the next flush does not fit under. Both

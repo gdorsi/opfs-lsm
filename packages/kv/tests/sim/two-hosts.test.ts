@@ -164,7 +164,8 @@ async function run(seed: number): Promise<void> {
   await fresh.close();
 }
 
-describe("two writing hosts on one database", () => {
+// Cross-host exclusion is the Web Lock, which Node has from 24.
+describe.skipIf(!navigator.locks)("two writing hosts on one database", () => {
   it(`keep every acked write, through a destroy and host changes: seeds ${FIRST} to ${FIRST + SEEDS - 1}`, async () => {
     for (let seed = FIRST; seed < FIRST + SEEDS; seed++) await run(seed);
     expect(tally.flushes, "the runs met flushes").toBeGreaterThan(0);
