@@ -1,7 +1,7 @@
 /**
  * The wasm engine (its checked twin under `KV_ENGINE=checked`), instantiated here,
- * so the differential tests call it directly (its errors are not wrapped
- * into fallbacks) and its memory is registered with `bounded`.
+ * so the differential tests call it directly and its memory is registered
+ * with `bounded`.
  */
 import { ensureEngine, flatEngine, type FlatEngine } from "../src/store/engine.js";
 import { watchWasmMemory } from "./targets.js";

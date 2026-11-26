@@ -59,8 +59,9 @@ function repaired(file: Uint8Array, flags: number): Uint8Array {
  * A tab's reads of one run: `SstReader` get, scans and filtered scan. Byte 0
  * picks the file's repair, a u16 gives the length of a manifest, and the
  * file follows. The run's entry is the manifest's first, read as a tab reads
- * it: through `decodeGeneration`, with the CRC rewritten so that mutations
- * reach the index behind it. The reader fails every read of a file that is
+ * it: through `decodeGeneration`, with the head CRC rewritten so that
+ * mutations of the head reach a read. A mutation inside the run's index
+ * still fails that index's own CRC. The reader fails every read of a file that is
  * not the size its entry records, so the entry takes the file's size when
  * its blocks end inside the file.
  */
