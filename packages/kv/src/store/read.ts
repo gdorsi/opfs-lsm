@@ -50,6 +50,11 @@ function isLive(at: RecordWalker, through: Seq): boolean {
   return at.isPut() && at.seq() > through;
 }
 
+/** `isLive` for a scan's entry, judged by the marks `inside` the scan's bounds. */
+function isLiveEntry(e: LayerEntry, inside: Marks): boolean {
+  return e.kind === "put" && (inside.length === 0 || e.seq > throughAt(inside, e.block ? e : e.key));
+}
+
 /** A found put's value: a copy `copyOut` made, or what `decode` makes of the bytes where they are stored. */
 function valueOfPut<T>(put: MemRow | RecordWalker, decode: ((value: Uint8Array) => T) | undefined): T {
   const bytes = put instanceof RecordWalker ? put.valueInPlace() : put.value!;
@@ -388,7 +393,7 @@ export function liveStep(cursors: readonly LayerCursor[], marks: Marks, reverse 
     for (;;) {
       const e = merge.next();
       if (e instanceof Miss || !e) return e;
-      if (e.kind === "put" && (inside.length === 0 || e.seq > throughAt(inside, e.block ? e : e.key))) return e;
+      if (isLiveEntry(e, inside)) return e;
     }
   };
 }
@@ -439,7 +444,7 @@ export function matchingStep(
         }
         if (newer) continue;
       }
-      if (entry.kind === "put" && entry.seq > throughAt(inside, entry.block ? entry : entry.key)) return entry;
+      if (isLiveEntry(entry, inside)) return entry;
     }
   };
 }
