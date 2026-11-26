@@ -1,7 +1,7 @@
 import type { EngineHost } from "../src/host/engine-host.js";
 import { unlessHeld } from "../src/locks.js";
 import { reconcile } from "../src/recover.js";
-import { reclaimManifests } from "../src/store/generation.js";
+import { reclaimManifests } from "../src/host/reclaim.js";
 
 /**
  * Wait for a fold in flight, reconcile and remove old manifests as a fold

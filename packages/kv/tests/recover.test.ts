@@ -8,7 +8,8 @@ import { forgetDestroyed, recordDestroyed } from "../src/idb/destroyed.js";
 import { reconcile, reconcileOpen, recordEmpty } from "../src/recover.js";
 import { asGeneration, asSeq, GENERATION_NONE } from "../src/seq.js";
 import { crc32 } from "../src/store/crc32.js";
-import { decodeGeneration, publishGeneration, type GenerationMeta } from "../src/store/generation.js";
+import { publishGeneration } from "../src/host/publish.js";
+import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import {
   openHarnessDb,
   ingest,

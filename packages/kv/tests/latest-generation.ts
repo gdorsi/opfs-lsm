@@ -5,7 +5,7 @@ import { manifestNumbers, readManifest, type GenerationMeta } from "../src/store
 export async function loadLatestGeneration(fs: AsyncFs): Promise<GenerationMeta | undefined> {
   for (const generation of await manifestNumbers(fs)) {
     const meta = await readManifest(fs, generation);
-    if (meta) return meta;
+    if (typeof meta === "object") return meta;
   }
   return undefined;
 }

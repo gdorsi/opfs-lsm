@@ -3,7 +3,8 @@ import { openHarnessDb, __resetMemoryFsForTests, ingest, MemoryFs } from "../src
 import { TabWal } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { CorruptDatabaseError } from "../src/errors.js";
-import { decodeGeneration, manifestHead, publishGeneration } from "../src/store/generation.js";
+import { publishGeneration } from "../src/host/publish.js";
+import { decodeGeneration, manifestHead } from "../src/store/generation.js";
 import { asGeneration } from "../src/seq.js";
 
 const NAME = "generation-idb";

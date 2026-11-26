@@ -6,8 +6,8 @@ import type { KeyRange } from "./sst.js";
 /**
  * Leveled layout. A generation lists the L0 runs newest first, then each
  * level's runs in key order. L0 runs may overlap each other. Runs in one
- * level from L1 down never overlap. Each run's level is in its path and its
- * byte size and key range are in the manifest, so planning reads no files.
+ * level from L1 down never overlap. Each run's level, byte size and key
+ * range are in the manifest, so planning reads no files.
  */
 const L0_RUNS_TO_COMPACT = 4;
 const LEVEL_RATIO = 10;
@@ -34,12 +34,6 @@ export type CompactionPlan = {
 export function levelOfDir(dir: string): number | undefined {
   const m = /^l(\d+)$/.exec(dir);
   return m ? Number(m[1]) : undefined;
-}
-
-/** 0 for L0, n for Ln. Undefined when the path has no `l<n>/` prefix. */
-export function levelOf(path: string): number | undefined {
-  const slash = path.indexOf("/");
-  return slash < 0 ? undefined : levelOfDir(path.slice(0, slash));
 }
 
 export function levelRunPath(level: number, name: string): string {
@@ -91,16 +85,12 @@ export function planCompaction(
   { runs, marks }: Pick<GenerationMeta, "runs" | "marks">,
   { maxSources, l1Target = L1_TARGET_BYTES }: PlanLimits,
 ): CompactionPlan | undefined {
-  const inLevel = (level: number | undefined) =>
-    runs.filter((r) => levelOf(r.path) === level);
+  const inLevel = (level: number) => runs.filter((r) => r.level === level);
   const plan = (sources: RunMeta[][], outputLevel: number): CompactionPlan => {
     const taken = sources.filter((s) => s.length > 0);
     const inputs = taken.flat();
     const range = span(inputs);
-    const below = runs.filter((r) => {
-      const level = levelOf(r.path);
-      return (level === undefined || level > outputLevel) && !inputs.includes(r);
-    });
+    const below = runs.filter((r) => r.level > outputLevel && !inputs.includes(r));
     return {
       sources: taken,
       inputs,
@@ -114,7 +104,7 @@ export function planCompaction(
   const l0 = inLevel(0);
   let best = { level: -1, score: 0 };
   if (l0.length >= L0_RUNS_TO_COMPACT) best = { level: 0, score: l0.length / L0_RUNS_TO_COMPACT };
-  const deepest = Math.max(0, ...runs.map((r) => levelOf(r.path) ?? 0));
+  const deepest = Math.max(0, ...runs.map((r) => r.level));
   for (let level = 1; level <= deepest; level++) {
     const score = bytesOf(inLevel(level)) / (l1Target * LEVEL_RATIO ** (level - 1));
     if (score > 1 && score > best.score) best = { level, score };
@@ -124,9 +114,8 @@ export function planCompaction(
     // A run holds back a mark when the mark survives retiring against that run alone.
     const stale = marks.length === 0 ? undefined : runs.find((r) => retireMarks(marks, [r]).length > 0);
     if (!stale) return undefined;
-    const level = levelOf(stale.path)!;
-    if (level > 0) return plan([[stale]], level);
-    best = { level, score: 0 };
+    if (stale.level > 0) return plan([[stale]], stale.level);
+    best = { level: 0, score: 0 };
   }
   if (best.level === 0) {
     // The oldest ones, so the L0 runs left behind stay newer than L1.
@@ -152,11 +141,10 @@ export function replaceRuns(
   outputs: readonly RunMeta[],
 ): RunMeta[] {
   const kept = runs.filter((r) => !inputs.includes(r.path));
-  const l0 = kept.filter((r) => levelOf(r.path) === 0);
-  const leveled = [...kept.filter((r) => levelOf(r.path) !== 0), ...outputs];
-  const rank = (r: RunMeta) => levelOf(r.path) ?? Number.POSITIVE_INFINITY;
+  const l0 = kept.filter((r) => r.level === 0);
+  const leveled = [...kept.filter((r) => r.level !== 0), ...outputs];
   leveled.sort((a, b) => {
-    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    if (a.level !== b.level) return a.level - b.level;
     if (!a.range || !b.range) return 0;
     return compareBytes(a.range.smallest, b.range.smallest);
   });

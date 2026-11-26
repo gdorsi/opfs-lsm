@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StorageFullError, StorageUnavailableError, type OpfsLsmError } from "../src/index.js";
-import { reclaimManifests } from "../src/store/generation.js";
+import { reclaimManifests } from "../src/host/reclaim.js";
 import {
   openHarnessDb,
   ingest,

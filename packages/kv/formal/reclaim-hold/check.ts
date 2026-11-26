@@ -117,8 +117,8 @@ function sourceSync(): string[] {
     /async removeUnlessOpen\(path: string\): Promise<boolean> \{\s*return await navigator\.locks\.request\(\s*this\.lockName\(path\),\s*\{ mode: "exclusive", ifAvailable: true \},\s*async \(lock\) => \{\s*if \(!lock\) return false;/,
     "a run goes only under its run lock taken exclusively, when available",
   );
-  need("store/generation.ts", /if \(retained\.has\(path\)\) continue;\s*await fs\.removeUnlessOpen\(path\)/, "reclaimRuns removes a run only through removeUnlessOpen");
-  need("store/generation.ts", /if \(m\[2\] \? n > keepFrom : n >= keepFrom\) continue;/, "reclaimManifests keeps the recorded manifest and every newer one");
+  need("host/reclaim.ts", /if \(retained\.has\(path\)\) continue;\s*await fs\.removeUnlessOpen\(path\)/, "reclaimRuns removes a run only through removeUnlessOpen");
+  need("host/reclaim.ts", /if \(m\[2\] \? n > keepFrom : n >= keepFrom\) continue;/, "reclaimManifests keeps the recorded manifest and every newer one");
   const host = read("host/engine-host.ts");
   const removals = host.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "").match(/reclaimManifests\(|reclaimRuns\(|removeUnlessOpen\(|\bsweep\(fs/g)?.length ?? 0;
   // A flush and a destroy call reclaimManifests under unlessHeld, reclaim and sweepIdle call sweep under it, and sweep

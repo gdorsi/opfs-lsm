@@ -4,7 +4,6 @@ import { holdingFiles } from "../src/locks.js";
 import { openExistingWal } from "../src/idb/wal.js";
 import type { Db } from "../src/index.js";
 import { loadGeneration } from "../src/store/generation.js";
-import { levelOf } from "../src/store/levels.js";
 import { createLocalIngestClient, EngineHost, MemoryFs, openHarnessDb } from "../src/testing.js";
 
 /** A host skips the check of a generation it published itself: a tab's request must make it look again. */
@@ -47,7 +46,7 @@ describe("a host that published the recorded generation itself", () => {
     const wal = (await openExistingWal(checkDbName(name)))!;
     const before = await wal.meta();
     const merged = (await loadGeneration(fs, before.generation!))!;
-    const output = merged.runs.find((run) => levelOf(run.path) === 1)!;
+    const output = merged.runs.find((run) => run.level === 1)!;
     expect(merged.runs, "the host merged the four flushes into L1").toEqual([output]);
     // The run goes, while the host that wrote it lives on.
     await fs.remove(output.path);

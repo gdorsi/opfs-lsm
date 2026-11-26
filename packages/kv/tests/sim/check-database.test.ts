@@ -6,10 +6,8 @@ import {
   MemoryFs,
   createLocalIngestClient,
 } from "../../src/testing.js";
-import {
-  loadGeneration,
-  publishGeneration,
-} from "../../src/store/generation.js";
+import { publishGeneration } from "../../src/host/publish.js";
+import { loadGeneration } from "../../src/store/generation.js";
 import { checkDatabase, deleteWal, walMeta, walStore } from "./check-database.js";
 
 const utf = (s: string) => new TextEncoder().encode(s);

@@ -4,13 +4,8 @@ import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { nextGeneration, type Generation, type Seq } from "../seq.js";
 import { reconcile, type Trusted } from "../recover.js";
-import {
-  loadRecorded,
-  publishGeneration,
-  publishL0,
-} from "../store/generation.js";
+import { loadRecorded, publishGeneration, publishL0 } from "./publish.js";
 import { foldRecords } from "../store/fold.js";
-import { levelOf } from "../store/levels.js";
 import { retireMarks } from "../store/marks.js";
 
 export type IngestResult = {
@@ -67,7 +62,7 @@ export async function ingestChunk(
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
   const prev = await loadRecorded(fs, base.generation);
-  if (prev.runs.filter((r) => levelOf(r.path) === 0).length >= limits.l0Stop) {
+  if (prev.runs.filter((r) => r.level === 0).length >= limits.l0Stop) {
     return { kind: "stopped", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
   const folded = foldRecords(records);

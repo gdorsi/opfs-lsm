@@ -51,7 +51,7 @@ The head is everything a planner or a recovery reads. IndexedDB keeps a copy of 
 count of runs, not of blocks.
 
 `bytes` and the key range let the compaction planner size and route levels without opening a
-file. The level of a run is in its path.
+file. The level of a run is the `n` of its path's `l<n>/` directory.
 
 A run's index is the only index of its blocks: the run file holds none
 ([sst-format.md](sst-format.md)). A tab reads any block of the run with it
@@ -73,7 +73,8 @@ against them. [design.md](design.md#range-deletes) gives the meaning of both.
 
 A reader rejects any other version as corrupt, and a marks block that breaks its rules, a
 mark with `through` 0, an end not above its start, `at` at or below its `through` or past the
-manifest's `through`, a run whose `marksThrough` is past it, a `head bytes` past the file, or
+manifest's `through`, a run whose `marksThrough` is past it, a run whose path names no level, a
+`head bytes` past the file, or
 indexes that do not end with the file. An index whose CRC does not match, whose block count the
 bytes cannot hold, or whose blocks end past the run's `bytes` is refused when a tab first reads
 the run: the manifest still decodes, and that run's read throws. A compaction refuses an input

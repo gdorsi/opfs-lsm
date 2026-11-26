@@ -1,14 +1,13 @@
 import { compareBytes } from "../../src/bytes.js";
 import { throughAt } from "../../src/store/marks.js";
 import type { AsyncFs } from "../../src/opfs/async-fs.js";
+import { listRuns } from "../../src/host/reclaim.js";
 import {
   decodeGeneration,
   GENERATION_ZERO,
-  listRuns,
   type GenerationMeta,
   type RunMeta,
 } from "../../src/store/generation.js";
-import { levelOf } from "../../src/store/levels.js";
 import type { SstEntry } from "../../src/store/sst.js";
 import { decodeSst, indexBlob, sstBlockIndex } from "../oracle/sst-ref.js";
 import { keyToString, show, type OracleEntry } from "./oracle.js";
@@ -246,8 +245,7 @@ async function checkRun(
     }
   }
 
-  const level = levelOf(path);
-  if (level === 0) {
+  if (run.level === 0) {
     const m = L0_NAME.exec(path);
     if (!m) {
       bad("L0 name is not <first>-<last>.sst");
@@ -257,15 +255,13 @@ async function checkRun(
       const out = entries.find((e) => (e.seq ?? 0) < lo || (e.seq ?? 0) > hi);
       if (out) bad(`${show(out.key)} has seq ${out.seq} outside the name's ${lo}-${hi}`);
     }
-  } else if (level !== undefined) {
+  } else {
     const m = LEVEL_NAME.exec(path);
     if (!m) {
       bad("level name is not c<gen>.<i>.sst");
     } else {
       if (Number(m[2]) > generation) bad(`written by generation ${m[2]}, after recorded ${generation}`);
     }
-  } else {
-    bad("path names no level");
   }
   return entries;
 }
@@ -285,7 +281,7 @@ function checkOrder(
   let prevInLevel: RunMeta | undefined;
   const seen = new Set<string>();
   for (const run of runs) {
-    const level = levelOf(run.path) ?? Number.POSITIVE_INFINITY;
+    const { level } = run;
     if (level < prevLevel) problems.push(`${run.path} listed after a deeper level`);
     if (level !== prevLevel) prevInLevel = undefined;
     prevLevel = level;
