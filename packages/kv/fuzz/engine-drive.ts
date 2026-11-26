@@ -7,7 +7,7 @@
  * stop, which two builds of the engine must agree on.
  */
 import type { EngineExports } from "../src/store/engine.js";
-import { blocksOf, fixSstCrc, footerOf } from "./targets.js";
+import { blocksOf, fixIndexCrc, fixSstCrc } from "./targets.js";
 
 /** Where a case builder takes its choices from. */
 export interface Source {
@@ -203,22 +203,36 @@ export function blockFields(b: Uint8Array): LengthField[] {
   return fields;
 }
 
-/** The first key, last key and block lengths of a run's index rows. */
-export function indexFields(run: Uint8Array): LengthField[] {
-  const footer = footerOf(run);
+/** The block count of a run's index (packages/kv/engine/abi.md, "Wire formats"), then each block's separator length and byte length. */
+export function indexFields(index: Uint8Array): LengthField[] {
   const fields: LengthField[] = [];
-  if (!footer) return fields;
-  const view = new DataView(run.buffer, run.byteOffset, run.byteLength);
-  let o = footer.indexStart;
-  for (let i = 0; i < footer.blockCount && o + 16 <= run.byteLength; i++) {
-    for (let k = 0; k < 2; k++) {
-      fields.push({ at: o, width: 4, varint: false });
-      o += 4 + view.getUint32(o, true);
-    }
-    fields.push({ at: o + 4, width: 4, varint: false });
-    o += 8;
+  if (index.byteLength < 4) return fields;
+  fields.push({ at: 0, width: 4, varint: false });
+  const blocks = new DataView(index.buffer, index.byteOffset, index.byteLength).getUint32(0, true);
+  let o = 4;
+  for (let i = 0; i < 2 * blocks; i++) {
+    const v = readVarint(index, o);
+    if (!v) break;
+    fields.push({ at: o, width: v.width, varint: true });
+    o += v.width;
   }
   return fields;
+}
+
+/** What an index `indexFields` reads through holds: each block's separator length and byte length, and the separators. */
+export function unpackIndex(index: Uint8Array): { lengths: [sep: number, block: number][]; seps: Uint8Array } {
+  const fields = indexFields(index).slice(1);
+  const value = (f: LengthField) => readVarint(index, f.at)!.value;
+  const lengths = Array.from({ length: fields.length >> 1 }, (_, b): [number, number] => [value(fields[2 * b]!), value(fields[2 * b + 1]!)]);
+  const last = fields[fields.length - 1];
+  return { lengths, seps: index.slice(last ? last.at + last.width : 4, index.byteLength - 4) };
+}
+
+/** An index of blocks with these lengths over `seps`, under a CRC that matches. */
+export function packIndex(lengths: readonly (readonly [sep: number, block: number])[], seps: Uint8Array): Uint8Array {
+  const index = concat([u32s([lengths.length]), ...lengths.flatMap(([sep, block]) => [varint(sep), varint(block)]), seps, new Uint8Array(4)]);
+  fixIndexCrc(index);
+  return index;
 }
 
 const hex = (b: Uint8Array) => Buffer.from(b).toString("hex");
@@ -236,12 +250,19 @@ function call(ex: EngineExports, input: Uint8Array, op: (ptr: number) => number)
   return `${status}:${result(ex)}`;
 }
 
+/** A run's file, and the index its encoder reported for it: what a host opens a merge with. */
+export type Run = { readonly bytes: Uint8Array; readonly index: Uint8Array };
+
 /** The run `encoder` writes for `es`. */
-export function encoded(encoder: EngineExports, es: readonly Entry[]): Uint8Array {
+export function encoded(encoder: EngineExports, es: readonly Entry[]): Run {
   const input = pack(es);
   const out = call(encoder, input, (ptr) => encoder.encode_sst(ptr, input.byteLength));
   const record = Buffer.from(out.slice(out.indexOf(":") + 1), "hex");
-  return new Uint8Array(record.subarray(16, 16 + record.readUInt32LE(4)));
+  const keys = 16 + record.readUInt32LE(4);
+  return {
+    bytes: new Uint8Array(record.subarray(16, keys)),
+    index: new Uint8Array(record.subarray(keys + record.readUInt32LE(8) + record.readUInt32LE(12))),
+  };
 }
 
 /** One line per stop. A trap ends the transcript with `TRAP <message>`. */
@@ -282,7 +303,7 @@ function patterns(r: Source): Uint8Array {
 
 /** A data block of a run `encoder` writes, and a pattern list, either of them corrupt or with a length near 2^32, or neither. */
 export function scanCase(r: Source, encoder: EngineExports): ScanCase {
-  const blocks = blocksOf(encoded(encoder, randomEntries(r, r.pick([1, 5, 30, 200]), 1)));
+  const blocks = blocksOf(encoded(encoder, randomEntries(r, r.pick([1, 5, 30, 200]), 1)).bytes);
   const block = blocks[r.int(blocks.length)] ?? new Uint8Array(0);
   const pats = patterns(r);
   const kind = r.int(5);
@@ -301,7 +322,7 @@ export function driveScan(ex: EngineExports, c: ScanCase): Transcript {
 }
 
 export type MergeCase = {
-  readonly sources: readonly (readonly Uint8Array[])[];
+  readonly sources: readonly (readonly Run[])[];
   readonly marks: Uint8Array;
   /** The marks block was corrupted: the host encodes it, so a session may trap. */
   readonly badMarks: boolean;
@@ -327,14 +348,14 @@ function marksBlock(r: Source): Uint8Array {
   return concat([u32s([marks.length]), ...marks]);
 }
 
-/** Up to five sources of runs `encoder` writes, now and then one out of key order, corrupt or with an index length near 2^32, with or without a CRC that matches. */
+/** Up to five sources of runs `encoder` writes, now and then one out of key order, corrupt, or with a corrupt index or an index length near 2^32, with or without CRCs that match. */
 export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
   let seq = 1;
   const sources = Array.from({ length: r.int(6) }, () => {
     const all = randomEntries(r, r.int(400), seq).sort((a, b) => Buffer.compare(a.key, b.key));
     seq += 1000;
     const per = Math.ceil(all.length / (1 + r.int(3))) || 1;
-    const runs: Uint8Array[] = [];
+    const runs: Run[] = [];
     for (let at = 0; at < Math.max(all.length, 1); at += per) {
       const slice = all.slice(at, at + per);
       if (r.int(30) === 1) slice.reverse();
@@ -342,9 +363,15 @@ export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
     }
     if (runs.length && r.int(8) === 1) {
       const i = r.int(runs.length);
-      runs[i] = r.int(2) ? corrupt(r, runs[i]!) : inflate(r, runs[i]!, indexFields(runs[i]!));
-      // Past the CRC, the footer, index and blocks are what refuse it.
-      if (r.int(2)) fixSstCrc(runs[i]!);
+      const { bytes, index } = runs[i]!;
+      const kind = r.int(3);
+      const bad = kind === 0 ? { bytes: corrupt(r, bytes), index } : { bytes, index: kind === 1 ? corrupt(r, index) : inflate(r, index, indexFields(index)) };
+      // Past the CRCs, the footer, the index and the blocks are what refuse it.
+      if (r.int(2)) {
+        fixSstCrc(bad.bytes);
+        fixIndexCrc(bad.index);
+      }
+      runs[i] = bad;
     }
     return runs;
   });
@@ -371,7 +398,7 @@ export function mergeCase(r: Source, encoder: EngineExports): MergeCase {
  */
 export function driveMerge(ex: EngineExports, c: MergeCase): Transcript {
   const r = xorshift(c.host);
-  const list = concat([u32s([c.sources.length]), ...c.sources.map((runs) => u32s([runs.length, ...runs.map((b) => b.byteLength)])), c.marks]);
+  const list = concat([u32s([c.sources.length]), ...c.sources.map(sourceRecord), c.marks]);
   const open = (ptr: number) => ex.merge_open(ptr, list.byteLength, c.drop, c.target, c.chunk, c.tail, c.yieldBytes);
   return transcript((log) => {
     log.push(call(ex, list, open));
@@ -389,6 +416,11 @@ export function driveMerge(ex: EngineExports, c: MergeCase): Transcript {
     }
     log.push(`close ${ex.merge_close()} ${ex.merge_close()} pump ${ex.merge_pump()} feed ${ex.merge_feed(0, 0)}`);
   });
+}
+
+/** A source of a source list (packages/kv/engine/abi.md, "Wire formats"). */
+export function sourceRecord(runs: readonly Run[]): Uint8Array {
+  return concat([u32s([runs.length]), ...runs.flatMap((run) => [u32s([run.bytes.byteLength, run.index.byteLength]), run.index])]);
 }
 
 function pump(ex: EngineExports, c: MergeCase, r: Source, log: string[]): void {
@@ -411,7 +443,7 @@ function pump(ex: EngineExports, c: MergeCase, r: Source, log: string[]): void {
       if (i === demands.length - 1 && r.int(6) === 0) log.push(`early ${ex.merge_pump()}`);
       const at = ex.merge_feed(source, len) >>> 0;
       log.push(`feed ${at !== 0}`);
-      if (at) new Uint8Array(ex.memory.buffer, at, len).set(c.sources[source]![run]!.subarray(offset, offset + len));
+      if (at) new Uint8Array(ex.memory.buffer, at, len).set(c.sources[source]![run]!.bytes.subarray(offset, offset + len));
     });
   }
 }

@@ -3,7 +3,7 @@
  * The module is required: the engine writes and merges runs only through it,
  * so a context where it does not load cannot flush.
  */
-import { encodeIndex, type EncodedRun, type RunEnd, type SstEntry } from "./sst.js";
+import type { EncodedRun, RunEnd, SstEntry } from "./sst.js";
 import { useBlockScanner } from "./block-scan.js";
 import { encodeMarks, type Marks } from "./marks.js";
 import { CorruptDatabaseError, unavailable } from "../errors.js";
@@ -70,11 +70,10 @@ export type EngineExports = {
  */
 export type MergeSpec = {
   /**
-   * Newest first. A source is the byte sizes of runs read back to back as
-   * one key-ordered stream: an L0 run, or the runs a step takes from the
-   * level below it.
+   * Newest first. A source is runs read back to back as one key-ordered
+   * stream: an L0 run, or the runs a step takes from the level below it.
    */
-  readonly sources: readonly (readonly number[])[];
+  readonly sources: readonly (readonly MergeInput[])[];
   /** Drop the tombstones that win: only when the output is the bottom level. */
   readonly dropTombstones: boolean;
   /** The base manifest's marks: a winner one covers is dropped. */
@@ -87,11 +86,18 @@ export type MergeSpec = {
   readonly targetBytes: number;
   /** About how much of each source to hold, and the most a `write` carries. */
   readonly chunkBytes: number;
-  /** How much of a run's end to read first, for its footer and index. */
+  /** How much of a run's end to read first, for its footer and Bloom filter. */
   readonly tailBytes: number;
   /** About how many input bytes to merge before a `yield`. */
   readonly yieldBytes: number;
 };
+
+/**
+ * An input run: the size of its file, and its block index as its manifest
+ * entry records it, since the file holds none. An index that is not the
+ * file's fails the merge.
+ */
+export type MergeInput = { readonly size: number; readonly index: Uint8Array };
 
 /** `length` bytes at `offset` of run `run` of source `source`. */
 export type Demand = { readonly source: number; readonly run: number; readonly offset: number; readonly length: number };
@@ -216,17 +222,21 @@ export function encodeRunIn(engine: FlatEngine, entries: readonly SstEntry[]): E
 export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
   named = nameStatus;
   const { ex } = engine;
-  let words = 1;
+  let listBytes = 4;
   let inputBytes = 0;
   for (const runs of spec.sources) {
-    words += 1 + runs.length;
-    for (const size of runs) inputBytes += size;
+    listBytes += 4;
+    for (const run of runs) {
+      listBytes += 8 + run.index.byteLength;
+      inputBytes += run.size;
+    }
   }
   const marks = encodeMarks(spec.marks);
-  const len = 4 * words + marks.byteLength;
+  const len = listBytes + marks.byteLength;
   // Addresses are u32 and come back as i32: past 2 GiB they read negative.
   const ptr = ex.input_ptr(len) >>> 0;
   if (ptr === 0) throw new EngineOutOfMemoryError("merge_open", len);
+  const input = new Uint8Array(ex.memory.buffer, ptr, len);
   const list = new DataView(ex.memory.buffer, ptr, len);
   let o = 0;
   const put = (v: number) => {
@@ -236,9 +246,14 @@ export function openMergeIn(engine: FlatEngine, spec: MergeSpec): MergeCore {
   put(spec.sources.length);
   for (const runs of spec.sources) {
     put(runs.length);
-    for (const size of runs) put(size);
+    for (const run of runs) {
+      put(run.size);
+      put(run.index.byteLength);
+      input.set(run.index, o);
+      o += run.index.byteLength;
+    }
   }
-  new Uint8Array(ex.memory.buffer, ptr + o, marks.byteLength).set(marks);
+  input.set(marks, o);
   const opened = ex.merge_open(
     ptr,
     len,
@@ -315,19 +330,19 @@ function readRun(bytes: Uint8Array): EncodedRun {
 
 /**
  * The `RunEnd` of the run head that `bytes` starts with, whose two keys start
- * at `keys` and whose index rows follow them to the end of `bytes`. Copies
- * the keys and encodes the rows.
+ * at `keys` and whose index follows them to the end of `bytes`. Copies all
+ * three.
  */
 function readEnd(bytes: Uint8Array, view: DataView, keys: number): RunEnd {
   const entries = view.getUint32(0, true);
   const size = view.getUint32(4, true);
   const firstLen = view.getUint32(8, true);
-  const rows = keys + firstLen + view.getUint32(12, true);
-  const index = encodeIndex(bytes.subarray(rows));
+  const at = keys + firstLen + view.getUint32(12, true);
+  const index = bytes.slice(at);
   if (entries === 0) return { bytes: size, index };
   return {
     bytes: size,
-    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, rows) },
+    range: { smallest: bytes.slice(keys, keys + firstLen), largest: bytes.slice(keys + firstLen, at) },
     index,
   };
 }

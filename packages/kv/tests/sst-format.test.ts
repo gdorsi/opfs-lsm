@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { encodeRun, ensureEngine } from "../src/store/engine.js";
-import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstGet } from "./oracle/sst-ref.js";
+import type { SstEntry } from "../src/store/sst.js";
+import { decodeSst, encodeSstRef, SST_BLOCK_TARGET, sstBlockIndex, sstGet } from "./oracle/sst-ref.js";
 import { Miss, type LayerEntry, type ScanBounds } from "../src/store/cursor.js";
 import { compareBytes } from "../src/bytes.js";
 import { cat, EDGE_CASES, indexWorkload, utf } from "./sst-workloads.js";
@@ -76,7 +76,7 @@ describe("sst format", () => {
   it("reads blocks of a single record backward", async () => {
     const entries = indexWorkload(40);
     const body = encodeSstRef(entries, 1);
-    expect(new DataView(body.buffer).getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true)).toBe(entries.length);
+    expect(sstBlockIndex(body).sepEnd.length).toBe(entries.length);
     const sorted = decodeSst(body);
     const keys = sorted.map((e) => e.key);
     const reader = readerOfBytes(body);
@@ -136,9 +136,9 @@ describe("sst format", () => {
 
   it("fills blocks to the target in encoded bytes", () => {
     const body = encodeSstRef(indexWorkload(2_000));
-    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    const blocks = view.getUint32(body.byteLength - SST_FOOTER_BYTES + 4, true);
-    const dataLen = view.getUint32(body.byteLength - SST_FOOTER_BYTES + 8, true);
+    const { sepEnd, blockStart } = sstBlockIndex(body);
+    const blocks = sepEnd.length;
+    const dataLen = blockStart[blocks]!;
     expect(dataLen / blocks).toBeGreaterThan(SST_BLOCK_TARGET * 0.9);
     expect(dataLen / blocks).toBeLessThanOrEqual(SST_BLOCK_TARGET);
   });

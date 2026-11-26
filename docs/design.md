@@ -177,14 +177,14 @@ A host that never answers holds writes at the limit. The thresholds are checked 
 
 ## SST file format
 
-A run is one SST file: sorted data blocks, a bloom filter, a block index and a footer. Its
-byte layout is in [sst-format.md](sst-format.md).
+A run is one SST file: sorted data blocks, a bloom filter and a footer. Its byte layout is in
+[sst-format.md](sst-format.md).
 
 ### Reading a run
 
 A tab holds each run of its installed generation open and reads it on demand. The manifest holds
 each run's block index, so a read loads only the blocks it needs. A get with no bloom filter cached
-starts reading the run's tail and does not wait for it. Reads of one run issued in one turn share
+starts reading the filter and does not wait for it. Reads of one run issued in one turn share
 one file read, unless they are over 128 KiB apart or the read would pass 1 MiB. Blocks that fill
 three quarters of a file read share its buffer, so the cache can hold a third more than it counts. A
 scan past its first block reads ahead toward its bound: when at most half a window is asked past the
@@ -211,7 +211,7 @@ past it. An ingest sets it to the last seq it folded. A compaction keeps the val
 
 Its head also holds the marks of the range deletes up to `through` that its runs may still hold
 versions for, and each run's `marksThrough` (see [Range deletes](#range-deletes)). After the head
-comes each run's block index, under a CRC of its own that a tab checks when it first reads the run.
+comes each run's block index, the only one the run has, under a CRC of its own ([Merging](#merging)).
 
 A new manifest takes a number one past the highest in use: the newest file in `m/`, the
 recorded generation and `meta.topGeneration`. Numbers can skip.
@@ -420,8 +420,8 @@ A step reads its inputs as sources, newest first. Each L0 run is one source. The
 of the next level, which are disjoint, are one source together. A step has at most `maxSources`
 sources.
 
-The merge is a session that the host pumps. The session owns every offset. Each pump stops
-between two keys and asks the host for one thing:
+The merge is a session that the host pumps. The host opens it with each input run's size and block index, as the manifest
+records them, and the session owns every offset. Each pump stops between two keys and asks the host for one thing:
 
 | Stop | The host |
 |---|---|
@@ -431,12 +431,12 @@ between two keys and asks the host for one thing:
 | YIELD | gives the event loop a turn |
 | DONE | installs the outputs |
 
-For a key, the newest source wins, and is dropped when a mark covers it. The session checks the CRC of every input run before it uses
-the last entries of that run. It cuts the output into runs of about 4 MiB of records, named
-`c<top + 1>.<i>`.
+For a key, the newest source wins, and is dropped when a mark covers it. The session checks each
+input's index before any read and refuses one that does not end where the run's footer says, and
+checks a run's CRC before it uses its last entries. Outputs are runs of ~4 MiB, `c<top + 1>.<i>`.
 
-The memory a step holds does not depend on the size of its inputs: about one read window of blocks per source, plus the open output
-block and its bloom and index rows. A step that a flush waits for, and an L0 step of over half `maxSources`, keeps one write in flight
+A step holds about one read window of blocks per source, the input runs' indexes as the host passed
+them, and four bytes per input block, plus the open output block and its bloom and index. A step that a flush waits for, and an L0 step of over half `maxSources`, keeps one write in flight
 and reads its last source, the output level, a window ahead. A corrupt input or a failed read or write installs nothing and deletes every output.
 
 ### Memory budget

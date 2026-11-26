@@ -9,10 +9,10 @@ import { publishGeneration, type RunMeta } from "../src/store/generation.js";
 import { loadLatestGeneration } from "./latest-generation.js";
 import { openMergeTs } from "./oracle/merge-ts.js";
 import { SST_FOOTER_BYTES, type SstEntry } from "../src/store/sst.js";
-import { decodeSst, encodeRunRef, entryRecordSize, indexBlob, sstBlockIndex, sstKeyRange } from "./oracle/sst-ref.js";
+import { decodeSst, encodeRunRef, entryRecordSize, indexBlob, sstBlockIndex, sstKeyRange, sstRunEnd } from "./oracle/sst-ref.js";
 import { fixSstCrc } from "../fuzz/targets.js";
 import { loadWasm, type FlatEngine } from "../fuzz/wasm.js";
-import { publish } from "./runs.js";
+import { mergeInput, publish } from "./runs.js";
 import { MemoryFs } from "../src/testing.js";
 import { NO_MARKS, throughAt, type Mark, type Marks } from "../src/store/marks.js";
 
@@ -177,7 +177,7 @@ async function makeCase(r: Rng): Promise<Case> {
   const paths = sources.map((s, i) => s.runs.map((_, j) => `in/${i}.${j}.sst`));
   for (const [i, s] of sources.entries()) for (const [j, run] of s.runs.entries()) await publish(fs, paths[i]![j]!, run);
   const spec: MergeSpec = {
-    sources: sources.map((s) => s.runs.map((run) => run.byteLength)),
+    sources: sources.map((s) => s.runs.map(mergeInput)),
     dropTombstones: r.chance(0.5),
     targetBytes: r.pick([1, 40, 120, 1000, 64 * 1024, Number.MAX_SAFE_INTEGER]),
     chunkBytes: r.pick([1, 37, 512, 4096, 64 * 1024]),
@@ -241,13 +241,13 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
   const puts = (...keys: string[]): SstEntry[] => keys.map((k, i) => ({ kind: "put", key: utf(k), value: utf("v"), seq: i + 1 }));
   const footer = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset + b.byteLength - SST_FOOTER_BYTES, SST_FOOTER_BYTES);
 
-  /** What each session ends with over one source of `runs`: the error it threw, or "done". */
-  async function ends(runs: Uint8Array[]): Promise<unknown[]> {
+  /** What each session ends with over one source of `runs`, each with the index its bytes give or the one of `indexes`: the error it threw, or "done". */
+  async function ends(runs: Uint8Array[], indexes: Uint8Array[] = []): Promise<unknown[]> {
     const fs = new MemoryFs();
     const paths = [runs.map((_, j) => `in/0.${j}.sst`)];
     for (const [j, run] of runs.entries()) await publish(fs, paths[0]![j]!, run);
     const spec: MergeSpec = {
-      sources: [runs.map((run) => run.byteLength)],
+      sources: [runs.map((run, j) => ({ ...mergeInput(run), ...(indexes[j] && { index: indexes[j] }) }))],
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
@@ -263,14 +263,14 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
   }
   const bothRefuse = [expect.any(CorruptDatabaseError), expect.any(CorruptDatabaseError)];
 
-  /** A run with no data blocks, which no encoder writes (an empty run gets one empty block): bloom bits, no index, a footer. */
+  /** A run with no data blocks, which no encoder writes (an empty run gets one empty block): bloom bits and a footer. */
   function blockless(): Uint8Array {
     const bloom = 8;
     const run = new Uint8Array(bloom + SST_FOOTER_BYTES);
     const f = footer(run);
-    [0, 0, 0, bloom, 7, bloom, 0].forEach((v, i) => f.setUint32(4 * i, v, true));
-    f.setUint32(32, 2, true);
-    f.setUint32(36, 0x4f4c5354, true);
+    [0, 0, 7].forEach((v, i) => f.setUint32(4 * i, v, true));
+    f.setUint32(16, 3, true);
+    f.setUint32(20, 0x4f4c5354, true);
     fixSstCrc(run);
     return run;
   }
@@ -279,7 +279,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     const fs = new MemoryFs();
     await publish(fs, "in/blockless.sst", blockless());
     const intact = (tailBytes: number): MergeSpec => ({
-      sources: [[blockless().byteLength]],
+      sources: [[mergeInput(blockless())]],
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
@@ -293,6 +293,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
 
     const runs = [blockless(), encodeRunRef([]).body, encodeRunRef(puts("a", "b", "c")).body, encodeRunIn(wasm, puts("a", "b", "c")).body];
     for (const run of runs) {
+      const input = mergeInput(run);
       for (let at = 0; at < run.byteLength; at++) {
         const bad = run.slice();
         bad[at]! ^= 0x10;
@@ -300,7 +301,7 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
         await publish(fs, "in/0.0.sst", bad);
         for (const tailBytes of [SST_FOOTER_BYTES, SST_FOOTER_BYTES + 1, run.byteLength - 1, run.byteLength]) {
           const spec: MergeSpec = {
-            sources: [[bad.byteLength]],
+            sources: [[input]],
             dropTombstones: false,
             marks: NO_MARKS,
             targetBytes: Number.MAX_SAFE_INTEGER,
@@ -327,16 +328,26 @@ describe("what a CRC cannot catch, both sessions refuse", () => {
     expect(await ends([run])).toEqual(bothRefuse);
   });
 
-  it("an index whose blocks do not tile the data", async () => {
-    const run = encodeRunRef(puts(...Array.from({ length: 400 }, (_, i) => `key/${String(i).padStart(4, "0")}`))).body;
-    // The first index row's offset: past its two key lengths and keys.
-    const f = footer(run);
-    const index = new DataView(run.buffer, run.byteOffset + f.getUint32(20, true));
-    const first = index.getUint32(0, true);
-    const last = index.getUint32(4 + first, true);
-    index.setUint32(8 + first + last, 1, true);
-    fixSstCrc(run);
-    expect(await ends([run])).toEqual(bothRefuse);
+  it("every single flipped byte of a run's index", async () => {
+    const run = encodeRunRef(puts(...Array.from({ length: 40 }, (_, i) => `key/${String(i).padStart(4, "0")}`)), 256);
+    expect(sstBlockIndex(run.body).sepEnd.length).toBeGreaterThan(2);
+    expect(await ends([run.body], [run.end.index])).toEqual(["done", "done"]);
+    for (let at = 0; at < run.end.index.byteLength; at++) {
+      const bad = run.end.index.slice();
+      bad[at]! ^= 0x10;
+      expect(await ends([run.body], [bad])).toEqual(bothRefuse);
+    }
+  });
+
+  it("an index, under its own CRC, whose blocks are not the run's", async () => {
+    const run = encodeRunRef(puts(...Array.from({ length: 40 }, (_, i) => `key/${String(i).padStart(4, "0")}`)), 256).body;
+    const index = sstBlockIndex(run);
+    const blocks = index.sepEnd.length;
+    // The first block ends a byte late and the second starts there: the lengths still add up to the data.
+    const moved = { ...index, blockStart: index.blockStart.map((start, b) => (b === 1 ? start + 1 : start)) };
+    const short = { sepBytes: index.sepBytes.subarray(0, index.sepEnd[blocks - 2]!), sepEnd: index.sepEnd.subarray(0, -1), blockStart: index.blockStart.subarray(0, -1) };
+    const other = encodeRunRef(puts("a", "b", "c")).body;
+    for (const bad of [indexBlob(moved), indexBlob(short), sstRunEnd(other).index]) expect(await ends([run], [bad])).toEqual(bothRefuse);
   });
 });
 
@@ -345,7 +356,7 @@ describe("a session's protocol, in both sessions", () => {
     const a = encodeRunRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
     const b = encodeRunRef([{ kind: "put", key: utf("b"), value: utf("2"), seq: 2 }]).body;
     const spec: MergeSpec = {
-      sources: [[a.byteLength], [b.byteLength]],
+      sources: [[mergeInput(a)], [mergeInput(b)]],
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
@@ -383,7 +394,7 @@ describe("a session's protocol, in both sessions", () => {
   it("keeps a closed wasm handle away from the session opened after it", () => {
     const a = encodeRunRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]).body;
     const spec: MergeSpec = {
-      sources: [[a.byteLength]],
+      sources: [[mergeInput(a)]],
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: Number.MAX_SAFE_INTEGER,
@@ -430,7 +441,7 @@ describe("the compaction driver", () => {
     const paths = sources.map((s, i) => s.runs.map((_, j) => `in/${i}.${j}.sst`));
     for (const [i, s] of sources.entries()) for (const [j, run] of s.runs.entries()) await publish(fs, paths[i]![j]!, run);
     const spec: MergeSpec = {
-      sources: sources.map((s) => s.runs.map((run) => run.byteLength)),
+      sources: sources.map((s) => s.runs.map(mergeInput)),
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 200,
@@ -517,7 +528,7 @@ describe("the compaction driver's file waits", () => {
     const paths = runs.map((_, i) => [`in/${i}.sst`]);
     for (const [i, run] of runs.entries()) await publish(fs, paths[i]![0]!, run);
     const spec: MergeSpec = {
-      sources: runs.map((run) => [run.byteLength]),
+      sources: runs.map((run) => [mergeInput(run)]),
       dropTombstones: false,
       marks: NO_MARKS,
       targetBytes: 1_000_000,

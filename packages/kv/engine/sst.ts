@@ -1,17 +1,18 @@
 /**
- * SST format, version 2 (docs/design.md). Data blocks first, then the bloom
- * filter, the block index, and a 40-byte footer. Each block stores its
- * shared key prefix once; records hold the suffix and use varint lengths.
+ * SST format, version 3 (docs/sst-format.md). Data blocks first, then the
+ * bloom filter and a 24-byte footer. Each block stores its shared key prefix
+ * once; records hold the suffix and use varint lengths. A run holds no index
+ * of its blocks: its writer reports one, for the run's manifest entry.
  * Must stay byte-compatible with the reader in `packages/kv/src/store/sst.ts`
  * and the reference writer in `packages/kv/tests/oracle/sst-ref.ts`.
  */
 import { appendBloom, HASH_COUNT, keyHash } from "./bloom";
 import { Bytes, commonPrefix, compareBytes, equalBytes } from "./buf";
-import { crcUpdate } from "./crc32";
+import { crc32, crcUpdate } from "./crc32";
 
 const MAGIC: u32 = 0x4f4c5354; // OLST
-const VERSION: u32 = 2;
-export const FOOTER_BYTES: usize = 40;
+const VERSION: u32 = 3;
+export const FOOTER_BYTES: usize = 24;
 export const TAG_PUT: u8 = 1;
 export const TAG_DEL: u8 = 2;
 export const BLOCK_TARGET: usize = 32 << 10;
@@ -90,8 +91,10 @@ export class RunEnd {
   /** The smallest and largest key. Both are empty when the run has no entries, and also when its only key is empty, so `entries` says which. */
   firstKey: Bytes = new Bytes();
   lastKey: Bytes = new Bytes();
-  /** The block index rows, as the run stores them. */
-  index: Bytes = new Bytes();
+  /** The run's index (abi.md, "Wire formats") between its block count and its CRC: each block's two lengths, then the separators. */
+  blocks: usize = 0;
+  lens: Bytes = new Bytes();
+  seps: Bytes = new Bytes();
 
   /** Write the run head (abi.md, "Wire formats") at `at`. */
   storeHead(at: usize): void {
@@ -101,17 +104,22 @@ export class RunEnd {
     store<u32>(at, <u32>this.lastKey.len, 12);
   }
 
-  /** Append what follows a run head: the two keys, then the index rows. */
+  /** Append what follows a run head: the two keys, then the index. */
   appendRest(out: Bytes): void {
     out.append(this.firstKey.ptr, this.firstKey.len);
     out.append(this.lastKey.ptr, this.lastKey.len);
-    out.append(this.index.ptr, this.index.len);
+    const at = out.len;
+    out.pushU32(<u32>this.blocks);
+    out.append(this.lens.ptr, this.lens.len);
+    out.append(this.seps.ptr, this.seps.len);
+    out.pushU32(crc32(out.ptr + at, out.len - at));
   }
 
   free(): void {
     this.firstKey.free();
     this.lastKey.free();
-    this.index.free();
+    this.lens.free();
+    this.seps.free();
     heap.free(changetype<usize>(this));
   }
 }
@@ -129,8 +137,8 @@ const REC: usize = 24;
 /**
  * Builds one SST in file order. `push` takes entries in key order and
  * appends each data block to `out` as soon as it is cut. `finish` appends
- * the bloom filter, the index and the footer, and reports the run. While a
- * run is open the writer holds one block, 4 bytes per key for the bloom
+ * the bloom filter and the footer, and reports the run with its index. While
+ * a run is open the writer holds one block, 4 bytes per key for the bloom
  * filter, and the index, however large the run's data grows.
  *
  * The writer never reads `out`, so a caller can move the bytes on and clear
@@ -148,8 +156,9 @@ export class Writer {
   overhead: usize = 0;
   offsets: Bytes = new Bytes();
   hashes: Bytes = new Bytes();
-  /** Index rows as the file stores them. */
-  index: Bytes = new Bytes();
+  /** The index so far, as `RunEnd` reports it: per block a varint separator length and a varint byte length, and the separators. */
+  lens: Bytes = new Bytes();
+  seps: Bytes = new Bytes();
   /** The CRC register over the bytes emitted so far, and their count. */
   crc: u32 = ~0;
   sent: usize = 0;
@@ -186,6 +195,10 @@ export class Writer {
     if (!this.recs.len) {
       this.first.clear();
       this.first.append(key, keyLen);
+      // The block's separator: the shortest prefix of its first key above the last key before it, and the whole key for the first block.
+      const sep = this.entries ? min(commonPrefix(this.lastKey.ptr, this.lastKey.len, key, keyLen) + 1, keyLen) : keyLen;
+      writeVarint(this.lens, sep);
+      this.seps.append(key, sep);
     }
     const recs = this.recs;
     recs.reserve(REC);
@@ -214,39 +227,32 @@ export class Writer {
   }
 
   /**
-   * End the run: close the open block, then append the bloom filter, the
-   * index and the footer to `out`, and report the run in `end`. Together
-   * with what `push` appended, `out` holds the run.
-   *   data blocks | bloom bits | block index | footer (40 bytes)
-   * The footer is u32 entry count, block count, bloom offset, bloom length,
-   * bloom hash count, index offset, index length, then a u32 CRC of every
-   * byte before it, u32 version 2 and u32 magic.
+   * End the run: close the open block, then append the bloom filter and the
+   * footer to `out`, and report the run in `end`. Together with what `push`
+   * appended, `out` holds the run.
+   *   data blocks | bloom bits | footer (24 bytes)
+   * The footer is u32 entry count, data length and bloom hash count, then a
+   * u32 CRC of every byte before it, u32 version 3 and u32 magic.
    */
   finish(out: Bytes, end: RunEnd): void {
     if (this.recs.len || this.blocks == 0) this.cut(out);
     const dataLen = this.sent;
-    const bloomLen = appendBloom(out, this.hashes);
-    this.sum(out, bloomLen);
-    const indexOffset = this.sent;
-    out.append(this.index.ptr, this.index.len);
-    this.sum(out, this.index.len);
+    this.sum(out, appendBloom(out, this.hashes));
     out.pushU32(<u32>this.entries);
-    out.pushU32(<u32>this.blocks);
     out.pushU32(<u32>dataLen);
-    out.pushU32(<u32>bloomLen);
     out.pushU32(HASH_COUNT);
-    out.pushU32(<u32>indexOffset);
-    out.pushU32(<u32>this.index.len);
-    this.sum(out, 28);
+    this.sum(out, 12);
     out.pushU32(~this.crc);
     out.pushU32(VERSION);
     out.pushU32(MAGIC);
 
     end.entries = this.entries;
     end.size = this.sent + 12;
+    end.blocks = this.blocks;
     end.firstKey.swap(this.firstKey);
     end.lastKey.swap(this.lastKey);
-    end.index.swap(this.index);
+    end.lens.swap(this.lens);
+    end.seps.swap(this.seps);
     this.firstKey.clear();
     this.lastKey.clear();
     this.first.clear();
@@ -255,7 +261,8 @@ export class Writer {
     this.keys = 0;
     this.overhead = 0;
     this.hashes.clear();
-    this.index.clear();
+    this.lens.clear();
+    this.seps.clear();
     this.crc = ~0;
     this.sent = 0;
     this.blocks = 0;
@@ -302,16 +309,11 @@ export class Writer {
     }
     out.append(offsets.ptr, offsets.len);
 
-    const offset = this.sent;
     const len = out.len - start;
     this.sum(out, len);
-    const index = this.index;
-    index.pushU32(<u32>this.first.len);
-    index.append(first, this.first.len);
-    index.pushU32(<u32>this.lastKey.len);
-    index.append(this.lastKey.ptr, this.lastKey.len);
-    index.pushU32(<u32>offset);
-    index.pushU32(<u32>len);
+    // The one block of a run with no entries has no first key: its separator is empty.
+    if (!n) this.lens.push(0);
+    writeVarint(this.lens, len);
 
     this.recs.clear();
     this.staged.clear();
@@ -326,7 +328,8 @@ export class Writer {
     this.staged.free();
     this.offsets.free();
     this.hashes.free();
-    this.index.free();
+    this.lens.free();
+    this.seps.free();
     this.firstKey.free();
     this.lastKey.free();
     heap.free(changetype<usize>(this));
@@ -476,8 +479,8 @@ export class BlockWalk {
   suffixLen: usize = 0;
   valueAt: usize = 0;
   valueLen: usize = 0;
-  /** The varint cursor. */
-  private at: usize = 0;
+  /** The varint cursor, an offset into the bytes `varint` is given. */
+  at: usize = 0;
 
   /** Start on the `len`-byte block at `block`. Returns 0 or an error status. */
   start(block: usize, len: usize): i32 {
@@ -540,11 +543,11 @@ export class BlockWalk {
   }
 
   /**
-   * The unsigned LEB128 at the cursor, of at most 5 bytes, or an error
-   * status. Bits past 32 are dropped, as on wasm32 Rust, whose `usize` is
-   * 32 bits.
+   * The unsigned LEB128 at the cursor, of at most 5 bytes that end before
+   * `end`, or an error status. Bits past 32 are dropped, as on wasm32 Rust,
+   * whose `usize` is 32 bits.
    */
-  private varint(block: usize, end: usize): i64 {
+  varint(block: usize, end: usize): i64 {
     let o = this.at;
     let v: u32 = 0;
     for (let shift: u32 = 0; shift < 35; shift += 7) {
@@ -614,36 +617,27 @@ export function scanBlock(block: usize, len: usize, patterns: usize, patLen: usi
   }
 }
 
-/** Where the sections of a run are, as offsets into the run. Data starts at 0. `crcOff` holds the CRC of every byte before it. */
+/** Where the sections of a run are, as offsets into the run. Data starts at 0 and the bloom filter at `dataLen`. `crcOff` holds the CRC of every byte before it. */
 @final @unmanaged
 export class Layout {
   entryCount: usize = 0;
-  blockCount: usize = 0;
   dataLen: usize = 0;
-  indexStart: usize = 0;
-  indexEnd: usize = 0;
   crcOff: usize = 0;
 
   /**
    * Check the `FOOTER_BYTES` at `footer`, the last of a run of `size` bytes,
-   * and take where its sections are. The footer is 7 u32 fields, then CRC,
-   * version, and magic. Returns 0 or an error status.
+   * and take where its sections are. The footer is u32 entry count, data
+   * length and bloom hash count, then CRC, version, and magic. Returns 0 or
+   * an error status.
    */
   read(footer: usize, size: usize): i32 {
-    if (load<u32>(footer, 36) != MAGIC) return BAD_MAGIC;
-    if (load<u32>(footer, 32) != VERSION) return BAD_VERSION;
-    const at = size - FOOTER_BYTES;
-    const bloomOffset = <usize>load<u32>(footer, 8);
-    const bloomEnd = bloomOffset + <usize>load<u32>(footer, 12);
-    const indexOffset = <usize>load<u32>(footer, 20);
-    const indexEnd = indexOffset + <usize>load<u32>(footer, 24);
-    if (bloomEnd < bloomOffset || bloomEnd != indexOffset || indexEnd < indexOffset || indexEnd != at) return TRUNCATED;
+    if (load<u32>(footer, 20) != MAGIC) return BAD_MAGIC;
+    if (load<u32>(footer, 16) != VERSION) return BAD_VERSION;
+    const dataLen = <usize>load<u32>(footer, 4);
+    if (dataLen > size - FOOTER_BYTES) return TRUNCATED;
     this.entryCount = load<u32>(footer);
-    this.blockCount = load<u32>(footer, 4);
-    this.dataLen = bloomOffset;
-    this.indexStart = indexOffset;
-    this.indexEnd = at;
-    this.crcOff = at + 28;
+    this.dataLen = dataLen;
+    this.crcOff = size - 12;
     return 0;
   }
 }

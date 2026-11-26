@@ -4,7 +4,7 @@
  * `result_ptr`/`result_len`. Both regions live until the next call.
  */
 import { Bytes } from "./buf";
-import { MergeSession, NEED, OUT_OF_MEMORY, RUN_END, WRITE } from "./merge";
+import { MergeSession, NEED, RUN_END, WRITE } from "./merge";
 import { encodeSst, FOOTER_BYTES, scanBlock, TOO_SHORT, TRUNCATED } from "./sst";
 
 const PATTERNS_TRUNCATED: i32 = -11;
@@ -64,8 +64,9 @@ export function scan_block_contains(ptr: usize, len: usize, patPtr: usize, patLe
 /**
  * Open the module's merge session. Input: source list, then the marks block
  * the session copies. Fails with -12 while a session is open, -5 for a
- * malformed list, -1 for a run shorter than a footer, and -10 when its
- * working set cannot be reserved.
+ * malformed list, -1 for a run shorter than a footer, -4 or -5 for a run's
+ * index that does not check out, and -10 when its working set cannot be
+ * reserved.
  */
 export function merge_open(
   ptr: usize,
@@ -87,9 +88,12 @@ export function merge_open(
     const runs = <usize>load<u32>(ptr + o);
     o += 4;
     for (let r: usize = 0; r < runs; r++) {
-      if (len - o < 4) return TRUNCATED;
+      if (len - o < 8) return TRUNCATED;
       short = short || <usize>load<u32>(ptr + o) < FOOTER_BYTES;
-      o += 4;
+      const index = <usize>load<u32>(ptr + o, 4);
+      o += 8;
+      if (index > len - o) return TRUNCATED;
+      o += index;
     }
   }
   if (short) return TOO_SHORT;
@@ -99,19 +103,17 @@ export function merge_open(
   s.targetBytes = <usize>targetBytes;
   s.chunkBytes = max<usize>(chunkBytes, 1);
   s.yieldBytes = max<usize>(yieldBytes, 1);
-  if (!s.reserve(ptr, ptr + o, len - o, chunkBytes, tailBytes)) {
-    s.free();
-    return OUT_OF_MEMORY;
-  }
-  session = s;
-  return 0;
+  const status = s.reserve(ptr, ptr + o, len - o, chunkBytes, tailBytes);
+  if (status < 0) s.free();
+  else session = s;
+  return status;
 }
 
 /**
  * Run the session to its next stop. The result holds the stop's bytes:
  * demand records for NEED, output bytes for WRITE (in the session's own
- * buffer), a run head, keys and index rows for RUN_END, nothing for YIELD
- * and DONE.
+ * buffer), a run head, keys and index for RUN_END, nothing for YIELD and
+ * DONE.
  */
 export function merge_pump(): i32 {
   show(0, 0);
