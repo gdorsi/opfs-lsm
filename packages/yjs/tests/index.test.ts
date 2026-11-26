@@ -250,7 +250,7 @@ function flaky(db: Db, failing: () => boolean): Db {
   });
 }
 
-test("a flush after a failed write stores the whole doc again", async () => {
+test("a flush after a failed write stores that update again", async () => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   let fail = false;
   const doc = new Y.Doc();
@@ -267,6 +267,26 @@ test("a flush after a failed write stores the whole doc again", async () => {
   const again = await reopen(db, "a");
   assert.equal(again.doc.getText("t").toString(), "one two three");
   await db.close();
+});
+
+test("a doc whose state is over 8 MiB stores an update whose write failed once", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  let fail = false;
+  const doc = new Y.Doc();
+  const p = new KvPersistence(flaky(db, () => fail), "big", doc, 1_000_000);
+  await p.whenSynced;
+  for (let i = 0; i < 9; i++) doc.getText("t").insert(0, String(i).repeat(1 << 20));
+  await p.flush();
+  fail = true;
+  doc.getMap("m").set("edit", "kept");
+  fail = false;
+  await p.flush();
+  await p.destroy();
+
+  const again = await reopen(db, "big", 1_000_000);
+  assert.equal(again.doc.getText("t").length, 9 << 20);
+  assert.equal(again.doc.getMap("m").get("edit"), "kept");
 });
 
 test("flush rejects while the repair write fails, and resolves once it lands", async () => {
@@ -357,7 +377,7 @@ test("clearData removes the doc after its final flush failed", async () => {
   await db.close();
 });
 
-test("clearData after a failed write removes the whole doc its final flush stores", async (t) => {
+test("clearData after a failed write removes the update its final flush stores again", async (t) => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   t.after(() => db.close());
   let fail = false;

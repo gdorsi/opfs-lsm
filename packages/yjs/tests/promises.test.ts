@@ -70,6 +70,22 @@ test("whenSynced resolves without waiting for the merge a load schedules", async
   await p.destroy();
 });
 
+test("synced turns true once whenSynced resolves with the stored updates applied", async (t) => {
+  const db = await openHarnessDb({ name: dbName(), forceMemory: true });
+  t.after(() => db.close());
+  const seed = await reopen(db, "doc");
+  seed.doc.getText("t").insert(0, "stored");
+  await seed.p.destroy();
+
+  const doc = new Y.Doc();
+  const p = new KvPersistence(db, "doc", doc);
+  assert.equal(p.synced, false);
+  await p.whenSynced;
+  assert.equal(p.synced, true);
+  assert.equal(doc.getText("t").toString(), "stored");
+  await p.destroy();
+});
+
 test("a merge applies another tab's stored updates to this doc", async (t) => {
   const db = await openHarnessDb({ name: dbName(), forceMemory: true });
   t.after(() => db.close());
