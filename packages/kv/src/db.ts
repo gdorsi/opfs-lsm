@@ -685,20 +685,23 @@ class DbImpl implements Db {
   private announce(): void {
     if (this.announcing) return;
     this.announcing = true;
-    for (let events = this.unannounced; events.length > 0; events = this.unannounced) {
-      this.unannounced = [];
-      for (const event of events) {
-        for (const listener of this.listeners) {
-          try {
-            listener(event);
-          } catch (err) {
-            console.error("changes() listener threw", err);
+    try {
+      for (let events = this.unannounced; events.length > 0; events = this.unannounced) {
+        this.unannounced = [];
+        for (const event of events) {
+          for (const listener of this.listeners) {
+            try {
+              listener(event);
+            } catch (err) {
+              console.error("changes() listener threw", err);
+            }
           }
+          if (event.kind === "closed") this.listeners.clear();
         }
-        if (event.kind === "closed") this.listeners.clear();
       }
+    } finally {
+      this.announcing = false;
     }
-    this.announcing = false;
   }
 
   private emit(event: ChangeEvent): void {

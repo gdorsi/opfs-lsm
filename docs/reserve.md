@@ -51,7 +51,7 @@ once more when that failure removed the file. Any other refused write fails with
 host, which handles it as a refused write, then opens a new IndexedDB connection and adds the
 same records once more. Groups refused together share one `make-room` and keep the order they
 were issued in. An `update` whose transaction follows a refused group aborts it before `body`
-runs, and starts another after the group's second attempt. An `update` refused in a transaction
+runs, and starts another once that group has landed or failed. An `update` refused in a transaction
 of its own runs its `body` again. A second refusal fails every write of the group with
 `StorageFullError`, whose `cause` is the browser's error. The connection is replaced after every
 such abort, and no write transaction starts while it is: a connection that saw one can refuse
