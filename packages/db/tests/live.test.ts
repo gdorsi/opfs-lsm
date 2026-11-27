@@ -26,6 +26,33 @@ const issue = (n: number, over: Partial<Issue> = {}): Issue => ({ id: `i${n}`, t
 const ids = (rows: readonly { id: string }[] | undefined) => rows?.map((r) => r.id);
 
 describe("a subscription", () => {
+  it("is not called again when another document gives an equal result", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1, { title: "same" }), issue(2, { title: "same" })]);
+    const titles = query((q) =>
+      q
+        .from({ i: issues })
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ title: i.title }))
+        .limit(1),
+    );
+    const first = query((q) =>
+      q
+        .from({ i: issues })
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ title: i.title }))
+        .findOne(),
+    );
+    const seen = [watch<unknown>(titles), watch<unknown>(first)] as const;
+    await until(() => seen.every((s) => s.values.length === 1));
+    await issues.delete("i1");
+    const after = watch(query((q) => q.from({ i: issues }).count()));
+    await until(() => after.values.at(-1) === 1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen[0].values).toEqual([[{ title: "same" }]]);
+    expect(seen[1].values).toEqual([{ title: "same" }]);
+  });
+
   it("gets the result after the first read, then each result that differs", async () => {
     const { issues } = await openDb();
     await issues.insert([issue(1), issue(2), issue(3, { status: 2 })]);

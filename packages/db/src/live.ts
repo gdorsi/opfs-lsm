@@ -285,9 +285,11 @@ const NO_ROWS: ReadonlyMap<string, unknown> = new Map();
 /**
  * Keep a run's result on `sub`, and call `next` if the value changed.
  *
- * A row equal to the row the last result held for its document is handed
- * out as that same object. When every row is, in the same order, the value
- * is the same array and `next` is not called. Equality is compared, since a
+ * A row equal to the row the last result held at its place, or for its
+ * document, is handed out as that same object. When every row is the one at
+ * its place, the value is the same array and `next` is not called. The place
+ * comes first: without the id in `select`, two documents can give equal
+ * rows. Equality is compared, since a
  * change that the new snapshot already holds may still be on its way, so
  * the changes seen so far cannot say which rows stayed the same.
  */
@@ -298,14 +300,15 @@ function settle(sub: Subscription, found: Found): void {
   let value: unknown = found.count;
   if (found.count === undefined) {
     const next = new Map<string, unknown>();
-    const olds = prev?.rows.keys();
+    const olds = prev?.rows.values();
     let same = prev?.rows.size === found.docs.length;
     for (const doc of found.docs) {
       const row = rowOf(q, doc);
+      const at = olds?.next().value;
       const old = prev?.rows.get(doc.id);
-      const kept = old !== undefined && sameJson(old, row);
-      next.set(doc.id, kept ? old : row);
-      if (!kept || olds!.next().value !== doc.id) same = false;
+      const kept = at !== undefined && sameJson(at, row) ? at : old !== undefined && sameJson(old, row) ? old : row;
+      next.set(doc.id, kept);
+      if (kept !== at) same = false;
     }
     rows = next;
     value = shape === "one" ? next.values().next().value : same ? prev!.value : [...next.values()];

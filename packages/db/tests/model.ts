@@ -82,7 +82,7 @@ export type Spec = {
   readonly orderBy: readonly { readonly field: Field; readonly desc: boolean }[];
   readonly offset: number | undefined;
   readonly limit: number | undefined;
-  readonly shape: "rows" | "one" | "count" | "select";
+  readonly shape: "rows" | "one" | "count" | "select" | "pick";
 };
 
 const value = (field: Field): fc.Arbitrary<Scalar> =>
@@ -109,7 +109,7 @@ const condArb: fc.Arbitrary<Cond> = fc.oneof(
 const window = {
   offset: fc.option(fc.integer({ min: 0, max: 4 }), { nil: undefined, freq: 3 }),
   limit: fc.option(fc.oneof({ weight: 1, arbitrary: fc.constant(0) }, { weight: 12, arbitrary: fc.integer({ min: 1, max: 6 }) }), { nil: undefined, freq: 3 }),
-  shape: fc.constantFrom<Spec["shape"]>("rows", "rows", "one", "count", "select"),
+  shape: fc.constantFrom<Spec["shape"]>("rows", "rows", "one", "count", "select", "pick"),
 };
 
 const anySpec: fc.Arbitrary<Spec> = fc.record({
@@ -175,6 +175,8 @@ export function build(q: QueryRoot, rows: Collection<Row>, spec: Spec): Buildabl
   if (spec.offset !== undefined) b = b.offset(spec.offset);
   if (spec.limit !== undefined) b = b.limit(spec.limit);
   if (spec.shape === "select") b = b.select(({ i }) => ({ id: i.id, a: i.a, m: i.n.m, x: i.x }));
+  // Without the id, two documents can give equal rows.
+  if (spec.shape === "pick") b = b.select(({ i }) => ({ a: i.a, x: i.x }));
   return spec.shape === "one" ? b.findOne() : spec.shape === "count" ? b.count() : b;
 }
 
