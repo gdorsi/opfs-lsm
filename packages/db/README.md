@@ -125,7 +125,7 @@ await tasks.insert({ id: "t2", title: "No due" } as Task);
 
 **Note.** In a unique index `null` is a value like any other, so only one document can hold it.
 
-`update` runs `fn` inside one read-modify-write transaction. `fn` gets a fresh copy of the stored document and changes it in place. It may run more than once when another tab writes the same document meanwhile, so keep it pure. The changed draft goes through the validator, so a validator that transforms its input must accept the stored form too.
+`update` runs `fn` inside one read-modify-write transaction. `fn` gets a fresh copy of the stored document and changes it in place. It may run more than once, for example when another tab writes the same document meanwhile or when it changes nothing, so keep it pure. The changed draft goes through the validator, so a validator that transforms its input must accept the stored form too.
 
 ## Query
 
@@ -230,7 +230,7 @@ Writes from other tabs rerun queries the same way.
 
 ## Errors
 
-Every rejection and every `subscribe` error is a `DbError` with a fixed `_tag` and a `code`. An error that your own `update` callback or validator throws passes through as it is.
+Every rejection and every `subscribe` error is a `DbError` with a fixed `_tag` and a `code`. An error that your own `update` callback or validator throws passes through as it is. So does the `TypeError` of a document that JSON cannot hold, such as one with a cycle or a `BigInt`, and nothing is stored.
 
 ```ts
 import { NotFoundError, ValidationError } from "@opfs-lsm/db";

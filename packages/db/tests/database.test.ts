@@ -175,6 +175,16 @@ describe("the write gate", () => {
     await expect(failed).rejects.toBe(thrown);
     expect(await issues.get("a")).toEqual(issue("a"));
   });
+
+  it("passes on the TypeError of a document JSON cannot hold, and stores nothing", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    const cycle = issue("a") as Issue & { self?: unknown };
+    cycle.self = cycle;
+    await expect(issues.insert(cycle)).rejects.toBeInstanceOf(TypeError);
+    await expect(issues.insert([issue("b"), { ...issue("c"), big: 1n } as unknown as Issue])).rejects.toBeInstanceOf(TypeError);
+    expect(await issues.get("a")).toBeUndefined();
+    expect(await issues.get("b")).toBeUndefined();
+  });
 });
 
 describe("a validator", () => {
