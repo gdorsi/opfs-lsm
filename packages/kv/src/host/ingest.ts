@@ -4,7 +4,8 @@ import { advanceIngested, readUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { nextGeneration, type Generation, type Seq } from "../seq.js";
 import { reconcile, type Trusted } from "../recover.js";
-import { loadRecorded, publishGeneration, publishL0 } from "./publish.js";
+import { publishGeneration, publishL0 } from "./publish.js";
+import { loadRecorded } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { retireMarks } from "../store/marks.js";
 

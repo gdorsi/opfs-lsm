@@ -1,8 +1,7 @@
 import type { AsyncFs, ReadFs } from "../opfs/async-fs.js";
 import type { Generation } from "../seq.js";
-import { manifestNumbers, readManifest, type RunMeta } from "../store/generation.js";
+import { loadRecorded, manifestNumbers, readManifest, type RunMeta } from "../store/generation.js";
 import { levelOfDir } from "../store/levels.js";
-import { loadRecorded } from "./publish.js";
 
 /**
  * Delete manifests older than `keepFrom`, and swap files (`<n>.mft.crswap`,
