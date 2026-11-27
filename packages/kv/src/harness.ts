@@ -127,10 +127,13 @@ function localIngest(fs: AsyncFs): IngestClient {
   return createLocalIngestClient(host);
 }
 
+/** `fs`, or the memory fs of `forceMemory`. Memory is never a fallback: only a harness that asks for it gets it. */
+function harnessFs<F extends AsyncFs>(options: HarnessOpenOptions & { readonly fs?: F }): F | MemoryFs | undefined {
+  return options.fs ?? (options.forceMemory === true ? memoryFs(checkDbName(options.name)) : undefined);
+}
+
 function backingOf(options: HarnessOpenOptions): Backing {
-  const name = checkDbName(options.name);
-  // Memory is never a fallback: only a harness that asks for it gets it.
-  const fs = options.fs ?? (options.forceMemory === true ? memoryFs(name) : undefined);
+  const fs = harnessFs(options);
   if (fs) return { fs, ingest: options.ingest ?? localIngest(fs) };
   return options.ingest ? { ingest: options.ingest } : {};
 }
@@ -138,14 +141,13 @@ function backingOf(options: HarnessOpenOptions): Backing {
 /** `reserveBytes` is 0 unless given, so a test or a bench writes no reserve file it did not ask for. */
 export async function openHarnessDb(options: HarnessOpenOptions): Promise<Db> {
   const { fs: _fs, ingest: _ingest, forceMemory: _forceMemory, ...rest } = options;
-  return openDbWith({ // The tab only reads its fs, so a read-only one counts like a full one.
-    wrapFs: (fs) => new CountingFs(fs as AsyncFs), reserveBytes: 0, ...rest, ...backingOf(options) });
+  // The tab only reads its fs, so a read-only one counts like a full one.
+  return openDbWith({ wrapFs: (fs) => new CountingFs(fs as AsyncFs), reserveBytes: 0, ...rest, ...backingOf(options) });
 }
 
 /** `destroyDb` on the harness's storage: `fs`, or the memory fs of `forceMemory`, is the folder to remove. */
 export async function destroyHarnessDb(options: HarnessOpenOptions & { readonly fs?: RemovableFs }): Promise<void> {
-  const fs = options.fs ?? (options.forceMemory === true ? memoryFs(checkDbName(options.name)) : undefined);
-  return destroyDbWith({ name: options.name, fs });
+  return destroyDbWith({ name: options.name, fs: harnessFs(options) });
 }
 
 export function __resetMemoryFsForTests(name: string): void {

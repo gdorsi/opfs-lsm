@@ -200,7 +200,7 @@ export type Unindexable = {
   readonly why: "not-scalar" | "lone-surrogate" | "text-not-string" | "key-too-long" | "too-many-entries" | "fields-too-large" | "entries-too-large";
 };
 
-const NONE: Entry[] = [];
+export const NONE: Entry[] = [];
 
 /**
  * Every entry of `doc` in every maintained index; `id` is the id's UTF-8.

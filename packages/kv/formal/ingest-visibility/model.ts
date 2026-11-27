@@ -215,7 +215,7 @@ export function actionLabel(a: Action): string {
     case "append":
       return `append(value=${a.value})`;
     case "beginIngest":
-      return "beginIngest(listUningested)";
+      return "beginIngest(readUningested)";
     case "ingestStep":
       return a.step;
     case "done":

@@ -31,9 +31,8 @@ export class KvPersistence {
   private stored = 0;
   private trimTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly pending = new Set<Promise<void>>();
-  private failure: { readonly error: unknown } | undefined;
-  /** The bytes of every put that failed since the last flush, which puts them again. */
-  private failed: Uint8Array[] = [];
+  /** Every put that failed since the last flush, which puts its bytes again, in order. */
+  private failed: { readonly update: Uint8Array; readonly error: unknown }[] = [];
   private destroying: Promise<void> | undefined;
 
   constructor(
@@ -59,11 +58,11 @@ export class KvPersistence {
    */
   async flush(): Promise<void> {
     await this.settle();
-    this.failure = undefined;
-    for (const update of this.failed.splice(0)) this.write(update);
+    for (const { update } of this.failed.splice(0)) this.write(update);
     // Settle again even with no failure: a concurrent flush may have just started the repair.
     await this.settle();
-    this.throwIfFailed();
+    const [first] = this.failed;
+    if (first) throw first.error;
   }
 
   /** Every call, and `doc.destroy()`, share one teardown, so each caller sees its failure. */
@@ -190,8 +189,7 @@ export class KvPersistence {
       () => {},
       (error: unknown) => {
         if (!update) return;
-        this.failure ??= { error };
-        this.failed.push(update);
+        this.failed.push({ update, error });
       },
     ).finally(() => this.pending.delete(done));
     this.pending.add(done);
@@ -199,10 +197,6 @@ export class KvPersistence {
 
   private async settle(): Promise<void> {
     while (this.pending.size > 0) await Promise.all(this.pending);
-  }
-
-  private throwIfFailed(): void {
-    if (this.failure) throw this.failure.error;
   }
 
   private nextKey(): Uint8Array {

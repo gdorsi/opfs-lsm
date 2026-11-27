@@ -1,10 +1,11 @@
 import { flushBytes } from "../check.js";
 import type { IdBWal } from "../idb/wal.js";
-import { advanceIngested, getIngestedThrough, listUningested } from "../idb/wal.js";
+import { advanceIngested, readUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
 import { nextGeneration, type Generation, type Seq } from "../seq.js";
 import { reconcile, type Trusted } from "../recover.js";
-import { loadRecorded, publishGeneration, publishL0 } from "./publish.js";
+import { publishGeneration, publishL0 } from "./publish.js";
+import { loadRecorded } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { retireMarks } from "../store/marks.js";
 
@@ -37,9 +38,9 @@ export type Chunk = IngestResult & {
  * advance ingestedThrough. It takes at most `maxBytes` of op bytes, and at
  * least one record, so a backlog takes several calls and each run stays
  * small. Compaction runs separately. `head` is the WAL head the fold read
- * when it started: it folds nothing once every seq up to it is ingested, so
- * records acked during a fold wait for the next one, and nothing when L0 is
- * full, so compaction can catch up. Removes no file: the
+ * when it started: it folds nothing once every seq up to it is ingested. A
+ * chunk that starts at or below `head` may take records past it. It folds
+ * nothing when L0 is full, so compaction can catch up. Removes no file: the
  * host removes old manifests once no tab is loading a generation
  * (`HostedDb.fold`).
  *
@@ -56,8 +57,7 @@ export async function ingestChunk(
   limits: ChunkLimits,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
-  const ingested = await getIngestedThrough(wal);
-  const records = ingested >= head ? [] : await listUningested(wal, { maxBytes: limits.maxBytes });
+  const { records, through: ingested } = await readUningested(wal, limits.maxBytes, head);
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }

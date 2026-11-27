@@ -111,7 +111,7 @@ export class EngineHost implements HostCalls {
 
   /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
-    private readonly fsFactory: FsFactory,
+    protected readonly fsFactory: FsFactory,
     private readonly overrides: HostOptions = {},
     private readonly meter: Meter = UNMETERED,
   ) {}
@@ -231,27 +231,16 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     return inner && meter.fs(name, inner);
   }
 
-  /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
-  async function openStores(): Promise<Stores | undefined> {
-    const wal = await openExistingWal(name);
-    if (!wal) return undefined;
-    const fs = await folder().catch((err: unknown) => {
-      wal.close();
-      throw err;
-    });
-    if (fs) return { wal, fs };
-    wal.close();
-    return undefined;
-  }
-
-  /** `fn` on the stores of one operation, rejecting when the database is not there. */
+  /** `fn` on the WAL database, then the folder, opened for one operation. Rejects when either is gone. */
   async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
-    const stores = await openStores();
-    if (!stores) throw destroyed();
+    const wal = await openExistingWal(name);
+    if (!wal) throw destroyed();
     try {
-      return await fn(stores);
+      const fs = await folder();
+      if (!fs) throw destroyed();
+      return await fn({ wal, fs });
     } finally {
-      stores.wal.close();
+      wal.close();
     }
   }
 
@@ -775,6 +764,24 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     });
   }
 
+  /**
+   * Tests only (tests/compact-host.ts). Wait for a fold in flight, reconcile
+   * and remove old manifests as a fold that found nothing to fold does, then
+   * compact until the levels are in shape. Folds no WAL.
+   */
+  async function compactOnly(): Promise<void> {
+    await foldTurn(() =>
+      exclusive(() =>
+        withStores(async ({ wal, fs }) => {
+          const { generation } = await reconcile(wal, fs, trusted);
+          trusted = generation;
+          await unlessHeld(name, () => reclaimManifests(fs, generation));
+        }),
+      ),
+    );
+    await compact();
+  }
+
   return {
     ingest,
     watch: addWatcher,
@@ -782,17 +789,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     refused,
     repair,
     destroy,
-    // Reached by tests/compact-host.ts, which takes the host's turns.
-    foldTurn,
-    exclusive,
-    withStores,
+    // Reached by tests: compact-host.ts and the idle step of io-error-crash.test.ts.
+    compactOnly,
     compact,
-    get trusted() {
-      return trusted;
-    },
-    set trusted(next: Trusted) {
-      trusted = next;
-    },
   };
 }
 

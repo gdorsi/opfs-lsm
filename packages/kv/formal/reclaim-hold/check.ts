@@ -121,10 +121,11 @@ function sourceSync(): string[] {
   need("host/reclaim.ts", /if \(m\[2\] \? n > keepFrom : n >= keepFrom\) continue;/, "reclaimManifests keeps the recorded manifest and every newer one");
   const host = read("host/engine-host.ts");
   const removals = host.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, "").match(/reclaimManifests\(|reclaimRuns\(|removeUnlessOpen\(|\bsweep\(fs/g)?.length ?? 0;
-  // A flush and a destroy call reclaimManifests under unlessHeld, reclaim and sweepIdle call sweep under it, and sweep
-  // (declared once) calls reclaimManifests and reclaimRuns: 3 + 1 + 3.
-  if (removals !== 7) out.push(`host/engine-host.ts: the host removes files at ${removals} sites, the model knows 7`);
+  // A flush, a destroy and the tests' compactOnly call reclaimManifests under unlessHeld, reclaim and sweepIdle call
+  // sweep under it, and sweep (declared once) calls reclaimManifests and reclaimRuns: 3 + 2 + 3.
+  if (removals !== 8) out.push(`host/engine-host.ts: the host removes files at ${removals} sites, the model knows 8`);
   need("host/engine-host.ts", /await unlessHeld\(name, \(\) => reclaimManifests\(fs, folded\.generation\)\);/, "a flush removes manifests under unlessHeld");
+  need("host/engine-host.ts", /await unlessHeld\(name, \(\) => reclaimManifests\(fs, generation\)\);/, "compactOnly removes manifests under unlessHeld");
   need("host/engine-host.ts", /await unlessHeld\(name, \(\) => reclaimManifests\(fs, asGeneration\(Number\.POSITIVE_INFINITY\)\)\);\s*await reclaim\(fs, wal\);/, "a destroy removes every manifest, then sweeps, under unlessHeld");
   need("host/engine-host.ts", /async function reclaim\(fs: AsyncFs, wal: IdBWal\): Promise<void> \{\s*await unlessHeld\(name, async \(\) => \{/, "reclaim runs under unlessHeld");
   need("host/engine-host.ts", /async function sweepIdle\(fs: AsyncFs, wal: IdBWal\): Promise<void> \{\s*await unlessHeld\(name, async \(\) => \{/, "sweepIdle runs under unlessHeld");

@@ -4,7 +4,7 @@ import type { AsyncFs, FileWriter, OpenFile } from "../opfs/async-fs.js";
 import { reconcile, type Trusted } from "../recover.js";
 import { nextGeneration, type Generation } from "../seq.js";
 import { openMerge, type Demand, type MergeCore } from "../store/engine.js";
-import { manifestNumbers, type GenerationMeta, type RunMeta } from "../store/generation.js";
+import { loadRecorded, manifestNumbers, type GenerationMeta, type RunMeta } from "../store/generation.js";
 import {
   levelRunPath,
   planCompaction,
@@ -12,7 +12,7 @@ import {
   TARGET_RUN_BYTES,
   type CompactionPlan,
 } from "../store/levels.js";
-import { loadRecorded, publishGeneration } from "./publish.js";
+import { publishGeneration } from "./publish.js";
 import { retireMarks } from "../store/marks.js";
 import type { HostBudget } from "./budget.js";
 import { inMergeSlot } from "./merge-slot.js";

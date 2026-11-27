@@ -1,7 +1,7 @@
 import type { Entry } from "@opfs-lsm/kv";
 import type { BoundCollection } from "./catalog.js";
 import { followCollection, type CollectionChange } from "./changes.js";
-import { decodeDocs, diffEntries, entriesOf, uniqueConflict, type Claim, type EncodedDoc } from "./derive.js";
+import { decodeDocs, diffEntries, entriesOf, NONE, uniqueConflict, type Claim, type EncodedDoc } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { bytesEqual, concat, idBytes, idOf, indexIdOf, keyString, parseId, rowKey, type DocId } from "./keys.js";
 import type { EntryPageOf, IdPage, IndexInfo, JsonDoc, Page, Query } from "./schema.js";
@@ -106,8 +106,6 @@ export interface Collection<T extends JsonDoc, Ix, In = T> {
    */
   changes(listener: (change: CollectionChange<T, Ix>) => void): () => void;
 }
-
-const NONE: readonly Entry[] = [];
 
 /** What a write makes of one row: a document to store, null for no row, undefined to leave the row as it is. */
 type Slot = EncodedDoc | null | undefined;

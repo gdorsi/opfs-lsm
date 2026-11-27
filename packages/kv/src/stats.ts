@@ -27,14 +27,8 @@ watchAppends((wal, bytes) => {
   appended.set(wal, counts);
 });
 
-function internalsOf(db: Db) {
-  const found = dbInternals(db);
-  if (!found) throw new Error("db was not opened by @opfs-lsm/kv");
-  return found;
-}
-
 export async function readStats(db: Db): Promise<KvStats> {
-  const { name, wal, fs, ingestClient } = internalsOf(db);
+  const { name, wal, fs, ingestClient } = dbInternals(db);
   const host = await ingestClient.stats(name);
   const { records, bytes } = appended.get(wal) ?? { records: 0, bytes: 0 };
   return {
@@ -49,7 +43,7 @@ export async function readStats(db: Db): Promise<KvStats> {
 
 /** Flush the memtable now and wait for the compaction it starts. */
 export function ingest(db: Db): Promise<{ generation: number }> {
-  return internalsOf(db).flush(true);
+  return dbInternals(db).flush(true);
 }
 
 /**

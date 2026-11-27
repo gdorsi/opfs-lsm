@@ -255,6 +255,13 @@ export async function loadGeneration(
   return buf?.byteLength ? decodeGeneration(buf) : undefined;
 }
 
+/** `loadGeneration` of a recorded generation, which nothing may remove: a manifest that is gone throws. */
+export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<GenerationMeta> {
+  const meta = await loadGeneration(fs, recorded);
+  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
+  return meta;
+}
+
 /** True when every run `meta` lists is on disk and not empty. */
 export async function isIntact(fs: ReadFs, meta: GenerationMeta): Promise<boolean> {
   for (const run of meta.runs) {

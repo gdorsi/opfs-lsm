@@ -146,13 +146,12 @@ export class PageCache {
       const key = q.values().next().value;
       if (key === undefined) return false;
       const e = this.entries.get(key)!;
-      this.dequeue(key, e);
       if (!e.hit) {
-        this.entries.delete(key);
-        this.resident -= e.bytes;
+        this.remove(key, e);
         return true;
       }
       e.hit = false;
+      this.dequeue(key, e);
       this.enqueue(key, e, queue === "probation" ? "main" : queue);
     }
   }

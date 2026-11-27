@@ -60,7 +60,6 @@ function countingMeter(counted: Map<DbName, Counts>): Meter {
  */
 export class MeteredHost extends EngineHost {
   private readonly counted: Map<DbName, Counts>;
-  private readonly folder: FsFactory;
 
   /** `fileWrites` is how the worker writes OPFS files, for `stats`. */
   constructor(
@@ -71,7 +70,6 @@ export class MeteredHost extends EngineHost {
     const counted = new Map<DbName, Counts>();
     super(fsFactory, overrides, countingMeter(counted));
     this.counted = counted;
-    this.folder = fsFactory;
   }
 
   /**
@@ -89,7 +87,7 @@ export class MeteredHost extends EngineHost {
     } finally {
       wal.close();
     }
-    const fs = await this.folder(dbName);
+    const fs = await this.fsFactory(dbName);
     if (!fs) throw destroyed();
     const latest = await loadGeneration(fs, recorded);
     const byLevel = new Map<number, { level: number; runs: number; bytes: number }>();

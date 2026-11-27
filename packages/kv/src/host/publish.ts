@@ -1,8 +1,7 @@
-import { CorruptDatabaseError } from "../errors.js";
-import type { AsyncFs, ReadFs } from "../opfs/async-fs.js";
-import type { Generation, Seq } from "../seq.js";
+import type { AsyncFs } from "../opfs/async-fs.js";
+import type { Seq } from "../seq.js";
 import { encodeRun } from "../store/engine.js";
-import { encodeGeneration, loadGeneration, manifestHead, manifestPath, type GenerationMeta, type RunMeta } from "../store/generation.js";
+import { encodeGeneration, manifestHead, manifestPath, type GenerationMeta, type RunMeta } from "../store/generation.js";
 import { levelRunPath } from "../store/levels.js";
 import type { SstEntry } from "../store/sst.js";
 
@@ -31,11 +30,4 @@ export async function publishL0(
   await w.write(body);
   await w.finish();
   return { path, level: 0, ...end, marksThrough };
-}
-
-/** `loadGeneration` of a recorded generation, which nothing may remove: a manifest that is gone throws. */
-export async function loadRecorded(fs: ReadFs, recorded: Generation): Promise<GenerationMeta> {
-  const meta = await loadGeneration(fs, recorded);
-  if (!meta) throw new CorruptDatabaseError(`manifest ${recorded} is gone`);
-  return meta;
 }

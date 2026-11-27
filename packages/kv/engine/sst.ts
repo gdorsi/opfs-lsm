@@ -544,8 +544,8 @@ export class BlockWalk {
 
   /**
    * The unsigned LEB128 at the cursor, of at most 5 bytes that end before
-   * `end`, or an error status. Bits past 32 are dropped, as on wasm32 Rust,
-   * whose `usize` is 32 bits.
+   * `end`, or an error status. Bits past 32 are dropped: `usize` is 32 bits
+   * on wasm32.
    */
   varint(block: usize, end: usize): i64 {
     let o = this.at;

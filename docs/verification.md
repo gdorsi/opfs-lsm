@@ -13,7 +13,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 
 | Change | Run |
 | --- | --- |
-| WAL append or ack, `ingestChunk`, `listUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility`, `formal:power-loss` and `formal:crash-table`) |
+| WAL append or ack, `ingestChunk`, `readUningested`, `advanceIngested` | `pnpm --filter @opfs-lsm/kv formal:kv` (or at least `formal:ingest-visibility`, `formal:power-loss` and `formal:crash-table`) |
 | The write order of ingest, compaction install or reclaim, `reconcile`, `IdBWal.adopt`, manifest numbering, or the open path | `formal:power-loss` and `formal:crash-table`, then `tests/sim/crash-enum.test.ts` with a long sweep (below) and `KV_CRASH_PAIRS=20` on `tests/sim/io-error-crash.test.ts`, then `power-loss-chrome` (see [Lose IndexedDB commits in real Chrome](#lose-indexeddb-commits-in-real-chrome)), then `kill-chrome --minutes 10` |
 | `update`, the header of a WAL row (`rowValid`, `encodeOps`, `decodeOps`), or how a tab lands its own append (`commit`, `landed`) | `formal:update-exact`, then `tests/update.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts`. A change to the row format also takes the decoder row below. |
 | Generation loading in `db.ts` (`sync`, `write`, `load`) or the reclaim lock (`holdingFiles`, `unlessHeld`) | `formal:reclaim-hold`, `formal:power-loss`, the churn tests in `tests/sim/crash-enum.test.ts`, and `KV_MODEL_RUNS=2000` on `multi-handle.test.ts` |

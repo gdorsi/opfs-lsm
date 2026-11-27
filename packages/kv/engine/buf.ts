@@ -21,7 +21,7 @@ export class Bytes {
     return true;
   }
 
-  /** Room for `extra` more bytes, doubling the capacity when it grows, like a Rust `Vec`. */
+  /** Room for `extra` more bytes. A growth at least doubles the capacity, to 8 bytes or more. */
   tryReserve(extra: usize): bool {
     const need = this.len + extra;
     if (need <= this.cap) return true;
