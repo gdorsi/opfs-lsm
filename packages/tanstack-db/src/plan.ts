@@ -92,7 +92,7 @@ function planRead(
   const facts = factsOf(where);
   if ([...facts.pins.values()].some((values) => values.length === 0)) return { kind: "ranges", ranges: [] };
   const ids = facts.pins.get("id");
-  if (ids) return { kind: "ids", ids: ids.filter((id): id is string => typeof id === "string") };
+  if (ids) return { kind: "ids", ids: ids.filter((id): id is string => typeof id === "string" && isId(id)) };
   const order = limit === undefined ? undefined : orderOf(clause);
   if (order && limit !== undefined) {
     if (limit === 0) return { kind: "ranges", ranges: [] };
@@ -254,12 +254,12 @@ function factsOf(where: BasicExpression<boolean> | undefined): Facts {
     const value: unknown = right.value;
     switch (name) {
       case "eq":
-        if (isScalar(value)) pin(facts, path, [value]);
+        if (pinnable(path, value)) pin(facts, path, [value]);
         break;
       case "in":
         if (Array.isArray(value)) {
           const present = value.filter((v) => v !== null && v !== undefined);
-          if (present.every(isScalar)) pin(facts, path, present);
+          if (present.every((v) => pinnable(path, v))) pin(facts, path, present);
         }
         break;
       case "gt":
@@ -309,11 +309,24 @@ export function ownPath(ref: IR.PropRef): readonly string[] {
   return sourceAlias !== undefined && path[0] === sourceAlias ? path.slice(1) : path;
 }
 
+/**
+ * docstore refuses a query whose key passes 8 KiB. A string this short
+ * stays under it, at 3 bytes a unit, on an index of 8 fields. A longer one
+ * is left to the filter.
+ */
+const MAX_STRING_UNITS = 256;
+
+/** An id a document can have. docstore refuses any other, and none is stored. */
+const isId = (id: string): boolean => id !== "" && id.length <= 1024 && new TextEncoder().encode(id).length <= 1024;
+
+/** An id pin becomes a lookup by id, so it takes a string of any length: `isId` drops what no document has. */
+const pinnable = (path: string, v: unknown): v is Scalar => (path === "id" && typeof v === "string" ? v.isWellFormed() : isScalar(v));
+
 /** A value docstore can put in an index key, and that a TanStack comparison does not treat as unknown. */
 function isScalar(v: unknown): v is Scalar {
   if (typeof v === "boolean") return true;
   if (typeof v === "number") return Number.isFinite(v);
-  return typeof v === "string" && v.isWellFormed();
+  return typeof v === "string" && v.length <= MAX_STRING_UNITS && v.isWellFormed();
 }
 
 /**

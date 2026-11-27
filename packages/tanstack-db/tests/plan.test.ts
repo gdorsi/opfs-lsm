@@ -36,6 +36,8 @@ const plan = (options: LoadSubsetOptions) => planLoad(options, INDEXES).map((r) 
 test("a pinned id reads those documents", () => {
   assert.deepEqual(plan({ where: inArray(ref("id"), ["a", "b"]) }), [{ kind: "ids", ids: ["a", "b"] }]);
   assert.deepEqual(plan({ where: and(eq(ref("status"), 1), eq(ref("id"), "a")) }), [{ kind: "ids", ids: ["a"] }]);
+  const long = "x".repeat(1024);
+  assert.deepEqual(plan({ where: inArray(ref("id"), ["a", "", long, `${long}x`]) }), [{ kind: "ids", ids: ["a", long] }]);
 });
 
 test("a where that pins no index prefix scans", () => {

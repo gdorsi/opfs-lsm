@@ -18,7 +18,7 @@ export type RowPost = {
    * follows. A hidden page posts every row at once.
    */
   readonly add: (row: BusRow, bytes: number) => void;
-  /** Post the rows that wait, and stop. The caller adds no row after this, then closes the channel. */
+  /** Post the rows that wait. The caller then closes the channel, and a row added later is posted at once on a channel of its own. */
   readonly close: () => void;
 };
 
@@ -35,6 +35,7 @@ export function rowPost(bus: BroadcastChannel, writerId: WriterId, rowPostMs: nu
   let postedAt = Number.NEGATIVE_INFINITY;
   /** Posts the rows that no later landing posted. */
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let closed = false;
   const post = () => {
     clearTimeout(timer);
     timer = undefined;
@@ -43,7 +44,10 @@ export function rowPost(bus: BroadcastChannel, writerId: WriterId, rowPostMs: nu
     rows = [];
     bytes = 0;
     postedAt = performance.now();
-    bus.postMessage(message);
+    if (!closed) return bus.postMessage(message);
+    const late = new BroadcastChannel(bus.name);
+    late.postMessage(message);
+    late.close();
   };
   // Posts the rows that wait when the page is hidden, before the browser slows the timer.
   const hasDocument = typeof document !== "undefined";
@@ -52,11 +56,12 @@ export function rowPost(bus: BroadcastChannel, writerId: WriterId, rowPostMs: nu
     add(row, rowBytes) {
       rows.push(row);
       bytes += rowBytes;
-      if (pageHidden() || performance.now() - postedAt >= rowPostMs) post();
+      if (closed || pageHidden() || performance.now() - postedAt >= rowPostMs) post();
       else timer ??= setTimeout(post, rowPostMs);
     },
     close() {
       post();
+      closed = true;
       if (hasDocument) document.removeEventListener("visibilitychange", post);
     },
   };
