@@ -237,6 +237,58 @@ await deleteDatabase("linearlite");
 
 `deleteDatabase(name)` deletes every document and index stored under `name`. Every open handle on it, in any tab, ends its subscriptions with `ClosedError` code `destroyed`, and its later calls reject with `ClosedError`. It resolves once the storage is gone, so the next `openDatabase` of that name starts empty.
 
+## Solid
+
+```tsx
+import { eq, query } from "@opfs-lsm/db";
+import { useLiveQuery } from "@opfs-lsm/db/solid";
+import { createSignal, Errored, For, isPending, Loading } from "solid-js";
+
+const withStatus = (status: number) =>
+	query((q) =>
+		q
+			.from({ i: issues })
+			.where(({ i }) => eq(i.status, status))
+			.orderBy(({ i }) => i.modified, "desc")
+			.limit(50),
+	);
+const countWithStatus = (status: number) =>
+	query((q) =>
+		q
+			.from({ i: issues })
+			.where(({ i }) => eq(i.status, status))
+			.count(),
+	);
+
+function IssueList() {
+	const [status, setStatus] = createSignal(1);
+	const rows = useLiveQuery(() => withStatus(status()));
+	const total = useLiveQuery(() => countWithStatus(status()));
+
+	return (
+		<Errored fallback={(error) => <p>{String(error())}</p>}>
+			<Loading fallback={<p>Reading</p>}>
+				<button onClick={() => setStatus(2)}>In progress</button>
+				<p class={{ stale: isPending(total) }}>{total()} issues</p>
+				<ul>
+					<For each={rows()}>{(issue) => <li>{issue.title}</li>}</For>
+				</ul>
+			</Loading>
+		</Errored>
+	);
+}
+```
+
+`@opfs-lsm/db/solid` is the adapter for Solid 2. It needs `solid-js` 2.0.3 or later, which the core entry does not import.
+
+`useLiveQuery(() => query)` subscribes to the query and returns an accessor of its result: the rows, one row, or a number.
+
+- The function may read signals and props. When one changes, the subscription moves to the new query. The accessor keeps the last result until the new one is read, and `isPending(rows)` is true meanwhile.
+- Until the first read the accessor is not ready, as an async memo is. Read it under `<Loading>`.
+- The result is a store whose rows are matched by `id`. A change to one document updates only what reads the fields that changed, so an edited title redraws one text node and a row that moved keeps its elements. A `select` without `id` gives rows that are replaced when they change.
+- The error that ends a subscription is thrown where the accessor is read, for `<Errored>` or an effect's `error` to catch.
+- The subscription stops when the component that called `useLiveQuery` is disposed.
+
 ## Errors
 
 Every rejection and every `subscribe` error is a `DbError` with a fixed `_tag` and a `code`. An error that your own `update` callback or validator throws passes through as it is. So does the `TypeError` of a document that JSON cannot hold, such as one with a cycle or a `BigInt`, and nothing is stored.

@@ -28,6 +28,11 @@
       "opfs-lsm-source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./solid": {
+      "opfs-lsm-source": "./src/solid.ts",
+      "types": "./dist/solid.d.ts",
+      "import": "./dist/solid.js"
     }
   },
   "files": [
@@ -45,9 +50,19 @@
     "@opfs-lsm/docstore": "workspace:*",
     "@opfs-lsm/kv": "workspace:*"
   },
+  "peerDependencies": {
+    "solid-js": "^2.0.3"
+  },
+  "peerDependenciesMeta": {
+    "solid-js": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@solidjs/web": "^2.0.3",
     "fake-indexeddb": "^6.0.0",
     "fast-check": "^4.10.2",
+    "solid-js": "^2.0.3",
     "typescript": "^5.9.0",
     "valibot": "^1.5.0",
     "vitest": "^3.2.0"
