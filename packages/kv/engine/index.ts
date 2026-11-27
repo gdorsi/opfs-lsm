@@ -99,7 +99,7 @@ export function merge_open(
   if (short) return TOO_SHORT;
   const s = new MergeSession();
   s.dropTombstones = dropTombstones != 0;
-  // Saturates like Rust's `as`, so Number.MAX_SAFE_INTEGER becomes the largest size.
+  // The conversion saturates, so Number.MAX_SAFE_INTEGER becomes the largest usize.
   s.targetBytes = <usize>targetBytes;
   s.chunkBytes = max<usize>(chunkBytes, 1);
   s.yieldBytes = max<usize>(yieldBytes, 1);
