@@ -1,5 +1,5 @@
 diff --git a/dist/cjs/sqlite-core-adapter.cjs b/dist/cjs/sqlite-core-adapter.cjs
-index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..c23d84a1569d18e7e9b648cb25396348e28c26dc 100644
+index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..f630f11cff0e4a7b41cb56ed815d8000edc84796 100644
 --- a/dist/cjs/sqlite-core-adapter.cjs
 +++ b/dist/cjs/sqlite-core-adapter.cjs
 @@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
@@ -20,7 +20,7 @@ index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..c23d84a1569d18e7e9b648cb25396348
  			if (right.value.every((value) => typeof value === `string`)) return {
  				supported: true,
  				sql: `(${compileSqlExpression(left, `index-expression`).sql} IN (SELECT value FROM json_each(?)))`,
-@@ -774,6 +774,14 @@ function compileSafeSqlPrefilter(expression, compiled) {
+@@ -774,6 +774,24 @@ function compileSafeSqlPrefilter(expression, compiled) {
  	}
  	if (expression.name === `like` && expression.args.length === 2 && left?.type === `ref` && right?.type === `val` && typeof right.value === `string` && /^[\x20-\x7e]*%$/.test(right.value) && !right.value.slice(0, -1).includes(`%`) && !right.value.includes(`_`)) return compiled;
  }
@@ -28,18 +28,40 @@ index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..c23d84a1569d18e7e9b648cb25396348
 +function isExactSqlFilter(expression) {
 +	if (expression.type !== `func`) return false;
 +	if (expression.name === `and`) return expression.args.every(isExactSqlFilter);
-+	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	const compiled = compileSqlExpression(expression);
++	if ([
++		`gt`,
++		`gte`,
++		`lt`,
++		`lte`
++	].includes(expression.name)) {
++		const [left, right] = expression.args;
++		const literal = left?.type === `ref` ? right : right?.type === `ref` ? left : void 0;
++		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isFinite(literal.value) && compiled.supported;
++	}
++	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
 +}
  function compileOrderByClauses(orderBy) {
  	if (!orderBy || orderBy.length === 0) return {
  		supported: true,
-@@ -1790,14 +1798,20 @@ var SQLiteCorePersistenceAdapter = class {
+@@ -1782,22 +1800,29 @@ var SQLiteCorePersistenceAdapter = class {
+ 		const orderByCompiled = compileOrderByClauses(options.orderBy);
+ 		const queryParams = [];
+ 		let sql = `SELECT key, value, metadata, row_version FROM ${collectionTableSql}`;
+-		if (safePrefilter) {
+-			sql = `${sql} WHERE ${safePrefilter.sql}`;
+-			queryParams.push(...safePrefilter.params);
++		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || whereCompiled.supported && isExactSqlFilter(options.where));
++		const filter = paged && options.where ? whereCompiled : safePrefilter;
++		if (filter) {
++			sql = `${sql} WHERE ${filter.sql}`;
++			queryParams.push(...filter.params);
+ 		}
+ 		if (options.orderBy && orderByCompiled.supported) {
  			sql = `${sql} ORDER BY ${orderByCompiled.sql}, key ASC`;
  			queryParams.push(...orderByCompiled.params);
  		}
-+		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || isExactSqlFilter(options.where));
 +		if (paged) {
 +			sql = `${sql} LIMIT ? OFFSET ?`;
 +			queryParams.push(options.limit, options.offset ?? 0);
@@ -58,7 +80,7 @@ index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..c23d84a1569d18e7e9b648cb25396348
  	applyInMemoryWhere(rows, where) {
  		if (!where) return rows;
 diff --git a/dist/esm/sqlite-core-adapter.js b/dist/esm/sqlite-core-adapter.js
-index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..c9415fad6d2c47367166a97029d90d02f27e7d46 100644
+index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..0360b88e9c31ab0696240827ca9ac5a4c5f82b38 100644
 --- a/dist/esm/sqlite-core-adapter.js
 +++ b/dist/esm/sqlite-core-adapter.js
 @@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
@@ -79,7 +101,7 @@ index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..c9415fad6d2c47367166a97029d90d02
  			if (right.value.every((value) => typeof value === `string`)) return {
  				supported: true,
  				sql: `(${compileSqlExpression(left, `index-expression`).sql} IN (SELECT value FROM json_each(?)))`,
-@@ -774,6 +774,14 @@ function compileSafeSqlPrefilter(expression, compiled) {
+@@ -774,6 +774,24 @@ function compileSafeSqlPrefilter(expression, compiled) {
  	}
  	if (expression.name === `like` && expression.args.length === 2 && left?.type === `ref` && right?.type === `val` && typeof right.value === `string` && /^[\x20-\x7e]*%$/.test(right.value) && !right.value.slice(0, -1).includes(`%`) && !right.value.includes(`_`)) return compiled;
  }
@@ -87,18 +109,40 @@ index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..c9415fad6d2c47367166a97029d90d02
 +function isExactSqlFilter(expression) {
 +	if (expression.type !== `func`) return false;
 +	if (expression.name === `and`) return expression.args.every(isExactSqlFilter);
-+	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	const compiled = compileSqlExpression(expression);
++	if ([
++		`gt`,
++		`gte`,
++		`lt`,
++		`lte`
++	].includes(expression.name)) {
++		const [left, right] = expression.args;
++		const literal = left?.type === `ref` ? right : right?.type === `ref` ? left : void 0;
++		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isFinite(literal.value) && compiled.supported;
++	}
++	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
 +}
  function compileOrderByClauses(orderBy) {
  	if (!orderBy || orderBy.length === 0) return {
  		supported: true,
-@@ -1790,14 +1798,20 @@ var SQLiteCorePersistenceAdapter = class {
+@@ -1782,22 +1800,29 @@ var SQLiteCorePersistenceAdapter = class {
+ 		const orderByCompiled = compileOrderByClauses(options.orderBy);
+ 		const queryParams = [];
+ 		let sql = `SELECT key, value, metadata, row_version FROM ${collectionTableSql}`;
+-		if (safePrefilter) {
+-			sql = `${sql} WHERE ${safePrefilter.sql}`;
+-			queryParams.push(...safePrefilter.params);
++		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || whereCompiled.supported && isExactSqlFilter(options.where));
++		const filter = paged && options.where ? whereCompiled : safePrefilter;
++		if (filter) {
++			sql = `${sql} WHERE ${filter.sql}`;
++			queryParams.push(...filter.params);
+ 		}
+ 		if (options.orderBy && orderByCompiled.supported) {
  			sql = `${sql} ORDER BY ${orderByCompiled.sql}, key ASC`;
  			queryParams.push(...orderByCompiled.params);
  		}
-+		let paged = options.limit !== void 0 && options.orderBy !== void 0 && orderByCompiled.supported && (!options.where || isExactSqlFilter(options.where));
 +		if (paged) {
 +			sql = `${sql} LIMIT ? OFFSET ?`;
 +			queryParams.push(options.limit, options.offset ?? 0);
