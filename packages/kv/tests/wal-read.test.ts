@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
-import { TabWal, encodeOps, listUningested } from "../src/idb/wal.js";
+import { TabWal, encodeOps } from "../src/idb/wal.js";
+import { listUningested } from "./uningested.js";
 import { asSeq } from "../src/seq.js";
 import { advance } from "./advance.js";
 

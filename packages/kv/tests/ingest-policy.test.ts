@@ -11,7 +11,8 @@ import {
   readStats,
 } from "../src/testing.js";
 import { checkDbName, checkKey, checkValue, flushBytes } from "../src/check.js";
-import { TabWal, encodeOps, listUningested, uningestedBytes } from "../src/idb/wal.js";
+import { TabWal, encodeOps, uningestedBytes } from "../src/idb/wal.js";
+import { listUningested } from "./uningested.js";
 import { compactLock, ingestLock } from "../src/locks.js";
 import { advance } from "./advance.js";
 import { loadLatestGeneration } from "./latest-generation.js";

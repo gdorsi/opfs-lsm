@@ -959,15 +959,6 @@ export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number>
 }
 
 /**
- * The records with seq > ingestedThrough, ascending: only the oldest ones
- * whose `flushBytes` fit in `maxBytes`, and at least one: a record larger
- * than the cap comes alone.
- */
-export async function listUningested(wal: IdBWal, limit: { readonly maxBytes: number }): Promise<WalRecord[]> {
-  return (await readUningested(wal, limit.maxBytes)).records;
-}
-
-/**
  * Mark seqs <= through as ingested and record `generation` and its
  * `manifest` bytes in the same transaction. A tab that has not read them
  * jumps to the SST for that generation. Deletes the records the previous

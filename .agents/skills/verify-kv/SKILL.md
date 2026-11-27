@@ -23,7 +23,7 @@ description: "Formally check @opfs-lsm/kv core promises: the ingest order that k
 
 | Change touches | Run |
 |---|---|
-| `host/ingest.ts`, `idb/wal.ts` (`listUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility` and `formal:crash-table`) |
+| `host/ingest.ts`, `idb/wal.ts` (`readUningested`, `advanceIngested`) | full suite (or at least `formal:ingest-visibility` and `formal:crash-table`) |
 | `store/read.ts` `pointGet` / `latestSstEntry`, `keysReader`, `db.ts` `get` | `formal:wal-over-sst` + ingest |
 | `view.ts` `ViewSnapshotImpl`, `db.ts` `view`, `store/memtable.ts` `pin` | `formal:view-pin` |
 | `store/read.ts` `latestSstEntry`, the merge session (`packages/kv/engine/merge.ts`) and its oracle (`tests/oracle/merge-ts.ts`), `host/compact.ts`, `store/levels.ts` `planCompaction` (`bottom`) | `formal:compact-preserve` |
