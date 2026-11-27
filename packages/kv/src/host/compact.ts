@@ -45,7 +45,7 @@ export async function mergeNextStep(
   awaited: () => boolean,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base, { maxSources: budget.maxSources });
+  const plan = planCompaction(base, budget.maxSources);
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   // Only an L0 step has more than two sources. One that starts with half the runs of the stop ends after L0 is full.
