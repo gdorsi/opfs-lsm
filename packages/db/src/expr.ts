@@ -74,7 +74,7 @@ const fn = (name: FnName, args: readonly Node[]) => ({ [NODE]: { kind: "fn", nam
 const compare = (name: FnName) => (left: unknown, right: unknown) => fn(name, [operand(left), operand(right)]);
 
 type Compare = {
-  <V extends Comparable>(left: Expression<V | null>, right: NoInfer<Operand<V>>): Expression<boolean>;
+  <V extends Comparable>(left: Expression<V | null>, right: NoInfer<Expression<V | null> | V>): Expression<boolean>;
   <V extends Comparable>(left: V, right: Expression<V | null>): Expression<boolean>;
 };
 
