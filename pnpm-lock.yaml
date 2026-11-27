@@ -341,6 +341,31 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  packages/db:
+    dependencies:
+      '@opfs-lsm/docstore':
+        specifier: workspace:*
+        version: link:../docstore
+      '@opfs-lsm/kv':
+        specifier: workspace:*
+        version: link:../kv
+    devDependencies:
+      fake-indexeddb:
+        specifier: ^6.0.0
+        version: 6.2.7
+      fast-check:
+        specifier: ^4.10.2
+        version: 4.10.2
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+      valibot:
+        specifier: ^1.5.0
+        version: 1.5.0(typescript@5.9.3)
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@26.6.6)(jiti@2.7.0)(lightningcss@1.33.0)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/docstore:
     dependencies:
       '@opfs-lsm/kv':
