@@ -33,6 +33,11 @@
       "opfs-lsm-source": "./src/solid.ts",
       "types": "./dist/solid.d.ts",
       "import": "./dist/solid.js"
+    },
+    "./testing": {
+      "opfs-lsm-source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [

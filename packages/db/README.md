@@ -289,6 +289,18 @@ function IssueList() {
 - The error that ends a subscription is thrown where the accessor is read, for `<Errored>` or an effect's `error` to catch.
 - The subscription stops when the component that called `useLiveQuery` is disposed.
 
+## Tests
+
+```ts
+import "fake-indexeddb/auto";
+import { openMemoryDatabase } from "@opfs-lsm/db/testing";
+
+const here = await openMemoryDatabase({ name: "test", version: 1, collections });
+const there = await openMemoryDatabase({ name: "test", version: 1, collections });
+```
+
+`openMemoryDatabase` takes what `openDatabase` takes and stores the data in memory, so a test of an app's queries and writes runs in Node. Two opens of one name share the data, as two tabs of one origin do. The process needs an `indexedDB`, such as the one of [`fake-indexeddb`](https://github.com/dumbmatter/fakeIndexedDB).
+
 ## Errors
 
 Every rejection and every `subscribe` error is a `DbError` with a fixed `_tag` and a `code`. An error that your own `update` callback or validator throws passes through as it is. So does the `TypeError` of a document that JSON cannot hold, such as one with a cycle or a `BigInt`, and nothing is stored.
