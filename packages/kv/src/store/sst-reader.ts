@@ -25,16 +25,11 @@ import {
 const MAX_READ_AHEAD = 32;
 
 /** An immutable run file of known size. `OpenFile` is one. */
-type RunFile = {
+export type RunFile = {
   readonly size: number;
   /** Exactly `length` bytes at `offset`. */
   read(offset: number, length: number): Promise<Uint8Array>;
 };
-
-/** A run file whose bytes are already in memory, for tests and benches. */
-export function bytesFile(buf: Uint8Array): RunFile {
-  return { size: buf.byteLength, read: async (offset, length) => buf.subarray(offset, offset + length) };
-}
 
 /**
  * A run read on demand. It knows where every block is from the index its

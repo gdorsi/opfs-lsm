@@ -9,11 +9,11 @@
  * level still answers before the older one.
  */
 import { encodeSstRef, sstBlockIndex, sstRunEnd } from "../../tests/oracle/sst-ref.js";
-import { cacheUsage, loadsDone } from "../../tests/runs.js";
+import { bytesFile, cacheUsage, loadsDone } from "../../tests/runs.js";
 import { pointGet, runLevels, type RunLevel } from "../../src/store/read.js";
 import { untilHit } from "../../src/store/cursor.js";
 import { PageCache } from "../../src/store/page-cache.js";
-import { bytesFile, SstReader } from "../../src/store/sst-reader.js";
+import { SstReader } from "../../src/store/sst-reader.js";
 import type { MemRow } from "../../src/store/memtable.js";
 import { NO_MARKS, type Marks } from "../../src/store/marks.js";
 
