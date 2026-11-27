@@ -316,8 +316,10 @@ export function ownPath(ref: IR.PropRef): readonly string[] {
  */
 const MAX_STRING_UNITS = 256;
 
-/** An id a document can have. docstore refuses any other, and none is stored. */
-const isId = (id: string): boolean => id !== "" && id.length <= 1024 && new TextEncoder().encode(id).length <= 1024;
+const utf8 = new TextEncoder();
+
+/** An id a document can have. docstore refuses any other, and none is stored. A unit takes at most 3 UTF-8 bytes. */
+const isId = (id: string): boolean => id !== "" && id.length <= 1024 && (id.length * 3 <= 1024 || utf8.encode(id).length <= 1024);
 
 /** An id pin becomes a lookup by id, so it takes a string of any length: `isId` drops what no document has. */
 const pinnable = (path: string, v: unknown): v is Scalar => (path === "id" && typeof v === "string" ? v.isWellFormed() : isScalar(v));
