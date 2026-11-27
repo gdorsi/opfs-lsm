@@ -374,13 +374,15 @@ export function findInBlock(b: BlockBytes, key: Uint8Array): RecordWalker | unde
 
 /**
  * A step through the records of one block in key order, from the first key at
- * or after `seek`, each as `RecordWalker.inPlace` gives it.
+ * or after `seek` to the last one below `stop`, each as
+ * `RecordWalker.inPlace` gives it. A bound is found by one search of the
+ * block, so no record is compared with it.
  */
-export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
+export function blockEntries(b: BlockBytes, seek?: Uint8Array, stop?: Uint8Array): () => BlockEntry | undefined {
   const w = new RecordWalker(b);
-  let left = seek ? seekInBlock(w, seek) : w.count;
+  let left = (seek ? seekInBlock(w, seek) : w.count) - (stop ? seekInBlock(new RecordWalker(b), stop) : 0);
   return () => {
-    if (left === 0) return undefined;
+    if (left <= 0) return undefined;
     left--;
     w.next();
     return w.inPlace();
@@ -388,22 +390,24 @@ export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry
 }
 
 /**
- * Like `blockEntries`, from the last record below `seek` down. It reads one
- * sampled group of `OFFSET_STRIDE` records at a time, from the last group
- * back, so a scan that stops early reads only the groups it reached.
+ * Like `blockEntries`, from the last record below `seek` down to the first
+ * one at or after `stop`. It reads one sampled group of `OFFSET_STRIDE`
+ * records at a time, from the last group back, so a scan that stops early
+ * reads only the groups it reached.
  */
-export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
+export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array, stop?: Uint8Array): () => BlockEntry | undefined {
   const w = new RecordWalker(b);
   const first = w.o;
+  const floor = stop ? w.count - seekInBlock(new RecordWalker(b), stop) : 0;
   let left = seek ? w.count - seekInBlock(w, seek) : w.count;
   const group: BlockEntry[] = [];
   return () => {
-    if (group.length === 0 && left > 0) {
+    if (group.length === 0 && left > floor) {
       const g = ((left - 1) / OFFSET_STRIDE) | 0;
       w.o = g === 0 ? first : w.sampleAt(g);
       for (let i = g * OFFSET_STRIDE; i < left; i++) {
         w.next();
-        group.push(w.inPlace());
+        if (i >= floor) group.push(w.inPlace());
       }
       left = g * OFFSET_STRIDE;
     }

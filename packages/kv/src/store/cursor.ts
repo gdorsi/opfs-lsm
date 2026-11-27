@@ -1,4 +1,4 @@
-import { compareFrom, containsAll, copyOut, sharedPrefix } from "../bytes.js";
+import { compareFrom, containsAll, copyOut } from "../bytes.js";
 import { asSeq, type Seq } from "../seq.js";
 import type { MemRow } from "./memtable.js";
 
@@ -121,11 +121,6 @@ export class BlockEntry {
       if (d !== 0) return d;
     }
     return aLength - bLength;
-  }
-
-  /** How many leading bytes of `key` every record of this block shares with it, at most the block's prefix. */
-  prefixShared(key: Uint8Array): number {
-    return sharedPrefix(this.prefix, key);
   }
 }
 
