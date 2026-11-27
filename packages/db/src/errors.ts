@@ -112,6 +112,9 @@ export class StorageError extends DbError {
   }
 }
 
+/** Every DbError, as a union: a `switch` on `_tag`, or Effect's `catchTag`, narrows it to one class. */
+export type AnyDbError = ValidationError | ConflictError | NotFoundError | QueryError | SchemaError | ClosedError | StorageError;
+
 /**
  * The one mapping from docstore's and kv's errors to DbError, applied to
  * every rejection of the public API and to the error that ends a

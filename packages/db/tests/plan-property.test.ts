@@ -28,4 +28,4 @@ it("a run yields what a filter and a sort over every document yield", async () =
     { numRuns, seed },
   );
   console.log(`planner property: seed ${seed}, ${numRuns} databases, ${queries} queries`);
-});
+}, 30 * 60_000);

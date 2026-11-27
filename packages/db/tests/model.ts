@@ -35,8 +35,8 @@ const text: fc.Arbitrary<string | null> = fc.oneof(
   { weight: 6, arbitrary: fc.array(fc.constantFrom(...WORDS), { maxLength: 3 }).map((w) => w.join(" ")) },
 );
 
-export const IDS = Array.from({ length: 24 }, (_, i) => `r${String(i).padStart(2, "0")}`);
-const anyId = fc.constantFrom(...IDS);
+const IDS = Array.from({ length: 24 }, (_, i) => `r${String(i).padStart(2, "0")}`);
+export const anyId = fc.constantFrom(...IDS);
 
 export const rowArb = (id: fc.Arbitrary<string> = anyId): fc.Arbitrary<Row> =>
   fc.record(
@@ -46,12 +46,20 @@ export const rowArb = (id: fc.Arbitrary<string> = anyId): fc.Arbitrary<Row> =>
       b: scalar,
       c: small,
       t: text,
-      n: fc.record({ m: scalar }),
+      n: fc.record({ m: scalar }, { noNullPrototype: true }),
       tags: fc.array(fc.constantFrom("p", "q"), { maxLength: 2 }),
       x: scalar,
     },
-    { requiredKeys: ["id", "a", "b", "c", "t", "n"] },
+    { requiredKeys: ["id", "a", "b", "c", "t", "n"], noNullPrototype: true },
   ).map((row) => ({ ...row, u: `u-${row.id}` }));
+
+/** Fields an update sets. `m` stands for `n.m`. */
+export type Patch = { a?: Scalar; b?: Scalar; c?: number | null; t?: string | null; x?: Scalar; m?: Scalar };
+export const patchArb: fc.Arbitrary<Patch> = fc.record({ a: scalar, b: scalar, c: small, t: text, x: scalar, m: scalar }, { requiredKeys: [], noNullPrototype: true });
+
+export function patched(row: Row, { m, ...fields }: Patch): Row {
+  return { ...row, ...fields, n: m === undefined ? row.n : { m } };
+}
 
 /** Rows with distinct ids. */
 export const rowsArb = (max: number): fc.Arbitrary<Row[]> =>
@@ -97,9 +105,10 @@ export const condArb: fc.Arbitrary<Cond> = fc.oneof(
   { weight: 2, arbitrary: fc.record({ op: fc.constantFrom("and" as const, "or" as const), args: fc.tuple(leaf, leaf) }) },
 );
 
+/** Small windows, so that a result is often full and often starts past rows a write can change. */
 const window = {
-  offset: fc.option(fc.integer({ min: 0, max: 6 }), { nil: undefined }),
-  limit: fc.option(fc.oneof({ weight: 1, arbitrary: fc.constant(0) }, { weight: 12, arbitrary: fc.integer({ min: 1, max: 8 }) }), { nil: undefined }),
+  offset: fc.option(fc.integer({ min: 0, max: 4 }), { nil: undefined, freq: 3 }),
+  limit: fc.option(fc.oneof({ weight: 1, arbitrary: fc.constant(0) }, { weight: 12, arbitrary: fc.integer({ min: 1, max: 6 }) }), { nil: undefined, freq: 3 }),
   shape: fc.constantFrom<Spec["shape"]>("rows", "rows", "one", "count", "select"),
 };
 

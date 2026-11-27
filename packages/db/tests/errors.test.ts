@@ -1,7 +1,7 @@
 import { DocStoreError } from "@opfs-lsm/docstore";
 import { ClosedError as KvClosed, CommitError, ConstraintError, CorruptDatabaseError, StorageFullError, StorageUnavailableError } from "@opfs-lsm/kv";
 import { describe, expect, it } from "vitest";
-import { ClosedError, ConflictError, DbError, NotFoundError, QueryError, SchemaError, StorageError, ValidationError, wrap } from "../src/errors.js";
+import { ClosedError, ConflictError, DbError, NotFoundError, QueryError, SchemaError, StorageError, ValidationError, wrap, type AnyDbError } from "../src/errors.js";
 
 const tagAndCode = (err: unknown) => (err instanceof DbError ? `${err._tag} ${err.code}` : "not a DbError");
 
@@ -55,3 +55,18 @@ it("every error class has its own fixed _tag and is a DbError", () => {
   expect(errors.map((e) => e.name)).toEqual(errors.map((e) => e._tag));
   expect(errors.every((e) => e instanceof DbError && e instanceof Error)).toBe(true);
 });
+
+/** Never called: the compiler checks that a tag narrows the union to its class. */
+export function types(error: AnyDbError): unknown {
+  switch (error._tag) {
+    case "NotFoundError":
+      return error.id satisfies string;
+    case "ConflictError":
+      return error.ids satisfies readonly string[];
+    case "StorageError":
+      return error.code satisfies "commit" | "quota" | "unavailable" | "corrupt" | "limit" | "index-failed";
+    default:
+      // @ts-expect-error only a NotFoundError names one id
+      return error.id;
+  }
+}

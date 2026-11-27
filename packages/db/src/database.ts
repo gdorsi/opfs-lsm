@@ -5,7 +5,7 @@
  */
 import { openDocStore, type Collection as DocCollection } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
-import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap, type DbError } from "./errors.js";
+import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap, type AnyDbError } from "./errors.js";
 import { docstoreSchema, isId, prepare, writeRules, type Collections, type DocOf, type InputOf, type JsonDoc, type WriteRules } from "./schema.js";
 
 export type OpenOptions<C extends Collections> = {
@@ -49,7 +49,7 @@ export type Table = {
   readonly docs: DocCollection<JsonDoc, any, unknown>;
   readonly owner: { closed: boolean };
   /** The feed of the collection's subscriptions, while it has any. */
-  feed: { end(error: DbError): void } | undefined;
+  feed: { end(error: AnyDbError): void } | undefined;
 };
 
 const TABLE: unique symbol = Symbol("table");

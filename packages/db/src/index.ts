@@ -13,5 +13,6 @@ export {
   SchemaError,
   StorageError,
   ValidationError,
+  type AnyDbError,
   type DbErrorTag,
 } from "./errors.js";

@@ -85,7 +85,7 @@ function indexable(v: unknown): v is Scalar {
 }
 
 /** The dot path of a field of `alias`, as an index names it. A segment that holds a dot has none. */
-function dotPath(path: readonly string[]): string | undefined {
+export function dotPath(path: readonly string[]): string | undefined {
   return path.length === 0 || path.some((s) => s === "" || s.includes(".")) ? undefined : path.join(".");
 }
 
