@@ -8,7 +8,7 @@ export interface StandardSchemaV1<Input = unknown, Output = Input> {
   };
 }
 
-export type StandardResult<Output> =
+type StandardResult<Output> =
   | { readonly value: Output; readonly issues?: undefined }
   | { readonly issues: readonly StandardIssue[] };
 
