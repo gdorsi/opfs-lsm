@@ -1,17 +1,16 @@
 import type { Collection, CollectionChange, DocChange, JsonDoc } from "@opfs-lsm/docstore";
 import { ClosedError } from "@opfs-lsm/kv";
-import { and, compileSingleRowExpression, toBooleanPredicate, withCollectionConfigFactory } from "@tanstack/db";
+import { withCollectionConfigFactory } from "@tanstack/db";
 import type {
   BaseCollectionConfig,
   ChangeMessageOrDeleteKeyMessage,
   CollectionConfig,
-  IR,
   LoadSubsetOptions,
   PendingMutation,
   SyncConfig,
   UtilsRecord,
 } from "@tanstack/db";
-import { conjuncts, ownPath, planLoad, type Plan } from "./plan.js";
+import { compile, planLoad, type Plan } from "./plan.js";
 import { atOrBefore, boundaryOf, read, type Boundary, type Snapshot } from "./read.js";
 
 /**
@@ -554,22 +553,4 @@ async function readDemand(snap: Snapshot, demand: Demand): Promise<{ docs: JsonD
   const byId = new Map<string, JsonDoc>();
   for (const f of found) for (const doc of f.docs) byId.set(doc.id, doc);
   return { docs: [...byId.values()], boundary: found[0]?.boundary };
-}
-
-/**
- * The `where` as a predicate on stored documents. A conjunct on one of
- * TanStack's virtual `$` properties has no value in a stored document, so
- * it is left out and the predicate may keep more rows, never fewer.
- */
-function compile(where: IR.BasicExpression<boolean> | undefined): Match {
-  const kept = conjuncts(where).filter((c) => !readsVirtual(c));
-  if (kept.length === 0) return () => true;
-  const evaluate = compileSingleRowExpression(kept.reduce((a, b) => and(a, b)));
-  return (doc) => toBooleanPredicate(evaluate(doc));
-}
-
-function readsVirtual(e: IR.BasicExpression): boolean {
-  if (e.type === "func") return e.args.some(readsVirtual);
-  if (e.type !== "ref") return false;
-  return ownPath(e)[0]?.startsWith("$") ?? false;
 }
