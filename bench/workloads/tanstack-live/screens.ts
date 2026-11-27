@@ -140,13 +140,17 @@ const phases: Phase<"tanstack-live">[] = [
     timed: true,
     async run(ctx) {
       const store = await ctx.store();
-      const oracle = new TrackerOracle();
+      // The batches are built before the first timed call and folded into the oracle after the last, so the calls run back
+      // to back: work between them would give a store that works in the background time a store committing in the call does not get.
+      const imports: { tx: Tx; bytes: number }[] = [];
       for (const tx of trackerHistory(ctx.size, ctx.params.seed).load) {
         if (tx.kind !== "import") break;
-        oracle.apply(tx);
         const t = screenTx(tx);
-        if (t) await ctx.time("import", JSON.stringify(t.events).length, () => store.apply(t), t.events.length);
+        if (t) imports.push({ tx: t, bytes: JSON.stringify(t.events).length });
       }
+      for (const { tx, bytes } of imports) await ctx.time("import", bytes, () => store.apply(tx), tx.events.length);
+      const oracle = new TrackerOracle();
+      for (const { tx } of imports) oracle.apply(tx);
       ctx.carry.liveLogicalBytes = liveBytes(oracle);
     },
   },
