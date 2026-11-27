@@ -171,7 +171,7 @@ export function encodeOps(ops: readonly CheckedOp[], validAt?: Seq): ArrayBuffer
   return out.buffer;
 }
 
-/** The ops of `record` with each range delete's `through` resolved against `seq`. */
+/** `ops` with each range delete's `through` resolved against `seq`. */
 export function resolveOps(ops: readonly CheckedOp[], seq: Seq): readonly ResolvedOp[] {
   // With no range delete, the ops are resolved as they are.
   if (!ops.some((op) => op.type === "deleteRange")) return ops as readonly ResolvedOp[];
@@ -358,8 +358,7 @@ const TAIL_CHUNK = 100;
 /**
  * Records with `after < seq <= head`, ascending. Committed seqs are gapless
  * above ingestedThrough, so a value's position in its range gives its seq,
- * and no `getAllKeys` pass is needed. A short range is a gap and throws, the
- * way `catchUp` throws on one. IDB read cost is per row, and ranges in flight
+ * and no `getAllKeys` pass is needed. IDB read cost is per row, and ranges in flight
  * together read faster than one `getAll` over the whole tail.
  * `getAllRecords` is not used: Chrome defers deserializing its values to the
  * first `.value` read, so the time it saves comes back in decode.
