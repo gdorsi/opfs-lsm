@@ -107,6 +107,8 @@ describe("the write gate", () => {
       { ...issue("a"), meta: undefined },
       { ...issue("a"), meta: {} },
       { ...issue("a"), status: [1] },
+      { ...issue("a"), status: Infinity },
+      { ...issue("a"), meta: { due: NaN } },
       { ...issue("a"), title: 5 },
       { ...issue("a"), title: undefined },
     ];
