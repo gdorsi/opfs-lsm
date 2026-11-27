@@ -907,7 +907,7 @@ class DbImpl implements Db {
    * recovery checks, and the tail applies when recovery wrote nothing.
    * Otherwise the tail is not one any more, and a sync reads again.
    */
-  async boot(recovering: Promise<boolean>, head?: HeadStart): Promise<void> {
+  async boot(recovering: Promise<boolean>, head: HeadStart): Promise<void> {
     this.head = head;
     // The runs open while the records are read. The read settles once the
     // load has, so no load installs its generation after the fallback below.
