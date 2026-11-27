@@ -37,7 +37,7 @@ const SCREENS = [...GOALS, ...BOARD].map(({ label, phase }) => ({ label, phase, 
 export const TABLES: readonly Table[] = [
   {
     id: "storage-calls",
-    file: "2026-11-25T09-30-12-apple-m5-max",
+    file: "2026-11-27T08-53-38-apple-m5-max",
     columns: [
       { head: "Workload" },
       { head: "IndexedDB", at: "kv/idb" },
@@ -60,7 +60,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "framework-adapters",
-    file: "2026-11-25T09-42-46-apple-m5-max",
+    file: "2026-11-27T09-06-08-apple-m5-max",
     columns: [
       { head: "Framework" },
       { head: "Workload" },
@@ -102,7 +102,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "typing-reopening",
-    file: "2026-11-25T09-42-46-apple-m5-max",
+    file: "2026-11-27T11-11-09-apple-m5-max",
     columns: [
       { head: "" },
       { head: "y-indexeddb", at: { workload: "yjs/trace", contender: "yjs/y-indexeddb" } },
@@ -121,7 +121,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "on-demand-sqlite",
-    file: "2026-11-25T09-53-07-apple-m5-max",
+    file: "2026-11-27T09-16-26-apple-m5-max",
     workload: "tanstack-ondemand/queries",
     columns: [
       { head: "Workload" },
@@ -138,7 +138,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals",
-    file: "2026-11-25T07-52-24-apple-m5-max",
+    file: "2026-11-27T09-21-52-apple-m5-max",
     workload: "tracker/goals",
     unit: null,
     columns: [
@@ -155,7 +155,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "goals-large",
-    file: "2026-11-25T08-47-47-apple-m5-max",
+    file: "2026-11-27T10-21-01-apple-m5-max",
     size: "large",
     workload: "tracker/goals",
     unit: null,
@@ -169,7 +169,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes-large",
-    file: "2026-11-25T07-43-36-apple-m2-pro",
+    file: "2026-11-27T10-21-01-apple-m5-max",
     size: "large",
     workload: "tracker/goals",
     columns: [
@@ -187,7 +187,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "writes",
-    file: "2026-11-25T07-52-24-apple-m5-max",
+    file: "2026-11-27T09-21-52-apple-m5-max",
     workload: "tracker/goals",
     columns: [
       { head: "Writes" },
