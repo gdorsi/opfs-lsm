@@ -67,6 +67,10 @@ export function destroyed(): ClosedError {
   return new ClosedError("database was destroyed");
 }
 
+function throwDestroyed(): never {
+  throw destroyed();
+}
+
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
 const MAX_COMPACTION_STEPS = 8;
 
@@ -232,16 +236,12 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
   }
 
   /** `fn` on the WAL database, then the folder, opened for one operation. Rejects when either is gone. */
-  async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
-    const wal = await openExistingWal(name);
-    if (!wal) throw destroyed();
-    try {
+  function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
+    return withWal(async (wal) => {
       const fs = await folder();
       if (!fs) throw destroyed();
-      return await fn({ wal, fs });
-    } finally {
-      wal.close();
-    }
+      return fn({ wal, fs });
+    }, throwDestroyed);
   }
 
   /**
@@ -553,10 +553,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
   }
 
   /** The WAL database's meta. Rejects with `destroyed()` when it does not exist. */
-  async function walMetaOrDestroyed(): Promise<WalMeta> {
-    const meta = await walMeta();
-    if (!meta) throw destroyed();
-    return meta;
+  function walMetaOrDestroyed(): Promise<WalMeta> {
+    return withWal((wal) => wal.meta(), throwDestroyed);
   }
 
   /**
