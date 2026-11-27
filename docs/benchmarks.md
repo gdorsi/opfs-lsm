@@ -202,21 +202,21 @@ The same workspace, written through TanStack DB collections of users, projects, 
 <!-- bench:table live-queries -->
 | | IndexedDB, eager | docstore, eager | docstore, on demand | SQLite, on demand | on demand, docstore vs SQLite |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Opening the collections in a fresh tab | 161 ms | 54.0 ms | 8.99 ms | 54.6 ms | 6.1× |
-| First answer: a project's todo column | 15.6 ms | 17.4 ms | 17.1 ms | 27.8 ms | 1.6× |
-| First answer: open issues with a label | 12.4 ms | 12.0 ms | 16.3 ms | 23.8 ms | 1.5× |
-| First answer: a person's open issues | 10.6 ms | 8.76 ms | 4.02 ms | 5.98 ms | 1.5× |
-| First answer: the 50 latest issues | 2.27 ms | 2.33 ms | 6.50 ms | 7.36 ms | 1.1× |
-| A sync batch, no screen open | 2.32 ms | 0.670 ms | 0.643 ms | 12.7 ms | 20× |
-| A sync batch, four screens open | 4.08 ms | 2.56 ms | 3.74 ms | 76.4 ms | 20× |
-| Frames dropped over 426 batches, screens open | 0 | 0.5 | 8.5 | 70 | |
+| Opening the collections in a fresh tab | 157 ms | 52.5 ms | 7.99 ms | 48.1 ms | 6.0× |
+| First answer: a project's todo column | 15.5 ms | 17.2 ms | 16.9 ms | 21.1 ms | 1.2× |
+| First answer: open issues with a label | 12.3 ms | 11.7 ms | 16.3 ms | 24.6 ms | 1.5× |
+| First answer: a person's open issues | 10.6 ms | 8.65 ms | 4.05 ms | 6.05 ms | 1.5× |
+| First answer: the 50 latest issues | 2.29 ms | 2.27 ms | 6.55 ms | 7.21 ms | 1.1× |
+| A sync batch, no screen open | 2.39 ms | 0.683 ms | 0.645 ms | 12.3 ms | 19× |
+| A sync batch, four screens open | 4.08 ms | 2.53 ms | 3.71 ms | 30.2 ms | 8.1× |
+| Frames dropped over 426 batches, screens open | 0 | 0 | 9 | 7 † | |
 
-Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.8 to 3.0, commit ce378c55. Full results: [2026-11-25T09-58-56-apple-m5-max](results/2026-11-25T09-58-56-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.3 to 5.5, commit 6d745547. Full results: [2026-11-27T05-43-39-apple-m5-max](results/2026-11-27T05-43-39-apple-m5-max.md).
 
-No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
+† The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds about 2 ms to a batch on IndexedDB, 2 ms on eager docstore and 3 ms on docstore on demand. On SQLite it adds 64 ms. A [CPU profile](results/2026-11-16T22-25-41-apple-m2-pro-cpu-profile.txt) of that phase, from an earlier run, shows the tab idle two thirds of the time, waiting for SQLite's worker, and decoding the rows the worker sends back is the largest share of the rest. With no screen open, no contender dropped a frame.
+The todo column opens first, so it also starts the label list every screen shares, and the later screens find rows earlier joins loaded. Keeping four screens current adds about 2 ms to a batch on IndexedDB, 2 ms on eager docstore and 3 ms on docstore on demand. On SQLite it adds 18 ms. With no screen open, no contender dropped a frame.
 
 ## Bundle size
 

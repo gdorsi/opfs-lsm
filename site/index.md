@@ -132,12 +132,12 @@ bench:
         versus: TanStack DB live queries, docstore against SQLite
         stores: [docstore, SQLite]
         setup: The tracker through TanStack DB, both on demand, with four screens open as live queries while the sync batches land
-        note: "Median frames dropped over 426 batches with the screens open: 8.5 on docstore, 70 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
+        note: "Median frames dropped over 426 batches with the screens open: 9 on docstore, 7 on SQLite. SQLite waits for each commit to be crash-safe, its default; docstore doesn't."
         rows:
-          - { measure: "Opening the collections in a fresh tab", ours: 8.99 ms, theirs: 54.6 ms, ratio: 6.1× }
-          - { measure: "First answer: a project's todo column", ours: 17.1 ms, theirs: 27.8 ms, ratio: 1.6× }
-          - { measure: "First answer: the 50 latest issues", ours: 6.50 ms, theirs: 7.36 ms, ratio: 1.1× }
-          - { measure: "A sync batch, four screens open", ours: 3.74 ms, theirs: 76.4 ms, ratio: 20× }
+          - { measure: "Opening the collections in a fresh tab", ours: 7.99 ms, theirs: 48.1 ms, ratio: 6.0× }
+          - { measure: "First answer: a project's todo column", ours: 16.9 ms, theirs: 21.1 ms, ratio: 1.2× }
+          - { measure: "First answer: the 50 latest issues", ours: 6.55 ms, theirs: 7.21 ms, ratio: 1.1× }
+          - { measure: "A sync batch, four screens open", ours: 3.71 ms, theirs: 30.2 ms, ratio: 8.1× }
 demo:
   count: 100,000
 ---

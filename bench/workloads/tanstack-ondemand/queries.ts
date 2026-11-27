@@ -92,11 +92,14 @@ export default defineWorkload({
   phases: [
     phase("bulk-insert", async (ctx, store) => {
       const { entries, batch } = ctx.params;
+      // Every batch is built before the first timed call, so the calls run back to back: a phase's rate spans the gaps between them.
+      const batches: { rows: Todo[]; bytes: number }[] = [];
       for (let i = 0; i < entries; i += batch) {
         const rows: Todo[] = [];
         for (let j = i; j < Math.min(entries, i + batch); j++) rows.push(todoRow(j, ctx.model.bump(j)));
-        await ctx.time("insertMany", rows.reduce((t, r) => t + rowBytes(r), 0), () => store.insertMany(rows), rows.length);
+        batches.push({ rows, bytes: rows.reduce((t, r) => t + rowBytes(r), 0) });
       }
+      for (const { rows, bytes } of batches) await ctx.time("insertMany", bytes, () => store.insertMany(rows), rows.length);
     }),
     check("check-inserts", true),
     phase("coldopen", async (ctx) => {
@@ -115,15 +118,20 @@ export default defineWorkload({
     }, { mainThread: true }),
     reopen("reopen-pages"),
     phase("query-page", async (ctx, store) => {
-      for (let k = 0; k < ctx.params.ops; k++) {
+      // Pages are picked before the first timed call and checked after the last, as in `query-ids`.
+      const pages = Array.from({ length: ctx.params.ops }, () => {
         const o = Math.floor(ctx.rng() * OWNERS);
         const from = Math.floor(ctx.rng() * ctx.model.end);
         const want: number[] = [];
         for (let i = from + ((o - (from % OWNERS) + OWNERS) % OWNERS); i < ctx.model.end && want.length < PAGE; i += OWNERS) want.push(i);
-        const got = await run(ctx, store, "page", { kind: "page", owner: ownerOf(o), from, limit: PAGE }, 1);
-        checkRows(ctx, got, want, `page of owner ${o} from ${from}`);
-        ctx.check(got.every((r, j) => j === 0 || got[j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
-      }
+        return { o, from, want };
+      });
+      const got: (readonly Todo[])[] = [];
+      for (const { o, from } of pages) got.push(await run(ctx, store, "page", { kind: "page", owner: ownerOf(o), from, limit: PAGE }, 1));
+      pages.forEach(({ o, from, want }, k) => {
+        checkRows(ctx, got[k]!, want, `page of owner ${o} from ${from}`);
+        ctx.check(got[k]!.every((r, j) => j === 0 || got[k]![j - 1]!.createdAt < r.createdAt), `page of owner ${o} from ${from} is not ascending`);
+      });
     }, { mainThread: true }),
     reopen("reopen-ids"),
     {

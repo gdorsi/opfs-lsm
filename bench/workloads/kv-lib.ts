@@ -174,6 +174,21 @@ export function warmPhase(name = "warm"): Phase<"kv"> {
   };
 }
 
+/**
+ * Untimed: every key read back in scans of 1,000 and checked against the model. A phase whose writes are only checked by
+ * the reads that happen to follow them ends with this, so its last write to each key is checked too.
+ */
+export function checkPhase(name = "check"): Phase<"kv"> {
+  return {
+    name,
+    page: "same",
+    timed: false,
+    async run(ctx) {
+      for (let from = 0; from < ctx.params.entries; from += 1_000) await scanAll(ctx, [{ from, limit: 1_000, op: "check" }]);
+    },
+  };
+}
+
 // ---------------------------------------------------------------- YCSB
 
 export type YcsbLetter = "a" | "f";

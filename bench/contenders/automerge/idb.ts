@@ -8,7 +8,7 @@ export default defineContender({
   engine: false,
   async open(name) {
     const adapter = new IndexedDBStorageAdapter(`am-${name}`);
-    // The adapter opens lazily; pay the open inside the timed open, as kv does.
+    // The constructor starts the open without waiting for it; one load waits, so the open is paid inside the timed open, as kv's is.
     await adapter.load(["__bench_open__"]);
     return { adapter, settle: async () => {}, stats: async () => undefined, close: () => adapter.close() };
   },

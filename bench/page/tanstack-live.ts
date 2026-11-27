@@ -24,9 +24,14 @@ export type Modify = (entity: Entity, ids: readonly string[], fold: Fold) => Pro
  * by. `createIndex` takes one expression. With `byId`, also on `id` of every
  * collection a screen loads by key: an on-demand collection reads the field,
  * not its key column.
+ *
+ * `status` comes first. Each becomes a SQL index on SQLite, whose planner has
+ * no statistics here: between two indexes that each pin one field of a `where`
+ * it takes the one created last. A project holds fewer issues than a status
+ * does, so `projectId` has to be the later of the two.
  */
 export function createIndexes(c: Collections, { byId }: { byId: boolean }): void {
-  for (const field of ["projectId", "status", "assigneeId", "updatedAt"] as const) c.issues.createIndex((i) => i[field], { indexType: BTreeIndex });
+  for (const field of ["status", "projectId", "assigneeId", "updatedAt"] as const) c.issues.createIndex((i) => i[field], { indexType: BTreeIndex });
   if (byId) for (const col of [c.issues, c.users, c.projects] as unknown as Collection<Row, string, any>[]) col.createIndex((r) => r.id, { indexType: BTreeIndex });
 }
 
