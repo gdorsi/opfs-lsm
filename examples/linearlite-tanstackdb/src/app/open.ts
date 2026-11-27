@@ -7,7 +7,7 @@ import { httpTransport } from "./transport.ts";
  * The version of the data this app stores, in its database name. Raise it in any change that makes data written before
  * it read differently: a kv or docstore format, or this app's schema. A visitor then syncs into a fresh database.
  */
-const DATA_VERSION = 6;
+const DATA_VERSION = 7;
 const DEFAULT_NAME = `linearlite-v${DATA_VERSION}`;
 /** The databases earlier builds synced into. `destroyDb` on a name with nothing stored creates nothing. */
 const RETIRED = ["linearlite", ...Array.from({ length: DATA_VERSION - 2 }, (_, i) => `linearlite-v${i + 2}`)];

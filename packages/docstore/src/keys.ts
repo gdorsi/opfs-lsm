@@ -186,6 +186,8 @@ function wordsOf(text: string): string[] {
   return text
     .normalize("NFC")
     .toLowerCase()
+    // A capital sigma lowercases to the final form at the end of a word, so a typed prefix would miss the longer word.
+    .replaceAll("ς", "σ")
     .split(NON_WORD)
     .filter((w) => w !== "");
 }
