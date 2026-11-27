@@ -1,4 +1,3 @@
-import { flushBytes } from "../check.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, readUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -57,7 +56,7 @@ export async function ingestChunk(
   limits: ChunkLimits,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
-  const { records, through: ingested } = await readUningested(wal, limits.maxBytes, head);
+  const { records, bytes, through: ingested } = await readUningested(wal, limits.maxBytes, head);
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
@@ -79,8 +78,6 @@ export async function ingestChunk(
     through: last,
     marks: retireMarks([...prev.marks, ...folded.marks], runs),
   });
-  let foldedBytes = 0;
-  for (const r of records) foldedBytes += flushBytes(r.ops);
   await advanceIngested(wal, { through: last, generation, manifest });
-  return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
+  return { kind: "folded", generation, ingestedThrough: last, foldedBytes: bytes };
 }

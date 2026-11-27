@@ -395,14 +395,14 @@ async function readRange(wal: IDBObjectStore, lo: number, hi: number): Promise<u
  * `maxBytes`, and at least one. It reads one record first, then sizes each
  * read from the bytes per record so far, so a WAL of large records is never
  * read far past the cap. A record that would not fit is read and left for the
- * next call.
+ * next call. `bytes` is the `flushBytes` of the records returned.
  */
 async function readRecordsUpTo(
   wal: IDBObjectStore,
   after: Seq,
   head: Seq,
   maxBytes: number,
-): Promise<WalRecord[]> {
+): Promise<{ readonly records: WalRecord[]; readonly bytes: number }> {
   const records: WalRecord[] = [];
   let bytes = 0;
   let span = 1;
@@ -413,7 +413,7 @@ async function readRecordsUpTo(
       const at = asSeq(lo + i);
       const ops = decodeOps(value, at);
       const size = flushBytes(ops);
-      if (records.length > 0 && bytes + size > maxBytes) return records;
+      if (records.length > 0 && bytes + size > maxBytes) return { records, bytes };
       records.push({ seq: at, ops });
       bytes += size;
     }
@@ -421,7 +421,7 @@ async function readRecordsUpTo(
     const fits = ((maxBytes - bytes) * records.length) / Math.max(bytes, 1);
     span = Math.max(1, Math.min(READ_CHUNK, Math.floor(fits)));
   }
-  return records;
+  return { records, bytes };
 }
 
 /** Told a tail's generation, its `ingestedThrough` and its `manifest` copy (see `WalTail`) before its records are read. */
@@ -924,23 +924,26 @@ export async function raiseGeneration(wal: IdBWal, generation: Generation, manif
 
 /**
  * The oldest records with seq > ingestedThrough whose `flushBytes` fit in
- * `maxBytes`, and at least one, read in one transaction, with the head and
- * the ingestedThrough (`through`) that transaction read. No record once
- * ingestedThrough reaches `upTo`.
+ * `maxBytes`, and at least one, read in one transaction, with their
+ * `flushBytes` total (`bytes`), and the head and the ingestedThrough
+ * (`through`) that transaction read. No record once ingestedThrough reaches
+ * `upTo`.
  */
 export async function readUningested(
   wal: IdBWal,
   maxBytes: number,
   upTo?: Seq,
-): Promise<{ readonly records: WalRecord[]; readonly head: Seq; readonly through: Seq }> {
+): Promise<{ readonly records: WalRecord[]; readonly bytes: number; readonly head: Seq; readonly through: Seq }> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
   const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
   const head = await headOf(tx, through);
-  const records =
-    upTo === undefined || through < upTo ? await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes) : [];
+  const { records, bytes } =
+    upTo === undefined || through < upTo
+      ? await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes)
+      : { records: [], bytes: 0 };
   await done;
-  return { records, head, through };
+  return { records, bytes, head, through };
 }
 
 /**
@@ -951,9 +954,7 @@ export async function readUningested(
  * with `maxWalBytes`, so a long WAL still trips the limit.
  */
 export async function uningestedBytes(wal: IdBWal, cap: number): Promise<number> {
-  const { records, head } = await readUningested(wal, cap);
-  let bytes = 0;
-  for (const record of records) bytes += flushBytes(record.ops);
+  const { records, bytes, head } = await readUningested(wal, cap);
   const last = records[records.length - 1]?.seq ?? head;
   return last < head ? Math.max(bytes, cap) : bytes;
 }
