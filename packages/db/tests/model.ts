@@ -99,7 +99,7 @@ const leaf: fc.Arbitrary<Cond> = fc.oneof(
   { weight: 2, arbitrary: fc.constantFrom(...FIELDS).chain((field) => fc.record({ op: fc.constant("in" as const), field: fc.constant(field), values: fc.array(value(field), { maxLength: 4 }) })) },
   { weight: 2, arbitrary: fc.record({ op: fc.constantFrom("like" as const, "ilike" as const), pattern }) },
 );
-export const condArb: fc.Arbitrary<Cond> = fc.oneof(
+const condArb: fc.Arbitrary<Cond> = fc.oneof(
   { weight: 6, arbitrary: leaf },
   { weight: 1, arbitrary: leaf.map((arg) => ({ op: "not" as const, arg })) },
   { weight: 2, arbitrary: fc.record({ op: fc.constantFrom("and" as const, "or" as const), args: fc.tuple(leaf, leaf) }) },

@@ -167,7 +167,11 @@ export async function openOn<C extends Collections>(kv: Db, { version, collectio
   const close = async () => {
     owner.closed = true;
     for (const table of tables) table.feed?.end(new ClosedError("closed"));
-    await kv.close();
+    try {
+      await kv.close();
+    } catch (err) {
+      throw wrap(err);
+    }
   };
   return { collections: handles as never, close: () => (closing ??= close()) };
 }
