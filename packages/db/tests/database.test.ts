@@ -148,6 +148,18 @@ describe("the write gate", () => {
     await expect(renamed).rejects.toMatchObject({ _tag: "ValidationError", code: "id", id: "a" });
     expect(await issues.get("a")).toEqual(issue("a"));
     expect(await issues.get("b")).toBeUndefined();
+
+    const suffixed = {
+      "~standard": {
+        version: 1 as const,
+        vendor: "test",
+        validate: (input: unknown) => ({ value: { ...(input as { id: string }), id: `${(input as { id: string }).id}x` } }),
+      },
+    };
+    const { rows } = (await openDb({ rows: collection(suffixed) })).collections;
+    await rows.insert({ id: "a" });
+    await expect(rows.update("ax", () => {})).rejects.toMatchObject({ _tag: "ValidationError", code: "id", id: "ax" });
+    expect(await rows.get("ax")).toEqual({ id: "ax" });
   });
 
   it("rejects an update of a missing document, and passes on what the callback throws", async () => {

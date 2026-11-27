@@ -120,8 +120,10 @@ class Handle<T extends JsonDoc, In> implements Collection<T, In> {
       // docstore hands `fn` a fresh copy of the row on each run, so the draft can be changed in place.
       const change = (draft: JsonDoc) => {
         fn(draft as Draft<T>);
-        if (draft.id !== id) throw new ValidationError("id", `"${this.name}": update changed the id of "${id}"`, this.name, id);
-        return prepare(this.rules, draft);
+        const next = prepare(this.rules, draft);
+        // The validator may rewrite the id too.
+        if (next.id !== id) throw new ValidationError("id", `"${this.name}": update changed the id of "${id}"`, this.name, id);
+        return next;
       };
       const stored = isId(id) ? await docs.modify(id, change) : undefined;
       if (!stored) throw new NotFoundError(this.name, id);
