@@ -789,7 +789,9 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     refused,
     repair,
     destroy,
+    // Reached by tests: compact-host.ts and the idle step of io-error-crash.test.ts.
     compactOnly,
+    compact,
   };
 }
 
