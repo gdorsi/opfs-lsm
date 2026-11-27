@@ -749,14 +749,13 @@ export class MergeSession {
     }
     if (winner.put || !this.dropTombstones) {
       const valueLen = winner.put ? winner.value.len : NO_VALUE;
-      const size = (this.finished ? <usize>0 : this.filled) + entrySize(keyLen, valueLen);
+      const size = this.filled + entrySize(keyLen, valueLen);
       const status = this.writer.push(key, keyLen, winner.value.ptr, valueLen, winner.seq, this.out);
       if (status < 0) return status;
       if (size >= this.targetBytes) {
         this.writer.finish(this.out, this.ended);
         this.finished = true;
       } else {
-        this.finished = false;
         this.filled = size;
       }
     }
