@@ -106,7 +106,7 @@ class Builder {
   }
 
   findOne(): Buildable<never> {
-    return { [IR]: { ...this[IR], limit: 1, shape: "one" } };
+    return { [IR]: { ...this[IR], limit: Math.min(this[IR].limit ?? 1, 1), shape: "one" } };
   }
 
   count(): Buildable<number> {
@@ -114,9 +114,8 @@ class Builder {
   }
 }
 
-/** A mistake in the code that builds the query, so not a DbError. */
 function count(n: number, what: string): number {
-  if (!Number.isInteger(n) || n < 0) throw new RangeError(`${what} takes an integer of at least 0`);
+  if (!Number.isInteger(n) || n < 0) throw new QueryError("operand", `${what} takes an integer of at least 0`);
   return n;
 }
 

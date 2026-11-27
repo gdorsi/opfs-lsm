@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { root, type Buildable } from "../src/builder.js";
+import { IR, root, type Buildable } from "../src/builder.js";
 import type { Collection } from "../src/database.js";
 import { QueryError } from "../src/errors.js";
 import { and, eq, gt, ilike, inArray, like, lt, not, or, type Ref } from "../src/expr.js";
@@ -101,9 +101,11 @@ describe("the builder", () => {
   });
 
   it("refuses a limit or an offset that is not a count", () => {
-    expect(() => from().limit(-1)).toThrow(RangeError);
-    expect(() => from().limit(1.5)).toThrow(RangeError);
-    expect(() => from().offset(Number.NaN)).toThrow(RangeError);
+    expect(() => from().limit(-1)).toThrow(QueryError);
+    expect(() => from().limit(1.5)).toThrow(QueryError);
+    expect(() => from().offset(Number.NaN)).toThrow(QueryError);
+    expect(from().limit(0).findOne()[IR].limit).toBe(0);
+    expect(from().limit(5).findOne()[IR].limit).toBe(1);
     expect(() => from().offset(0).limit(0)).not.toThrow();
   });
 });

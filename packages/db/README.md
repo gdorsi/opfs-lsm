@@ -250,7 +250,7 @@ try {
 | `ValidationError` | `invalid`, `async`, `id`, `indexed-field` | A write was refused before storing. `invalid`: the validator's `issues` say why. `async`: the validator returned a Promise. `id`: no usable string id, one id twice in a call, or `update` changed it. `indexed-field`: an indexed field is missing or holds a value the index cannot. |
 | `ConflictError` | `duplicate`, `unique` | `insert` met an existing id, or a unique index already holds the value. `ids` names the documents. |
 | `NotFoundError` | `missing` | `update` found no document. |
-| `QueryError` | `operand`, `source` | A query that cannot run: an `orderBy` that is not a field, a `from` that is not a collection of an open database. A mistake the builder can see is thrown by `query` itself. |
+| `QueryError` | `operand`, `source` | A query that cannot run: an `orderBy` that is not a field, a `limit` or an `offset` that is not a count, a `from` that is not a collection of an open database. A mistake the builder can see is thrown by `query` itself. |
 | `SchemaError` | `version`, `catalog` | `openDatabase`. `version`: this version is stored with other collections or indexes, so raise it. `catalog`: any other disagreement with the stored schema. |
 | `ClosedError` | `closed`, `destroyed` | The database was closed, or deleted in another tab. |
 | `StorageError` | `commit`, `quota`, `unavailable`, `corrupt`, `limit`, `index-failed` | The storage failed. `cause` is the storage's own error. |
