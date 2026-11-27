@@ -52,9 +52,6 @@ export const IDLE_FLUSH_SHARE = 8;
  */
 export const IDLE_FLUSH_DUE_MS = 5000;
 
-/** Figures a test replaces: the budget's, and the idle waits. */
-export type HostOverrides = Partial<HostBudget> & { readonly idleFlushMs?: number; readonly idleFlushDueMs?: number };
-
 /**
  * Below this a step would merge fewer than 18 sources, and a stop at one
  * less would hold writes after 17 flush runs.

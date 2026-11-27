@@ -64,11 +64,11 @@ export class MeteredHost extends EngineHost {
   /** `fileWrites` is how the worker writes OPFS files, for `stats`. */
   constructor(
     fsFactory: FsFactory,
-    overrides?: HostOptions,
+    options?: HostOptions,
     private readonly fileWrites?: FileWrites,
   ) {
     const counted = new Map<DbName, Counts>();
-    super(fsFactory, overrides, countingMeter(counted));
+    super(fsFactory, options, countingMeter(counted));
     this.counted = counted;
   }
 
