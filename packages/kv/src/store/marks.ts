@@ -2,6 +2,7 @@ import { compareBytes } from "../bytes.js";
 import { CorruptDatabaseError } from "../errors.js";
 import { asSeq, SEQ_ZERO, type Seq } from "../seq.js";
 import type { BlockEntry, ScanBounds } from "./cursor.js";
+import type { KeyRange } from "./sst.js";
 
 /**
  * The marks: which rows range deletes removed, as a flat unordered list. A
@@ -57,7 +58,7 @@ export function throughAt(marks: Marks, key: Uint8Array | BlockEntry): Seq {
 
 /** What retirement needs to know about a run. */
 type RunMarkInfo = {
-  readonly range?: { readonly smallest: Uint8Array; readonly largest: Uint8Array };
+  readonly range?: KeyRange;
   /**
    * Every mark with `at <= marksThrough` was applied when this run was
    * written, and the run holds no version past it.
