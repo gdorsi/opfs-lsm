@@ -111,7 +111,7 @@ export class EngineHost implements HostCalls {
 
   /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
-    private readonly fsFactory: FsFactory,
+    protected readonly fsFactory: FsFactory,
     private readonly overrides: HostOptions = {},
     private readonly meter: Meter = UNMETERED,
   ) {}
