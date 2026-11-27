@@ -1,7 +1,4 @@
-/**
- * Test harness. bench/ also uses `ingest`, `readStats` and `settle`. Apps should import
- * from `@opfs-lsm/kv` only.
- */
+/** Test harness. Apps should import from `@opfs-lsm/kv` only. */
 import { readEngineWith } from "./store/engine.js";
 
 export {
