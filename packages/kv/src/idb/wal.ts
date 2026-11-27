@@ -922,26 +922,25 @@ export async function raiseGeneration(wal: IdBWal, generation: Generation, manif
   await txDone(tx);
 }
 
-export async function getIngestedThrough(wal: IdBWal): Promise<Seq> {
-  const tx = wal.db.transaction(META_STORE, "readonly");
-  const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
-  await txDone(tx);
-  return through;
-}
-
 /**
  * The oldest records with seq > ingestedThrough whose `flushBytes` fit in
- * `maxBytes`, and at least one, read in one transaction, with the head
- * that transaction read.
+ * `maxBytes`, and at least one, read in one transaction, with the head and
+ * the ingestedThrough (`through`) that transaction read. No record once
+ * ingestedThrough reaches `upTo`.
  */
-async function readUningested(wal: IdBWal, maxBytes: number): Promise<{ readonly records: WalRecord[]; readonly head: Seq }> {
+export async function readUningested(
+  wal: IdBWal,
+  maxBytes: number,
+  upTo?: Seq,
+): Promise<{ readonly records: WalRecord[]; readonly head: Seq; readonly through: Seq }> {
   const tx = wal.db.transaction([WAL_STORE, META_STORE], "readonly");
   const done = txDone(tx);
   const through = await metaSeq(tx.objectStore(META_STORE), META_INGESTED);
   const head = await headOf(tx, through);
-  const records = await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes);
+  const records =
+    upTo === undefined || through < upTo ? await readRecordsUpTo(tx.objectStore(WAL_STORE), through, head, maxBytes) : [];
   await done;
-  return { records, head };
+  return { records, head, through };
 }
 
 /**

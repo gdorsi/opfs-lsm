@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { checkDbName, checkKey, checkValue, type CheckedOp } from "../src/check.js";
 import { ingestChunk } from "../src/host/ingest.js";
-import { TabWal, encodeOps, getIngestedThrough } from "../src/idb/wal.js";
+import { TabWal, encodeOps } from "../src/idb/wal.js";
 import type { AsyncFs } from "../src/opfs/async-fs.js";
 import { decodeGeneration } from "../src/store/generation.js";
 import {
@@ -337,7 +337,7 @@ describe("a flush with L0 full", () => {
       const stopped = await chunk(3);
       expect(stopped).toMatchObject({ kind: "stopped", ingestedThrough: 2, foldedBytes: 0 });
       expect(fs.publishedPaths().filter((p) => p.startsWith("l0/"))).toHaveLength(2);
-      expect(await getIngestedThrough(wal)).toBe(2);
+      expect((await wal.meta()).ingestedThrough).toBe(2);
       // L0 is still full, but nothing through 2 is waiting.
       expect((await chunk(2)).kind).toBe("empty");
     } finally {
