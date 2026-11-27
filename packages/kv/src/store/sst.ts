@@ -387,22 +387,26 @@ export function blockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry
   };
 }
 
-/** Like `blockEntries`, from the last record below `seek` down. */
+/**
+ * Like `blockEntries`, from the last record below `seek` down. It reads one
+ * sampled group of `OFFSET_STRIDE` records at a time, from the last group
+ * back, so a scan that stops early reads only the groups it reached.
+ */
 export function reverseBlockEntries(b: BlockBytes, seek?: Uint8Array): () => BlockEntry | undefined {
   const w = new RecordWalker(b);
   const first = w.o;
-  const below = seek ? w.count - seekInBlock(w, seek) : w.count;
-  const starts: number[] = [];
-  w.o = first;
-  for (let i = 0; i < below; i++) {
-    starts.push(w.o);
-    w.next();
-  }
+  let left = seek ? w.count - seekInBlock(w, seek) : w.count;
+  const group: BlockEntry[] = [];
   return () => {
-    const at = starts.pop();
-    if (at === undefined) return undefined;
-    w.o = at;
-    w.next();
-    return w.inPlace();
+    if (group.length === 0 && left > 0) {
+      const g = ((left - 1) / OFFSET_STRIDE) | 0;
+      w.o = g === 0 ? first : w.sampleAt(g);
+      for (let i = g * OFFSET_STRIDE; i < left; i++) {
+        w.next();
+        group.push(w.inPlace());
+      }
+      left = g * OFFSET_STRIDE;
+    }
+    return group.pop();
   };
 }
