@@ -44,12 +44,12 @@ block's record count gives how many records follow its prefix and how long its o
 by the suffix of its record. A block with one key stores the whole key as its prefix.
 
 `offset` entries, one per 4th record after record 0, let a reader binary-search the block. Every
-record holds a whole suffix, so a reader compares any record from its offset alone.
+record holds a whole suffix, so a reader compares any record from its offset alone. A block of 4 records or fewer has no offset entries.
 
 A block ends before the record that would take its encoded size past 32 KiB. A block of one
 record can be larger, and it has no offset table.
 
-Varints are unsigned LEB128, at most 5 bytes.
+Integers are little-endian. Varints are unsigned LEB128, at most 5 bytes.
 
 ## Record
 

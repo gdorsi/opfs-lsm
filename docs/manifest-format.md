@@ -1,6 +1,6 @@
 # Manifest format
 
-The byte layout of a manifest, `m/<generation>.mft`. What a manifest means is in
+The byte layout of a manifest, `m/<generation>.mft`, with the generation written as 16 digits, zero-padded. All integers are little-endian. What a manifest means is in
 [design.md](design.md#manifest-format).
 
 ```layout

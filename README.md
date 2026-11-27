@@ -32,7 +32,7 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 
 ### Building blocks
 
-- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. A Standard Schema validator checks the writes of a collection. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
+- **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted (with array fields), unique, and text. A Standard Schema validator checks the writes of a collection. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
 - **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a reserve that gives your app room to free space when the browser refuses a write.
 
 ## Set it up

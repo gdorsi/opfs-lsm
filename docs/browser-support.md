@@ -2,14 +2,15 @@
 
 `@opfs-lsm/kv` needs a worker, OPFS, IndexedDB and WebAssembly in the page. Its host runs in a SharedWorker, or in a dedicated Worker where the page has no SharedWorker. The host flushes and compacts only in a SharedWorker that can write OPFS files: through `createWritable()`, or [without it](#without-createwritable) where a sync access handle works there. Elsewhere `openDb` still opens, and the host [writes no file](#where-the-host-cannot-write). Where OPFS or a worker of either kind is missing, the browser refuses to start the worker, or the wasm engine or the IndexedDB store fails to load, `openDb` rejects with `StorageUnavailableError`. It never falls back to memory.
 
-Three APIs set the minimum version at which the host writes through `createWritable()` in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
+Four APIs set the minimum version at which the host writes through `createWritable()` in every browser. Everything else kv uses shipped earlier, including Web Locks, BroadcastChannel and the WebAssembly features in the engine.
 
 | API | Chrome, Edge | Firefox | Safari | Chrome Android | Firefox Android | Safari iOS |
 | --- | --- | --- | --- | --- | --- | --- |
 | `SharedWorker` with `type: "module"` | 80 | 114 | 16 | 148 | 114 | 16 |
 | OPFS `FileSystemFileHandle.createWritable()` | 86 | 111 | 26 | 109 | 111 | 26 |
 | `crypto.randomUUID()` | 92 | 95 | 15.4 | 92 | 95 | 15.4 |
-| **Minimum for kv with a host that writes this way** | **92** | **114** | **26** | **148** | **114** | **26** |
+| `Object.hasOwn()` | 93 | 92 | 15.4 | 93 | 92 | 15.4 |
+| **Minimum for kv with a host that writes this way** | **93** | **114** | **26** | **148** | **114** | **26** |
 
 kv with a host that writes this way is Baseline 2026. [Baseline](https://web.dev/baseline) names the year a feature works in every core browser: Chrome, Edge, Firefox, and Safari, on desktop and on mobile. The last minimum in the table, Chrome 148 on Android, shipped on May 5, 2026.
 

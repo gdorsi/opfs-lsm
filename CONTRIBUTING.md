@@ -14,7 +14,7 @@ pnpm test
 pnpm bench kv/
 ```
 
-`pnpm test` typechecks and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB adapter, and the Yjs and Automerge adapters against their IndexedDB counterparts. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
+`pnpm test` checks the README, builds the packages and the examples, and runs the unit suites. `pnpm bench` runs the benchmarks in headless Chrome: kv against raw IndexedDB, docstore against Dexie, the TanStack DB adapter against TanStack DB's IndexedDB and SQLite adapters, and the Yjs, Automerge and TanStack Query adapters against their IndexedDB counterparts. docstore also runs against SQLite on OPFS. `pnpm bench:size` prints the bundle sizes. See [bench/README.md](bench/README.md). Set `CHROME_PATH` when Chrome is not on the default macOS path or on `PATH` as `google-chrome`. The formal suite and the Chrome proof helper are in [docs/verification.md](docs/verification.md).
 
 ## Figures show what the engine does
 
