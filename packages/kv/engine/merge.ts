@@ -132,7 +132,7 @@ const GOT_WAIT: i32 = 2;
 /** Reads a source's runs one after the other, a window at a time. */
 @final @unmanaged
 class Reader {
-  source: u32 = 0;
+  sourceIndex: u32 = 0;
   /** A `RUN` record per run. */
   runs: Bytes = new Bytes();
   /** The u32 length of each data block of each run, in file order. Blocks are contiguous from offset 0, so their offsets are running sums. */
@@ -247,7 +247,7 @@ class Reader {
 
   /** Append this reader's outstanding ask to `demands` as a demand record. */
   demand(demands: Bytes): void {
-    demands.pushU32(this.source);
+    demands.pushU32(this.sourceIndex);
     demands.pushU32(<u32>this.run);
     demands.pushU32(<u32>this.askOffset);
     demands.pushU32(<u32>this.askLen);
@@ -595,7 +595,7 @@ export class MergeSession {
       const runs = <usize>load<u32>(list + o);
       const source = this.source(<u32>i);
       const reader = source.reader;
-      reader.source = <u32>i;
+      reader.sourceIndex = <u32>i;
       reader.chunkBytes = max<usize>(chunkBytes, 1);
       reader.tailBytes = max(tailBytes, FOOTER_BYTES);
       reader.read = runs ? TAIL : READ_DONE;

@@ -1,7 +1,10 @@
 import type { Chunk, StorageAdapterInterface, StorageKey } from "@automerge/automerge-repo";
 import { ConstraintError, prefixBound, type Db } from "@opfs-lsm/kv";
 
-/** kv-backed automerge storage. The adapter owns `db`; `close` closes it. */
+/**
+ * kv-backed automerge storage. No caches, no queues, no key shape
+ * assumptions, no sync on the read path. The adapter owns `db`; `close` closes it.
+ */
 export function kvStorage(db: Db): StorageAdapterInterface {
   return {
     async load(key) {

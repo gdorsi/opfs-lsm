@@ -19,6 +19,7 @@ const paths = (plan: CompactionPlan | undefined) => plan?.inputs.map((r) => r.pa
 describe("planCompaction", () => {
   const l0 = (n: number) => Array.from({ length: n }, (_, i) => run(`l0/${10 - i}.sst`, 100, "c", "f"));
   const maxSources = 49;
+  // Sizes are set against the 40 MiB L1 target, 10 runs of TARGET_RUN_BYTES.
   const MiB = 2 ** 20;
 
   it("leaves fewer than four L0 runs alone", () => {

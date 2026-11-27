@@ -425,6 +425,7 @@ async function openStores(
     const recovering = reconcileOpen(wal, tabFs, () => ingest.repair(name));
     recovering.catch(() => undefined);
     const cacheBytes = options.cacheBytes ?? DEFAULT_CACHE_BYTES;
+    // A comparison, not Math.max: NaN gets the minimum too.
     const cache = new PageCache(cacheBytes > MIN_CACHE_BYTES ? cacheBytes : MIN_CACHE_BYTES);
     const db = new DbImpl(
       name,

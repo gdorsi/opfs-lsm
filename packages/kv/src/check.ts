@@ -130,7 +130,7 @@ function opBytes(op: BatchOp): number {
  */
 const FLUSH_MIN_OP_BYTES = 32;
 
-/** What a record's ops count toward the ingest trigger and a flush chunk: their key and value bytes, at least `FLUSH_MIN_OP_BYTES` per op. */
+/** What a record's ops count toward the ingest trigger and a flush chunk: their key and value bytes, and at least `FLUSH_MIN_OP_BYTES` times the op count. */
 export function flushBytes(ops: readonly CheckedOp[]): number {
   let bytes = 0;
   for (const op of ops) bytes += opBytes(op);
