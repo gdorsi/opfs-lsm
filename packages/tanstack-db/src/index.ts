@@ -173,6 +173,11 @@ class Run {
     return this.phase.kind === "loading" ? this.phase.done.promise : Promise.resolve();
   }
 
+  private fail(err: unknown): void {
+    this.stop();
+    this.p.fail(err);
+  }
+
   private onChange(event: CollectionChange<JsonDoc>): void {
     switch (event.kind) {
       case "append":
@@ -183,8 +188,7 @@ class Run {
         if (this.phase.kind !== "stopped") this.load();
         return;
       case "closed":
-        this.stop();
-        this.p.fail(new ClosedError("database is closed"));
+        this.fail(new ClosedError("database is closed"));
         return;
     }
   }
@@ -208,8 +212,7 @@ class Run {
       },
       (err: unknown) => {
         if (this.phase !== mine) return;
-        this.stop();
-        this.p.fail(err);
+        this.fail(err);
       },
     );
   }
@@ -227,8 +230,7 @@ class Run {
         this.p.commit();
       }
     } catch (err) {
-      this.stop();
-      this.p.fail(err);
+      this.fail(err);
       return;
     }
     this.syncedThrough = Math.max(this.syncedThrough, snapshot?.at ?? 0, events.at(-1)?.seq ?? 0);
@@ -318,6 +320,11 @@ class DemandRun {
     for (const load of was.loads) load.done.resolve();
   }
 
+  private fail(err: unknown): void {
+    this.stop();
+    this.p.fail(err);
+  }
+
   /** Every change is applied as it arrives, so a write shows without waiting for a load. */
   settled(): Promise<void> {
     return Promise.resolve();
@@ -370,13 +377,11 @@ class DemandRun {
         // Rows that read fails to refresh could be stale, so the collection fails rather than keep them as ready.
         void this.fetch([...this.phase.demands.values()], true).catch((err: unknown) => {
           if (this.phase.kind === "stopped") return;
-          this.stop();
-          this.p.fail(err);
+          this.fail(err);
         });
         return;
       case "closed":
-        this.stop();
-        this.p.fail(new ClosedError("database is closed"));
+        this.fail(new ClosedError("database is closed"));
         return;
     }
   }
@@ -531,8 +536,7 @@ class DemandRun {
     try {
       this.commit(batch);
     } catch (err) {
-      this.stop();
-      this.p.fail(err);
+      this.fail(err);
     }
   }
 
