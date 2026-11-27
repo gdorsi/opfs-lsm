@@ -39,7 +39,7 @@ IndexedDB  "opfs-lsm-destroyed"         one per origin
 OPFS  opfs-lsm/<name>/
   ├── m/<generation, 16 digits>.mft    manifests
   ├── l0/<firstSeq>-<lastSeq>.sst      flushed runs, may overlap
-  ├── l1/c<generation>.<i>.sst         compacted runs, disjoint within a level
+  ├── l1/c<n>.<i>.sst                  compacted runs, disjoint within a level
   ├── l2/...
   └── reserve                          bytes the host gives back when a write is refused
 ```
@@ -200,7 +200,7 @@ again, keeping what it read outside the cap. A value over the cap is never cache
 3. Binary-searches the block index for the one block that could hold the key.
 4. Binary-searches the offset table of the block, then walks at most 4 records in place.
 
-Tabs do not check the CRC. The host checks it when it reads a run as a compaction input.
+Tabs do not check a run's CRC. The host checks it when it reads a run as a compaction input.
 
 ## Manifest format
 
@@ -229,11 +229,11 @@ whole. For each key the newest source wins, and tombstones are dropped. The wait
 in a list sorted by key and then by age, which a source enters from the front, so one that keeps
 winning costs one comparison per key, and two that tie on a key are compared once. A level cursor
 opens only the runs the scan reaches, and finds each bound in a block with one search of its offset
-table. `reverse` reads a block 4 records at a time from its end. No scan asks a Bloom filter.
+table. `reverse` reads a block 4 records at a time from its end.
 
 `range({ valueContains })` keeps the live puts whose current value holds every pattern. Each
-source filters on its own, one block at a time, and only the hits are copied out. A newer source
-that holds the key with a non-matching value or a tombstone drops the older hit.
+source filters on its own, one block at a time, and only the hits are copied out. A newer source that holds the key
+with a non-matching value or a tombstone drops the older hit: a get on the newer sources checks each hit. No other scan asks a Bloom filter.
 
 A key and a value stay in place in the block bytes, which are never written once read, until
 the scan yields their entry. One it drops, counts or passes over for `offset` copies no value,
@@ -319,8 +319,8 @@ exists, and releases it on close; the host removes a run only under that lock, t
 with `ifAvailable`. A slow tab could therefore lose every load to a newer generation. The tab and
 the host share the Web Lock `opfs-lsm-reclaim/<name>` to prevent this:
 
-* The first try of a tab takes no reclaim lock. After a try finds a file missing, every later try
-  holds it **shared**, from the tail read to the last run open.
+* The first try of a tab takes no reclaim lock. After a try that must run again (a file was missing, or the
+  tail named a generation the tab had not loaded), every later try holds it **shared**, from the tail read to the last run open.
 * The host removes files only while it holds the reclaim lock **exclusively**, and it asks with
   `ifAvailable`. When a tab holds the lock, the host skips the removal and tries on a later pass.
 
@@ -369,7 +369,7 @@ For each run, under the exclusive section for the database, the host:
 4. Writes `l0/<first>-<last>.sst`, unless no op is left.
 5. Writes manifest `top + 1` with `through = <last>`, listing the new run in front of the runs of manifest `G`,
    and the marks of `G` joined with those of the records (see [Range deletes](#range-deletes)).
-6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to `top + 1` and truncates the WAL.
+6. In one IndexedDB transaction, sets `ingestedThrough = <last>`, raises `generation` to `top + 1` with the head of its manifest, and truncates the WAL (see [Truncation](#truncation)).
 7. Deletes the manifests older than the recorded generation, unless a tab holds the reclaim lock.
 
 The exclusive section is a promise chain in the host plus the Web Lock `opfs-lsm-ingest/<name>`,
@@ -579,7 +579,7 @@ prefix. Without those records, the manifest alone is one.
 1. **OPFS kept seqs that IndexedDB lost.** The newest intact manifest that is numbered past the
    recorded one and whose `through` is past `head`. It is a longer prefix than the WAL.
 2. **Otherwise the recorded manifest**, if it is intact.
-3. **Otherwise IndexedDB recorded a manifest that OPFS lost.** The newest intact manifest
+3. **Otherwise IndexedDB recorded a manifest that OPFS lost, or recorded none.** The newest intact manifest
    numbered past `destroyedTop`, or the empty generation 0. A manifest file that is missing or
    empty counts as lost.
 

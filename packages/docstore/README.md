@@ -323,7 +323,7 @@ await todos.queryIds({ // type error, open is not a text index
 });
 ```
 
-A document whose text field is `null` has an entry with no words, which a query without words in `match` reads and a `match` with words never finds. A document without the field has no entry.
+A text index takes no array field in `by`, and cannot be unique or include fields. A document whose text field is `null` has an entry with no words, which a query without words in `match` reads and a `match` with words never finds. A document without the field has no entry.
 
 ### Unique
 
@@ -652,7 +652,7 @@ await todos.delete("t1");
 // reading only id and deleted costs no JSON.parse
 ```
 
-**Note.** A gap means kv skipped records a flush folded, or the collection was cleared or dropped. A write of index entries alone, such as a backfill, and a catalog write send no event, and a listener that throws is logged and skipped.
+**Note.** A gap means kv skipped records a flush folded, the collection was cleared or dropped, or a kv range delete covered its documents. A write of index entries alone, such as a backfill, and a catalog write that keeps the collection's id send no event, and a listener that throws is logged and skipped.
 
 `before(index)` gives the entries a document had in an index before the change, as `queryEntries` returns them: none when it did not exist or was not in the index. With the entries before and the document after, a list or a count kept from an index follows each change without a read and without a copy of every document.
 
@@ -673,7 +673,7 @@ for (const c of event.changes) {
 }
 ```
 
-**Note.** `before` reads nothing, and a write stores nothing for it. It takes the index entries the write removed and added, which kv's record already holds, and the document after the change for an index the write left alone. It takes a sorted or multi index that is not unique and includes no field. A write replaces the value of a text entry or of an entry with included fields in place, and the key of a unique entry does not name its document, so their ops cannot say what the document was. Every todo has `done` and `createdAt`, so an empty `before("open")` means the write created it. Follow the feed from a snapshot, as below, so that no change is counted twice.
+**Note.** `before` reads nothing, and a write stores nothing for it. It takes the index entries the write removed and added, which kv's record already holds, and the document after the change for an index the write left alone. It takes a sorted or multi index that is not unique and includes no field. A write replaces the value of a text entry or of an entry with included fields in place, and the key of a unique entry does not name its document, so their ops cannot say what the document was: `before` throws `"query"` for them. Every todo has `done` and `createdAt`, so an empty `before("open")` means the write created it. Follow the feed from a snapshot, as below, so that no change is counted twice.
 
 To follow the collection with no hole and no repeat, subscribe first, read a snapshot, then apply only events above `snap.seq`. Hold the events that arrive while a snapshot loads, and read again on a gap.
 
@@ -820,12 +820,12 @@ try {
 
 | Error | When | What to do |
 |---|---|---|
-| `"schema"` | The stored catalog and this schema disagree, the catalog has another format (open a new database name after an upgrade that changes it), the catalog lacks the collection, or a queried index is still building. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema, or bump `version`. Query a building index again later. Rename the collection or index. |
+| `"schema"` | The stored catalog and this schema disagree, the catalog has another format (open a new database name after an upgrade that changes it), the catalog lacks the collection, or a queried index is still building. Or the schema is malformed: a `version` that is not an integer of at least 1, a collection or index name that is not a letter or `_` followed by letters, digits or `_` or is one `Object.prototype` holds, such as `toString`, a `by` or `include` that breaks its limits, or a name both declared and dropped. | Open with the newer schema, or bump `version`. Query a building index again later. Fix or rename what the message names. |
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |
 | `"query"` | A query is malformed. | Fix the query. |
-| `"cursor"` | `after` belongs to another range, or predates a redefinition of its index. | Query again without `after`. |
-| `"document"` | A bad or repeated id, a changed id, or a value an index cannot hold. | Fix the document. Nothing was stored. |
+| `"cursor"` | `after` is not a cursor, belongs to another range, or predates a redefinition of its index. | Query again without `after`. |
+| `"document"` | A value that is not a JSON object, a bad or repeated id, a changed id, a `modifyMany` result of the wrong length, or a value an index cannot hold. | Fix the document. Nothing was stored. |
 | `"invalid"` | A validator rejected a document: `issues` lists why, and `ids` names it if it has a string id. Or a validator returned a Promise. | Fix the document, or use a synchronous validator. Nothing was stored. |
 | `ConstraintError` | A write passes kv's batch limit, or a query value makes a key over kv's 8 KiB limit. | Split the write, or shorten the query value. |
 | `ClosedError` | The kv handle closed, also from `changes`. | Open kv again. |
@@ -859,3 +859,24 @@ const big = Array.from({ length: 9000 }, (_, i) => ({
 }));
 await todos.putMany(big); // throws ConstraintError
 ```
+
+## Types
+
+The package exports these types. A `T` is a document type, `Ix` a collection's declared indexes, and `In` what a write takes, which differs from `T` only with a [validator](#validators).
+
+| Type | What it is |
+|---|---|
+| `Schema` | What `defineSchema` returns and `openDocStore` takes: `version`, `collections` and `drop`. |
+| `CollectionDecl<T, Ix, In>` | What `collection` and each `index`, `unique` and `text` call return. |
+| `DocStore<S>` | What `openDocStore` returns: `collection(name)` and `whenIdle()`. |
+| `Collection<T, Ix, In>` | A collection handle: `name`, `indexes`, and the reads, writes, `view` and `changes` of this page. |
+| `CollectionSnapshot<T, Ix>` | The `snap` that `view` hands its body. |
+| `IndexesOf<S, C>` | The declared indexes of collection `C` of schema `S`. |
+| `IndexInfo` | What `indexes.get(name)` returns: `kind` (`"sorted"`, `"multi"` or `"text"`), `by`, `unique`, and `text` or `include` when the index has them. |
+| `Query<T, Ix>` | Everything `query`, `queryIds`, `queryEntries` and `count` accept. |
+| `Page<T>`, `IdPage`, `EntryPage` | What `query`, `queryIds` and `queryEntries` return: `docs`, `ids` or `entries`, and `next` when more follow. |
+| `IndexEntry` | One entry: `id`, `values`, and `fields` for an index with `include`. |
+| `Cursor` | The opaque string of `next` and `after`. |
+| `CollectionChange<T, Ix>`, `DocChange<T, Ix>` | An event of `changes`, and one document's change in an `"append"` event. |
+| `DocStoreErrorCode` | The type of a `DocStoreError`'s `code`: the codes of the [errors](#errors) table above. |
+| `JsonDoc`, `Scalar` | A document: a JSON object with a string `id`. An index value: `null`, a boolean, a number or a string. |

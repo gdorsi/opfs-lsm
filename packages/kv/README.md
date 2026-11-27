@@ -54,6 +54,8 @@ const again = await openDb({ name: "notes" });
 // open a new handle instead
 ```
 
+`db.name` is the name passed to `openDb`. `db.writerId` is a random UUID that tells this handle's writes from other handles' on the BroadcastChannel.
+
 **Note.** Bundlers that need an explicit worker URL can import `@opfs-lsm/kv/shared-worker`.
 
 ## Reads and writes
@@ -265,6 +267,8 @@ dec(posts[0]?.joined);    // => "Grace"
 // has no value. Writes that land meanwhile are not seen.
 ```
 
+`snap.rangeJoin(range, keyOf, decode)` takes `decode` as a third argument: `joined` is then what `decode` returns for the value, under the rule of `getMany`'s `decode`.
+
 `snap.rangeValues(range, decode)` returns every entry of a range in one call as `{ key, value }`, where `value` is what `decode` returns for the stored bytes. The rule of `getMany`'s `decode` applies.
 
 ## Snapshots
@@ -277,8 +281,9 @@ const seen = await db.view(async (snap) => {
 });
 seen; // => undefined
 
-// snap.range(...) and snap.count(...) take the same options as db.range.
-// snap.rangeJoin(...) is described under Joins.
+// snap.get, snap.getMany, snap.range and snap.count take the same
+// arguments as their db twins.
+// snap.rangeJoin and snap.rangeValues are described under Joins.
 // snap.seq is the seq of the last write the snapshot includes.
 ```
 
@@ -465,7 +470,7 @@ await tabB.sync();
 dec(await tabB.get(key)); // => "world"
 ```
 
-`openHarnessDb` also takes `fs`, `ingest`, `writerId`, and `maxWalBytes`, which replaces the 1 MiB flush trigger.
+`openHarnessDb` keeps no reserve unless the call passes `reserveBytes`. It also takes `fs`, `ingest`, `writerId`, `rowPostMs` and `maxWalBytes`, which replaces the 1 MiB flush trigger. `@opfs-lsm/kv/testing` also exports `settle(db)`, which flushes and compacts until nothing is left to do, `readStats(db)`, and `destroyHarnessDb(options)`, which removes what `openHarnessDb` stored.
 
 ## Options
 
@@ -497,7 +502,7 @@ try {
 | `StorageUnavailableError` | `unavailable` | No worker or OPFS, or one that failed to start or open, the wasm engine did not load, or IndexedDB did not open. `cause` holds the browser's error. | Retry `openDb`, or reload the page. |
 | `StorageFullError` | `quota` | The origin is out of quota and the reserve is gone, so a write, a flush or `openDb` fails. `cause` holds the browser's error for a write or an open. | Free space. See [Storage quota](#storage-quota). |
 | `CorruptDatabaseError` | `corrupt` | A file does not decode or is gone, or a run was written by an earlier build whose run format kv no longer reads. kv changes nothing. | Do not retry. `destroyDb(name)` removes it. |
-| `CommitError` | `commit` | The WAL has a gap or a row that does not decode. | |
+| `CommitError` | `commit` | The WAL has a gap or a row that does not decode, or an IndexedDB request failed with no error. | |
 | `ConstraintError` | `constraint` | A name, key, value, batch or range is invalid or over a limit. | Fix the call. |
 | `ClosedError` | `closed` | The handle is closed: by `close()`, by `destroyDb`, or because the browser closed its IndexedDB connection. | Open a new one. |
 

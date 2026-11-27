@@ -30,7 +30,7 @@ todos.insert({ id: "1", title: "Buy milk", done: false });
 
 ## On-demand sync
 
-`syncMode` defaults to `"eager"`, which loads every document. `"on-demand"` loads only the rows live queries ask for, through the docstore index whose leading fields the query pins with `eq` or `inArray`. With no index that fits, a load reads every document.
+`syncMode` defaults to `"eager"`, which loads every document. `"on-demand"` loads only the rows live queries ask for. A query that pins `id` with `eq` or `inArray` reads those documents. Any other query reads the docstore index whose leading fields it pins with `eq` or `inArray`, then bounds (`gt`, `gte`, `lt`, `lte`) on the next field, or a `like` or `ilike` on a text index. A query with `orderBy` and `limit` reads an index that has the order field right after the pinned ones, so a window reads only its first rows. With no index that fits, a load reads every document.
 
 ```ts
 type Issue = { id: string; status: number; modified: number };

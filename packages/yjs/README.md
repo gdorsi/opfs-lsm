@@ -36,8 +36,6 @@ A persistence loads once, when you construct it. Other tabs' later updates reach
 
 ## Limits
 
-The next `flush()` or `destroy()` puts a write that failed again, as the same update. It rejects when that put fails too, as the examples below do.
-
 A document name with a lone surrogate makes the constructor throw `Error`, since it cannot round-trip through UTF-8.
 
 ```ts
@@ -64,7 +62,7 @@ await persistence.flush(); // every update written so far is acked
 await persistence.destroy(); // detaches from doc, then flushes
 ```
 
-If a write failed, the next `flush()` puts that update again. It rejects if that put fails too, and the next call retries. A failed update stays in memory until a put of it lands.
+If a write failed, the next `flush()` or `destroy()` puts that update again. It rejects if that put fails too, and the next call retries. A failed update stays in memory until a put of it lands.
 
 ## Sharing a database
 

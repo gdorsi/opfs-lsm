@@ -59,7 +59,7 @@ every later write.
 
 **Offer.** The host posts `{ kind: "full", full: { bytes, need } }` on the layers channel: `bytes`
 is the sum of the run file bytes of the recorded manifest, and `need` is `reserveBytes`. The
-three messages are posted once each: if the channel loses one, offers stop until another handle
+three messages of the protocol, `full`, `full-pull` and `full-done`, are posted once each: if the channel loses one, offers stop until another handle
 takes the lock or the last tab closes the database.
 
 **Answer.** A handle with an `onStorageFull` handler asks for the Web Lock `opfs-lsm-full/<name>`
