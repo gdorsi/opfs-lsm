@@ -764,6 +764,24 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     });
   }
 
+  /**
+   * Tests only (tests/compact-host.ts). Wait for a fold in flight, reconcile
+   * and remove old manifests as a fold that found nothing to fold does, then
+   * compact until the levels are in shape. Folds no WAL.
+   */
+  async function compactOnly(): Promise<void> {
+    await foldTurn(() =>
+      exclusive(() =>
+        withStores(async ({ wal, fs }) => {
+          const { generation } = await reconcile(wal, fs, trusted);
+          trusted = generation;
+          await unlessHeld(name, () => reclaimManifests(fs, generation));
+        }),
+      ),
+    );
+    await compact();
+  }
+
   return {
     ingest,
     watch: addWatcher,
@@ -771,17 +789,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     refused,
     repair,
     destroy,
-    // Reached by tests/compact-host.ts, which takes the host's turns.
-    foldTurn,
-    exclusive,
-    withStores,
-    compact,
-    get trusted() {
-      return trusted;
-    },
-    set trusted(next: Trusted) {
-      trusted = next;
-    },
+    compactOnly,
   };
 }
 
