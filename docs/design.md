@@ -291,7 +291,7 @@ After an append commits, a tab posts `{ kind: "rows", writerId, rows, bytes }` o
 BroadcastChannel `opfs-lsm-layers/<name>`: the WAL rows it appended, each `{ seq, record }`, and
 what their ops count toward a flush (see [Trigger](#trigger)). A row is posted when it commits, unless the tab posted in
 the last 4 ms. Then it waits for the first commit past that time, a timer, or `close`, and one
-message carries every row that waited: a post costs per message, not per row. A hidden page
+message carries every row that waited: a post costs per message, not per row. A row that commits after `close` is posted at once. A hidden page
 posts every row when it commits, and what waits when it becomes hidden, because browsers slow
 and stop its timers. Every other tab applies the records in the order given ([Memtable](#memtable)).
 

@@ -971,7 +971,7 @@ class DbImpl implements Db {
     this.pressure.landed();
     this.announce();
     // Tell the other tabs and the host about the row.
-    if (!this.closed) this.rows?.add({ seq, record }, flushBytes(ops));
+    this.rows?.add({ seq, record }, flushBytes(ops));
   }
 
   /** One flush for the backpressure gate. True when it moved this tab to a newer generation. */
