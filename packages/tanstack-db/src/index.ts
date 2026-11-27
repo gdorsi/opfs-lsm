@@ -134,7 +134,10 @@ type SyncParams = Parameters<SyncConfig<JsonDoc, string>["sync"]>[0];
 type Append = Extract<CollectionChange<JsonDoc>, { kind: "append" }>;
 type Message = ChangeMessageOrDeleteKeyMessage<JsonDoc, string>;
 
-type Loading = { readonly kind: "loading"; readonly buffer: Append[]; readonly done: PromiseWithResolvers<void> };
+/** Reads in flight from one snapshot. The events that arrive meanwhile are replayed once it lands. */
+type Load = { readonly buffer: Append[]; readonly done: PromiseWithResolvers<void> };
+
+type Loading = { readonly kind: "loading" } & Load;
 type Phase = Loading | { readonly kind: "live" } | { readonly kind: "stopped" };
 
 /** Eager: every document, read from one snapshot, then the change feed. */
@@ -233,9 +236,6 @@ class Run {
 }
 
 type Match = (doc: JsonDoc) => boolean;
-
-/** Reads in flight from one snapshot. The events that arrive meanwhile are replayed once it lands. */
-type Load = { readonly buffer: Append[]; readonly done: PromiseWithResolvers<void> };
 
 type DemandState =
   | { readonly kind: "loading"; readonly load: Load }
