@@ -486,7 +486,7 @@ function sourceSync(): string[] {
     /\.appendAfter\(this\.mem\.appliedThrough, \(tail\) => \{\s*missing = this\.catchUp\(tail\);\s*if \(missing !== undefined\) return undefined;\s*const planned = plan\(\);\s*if \(!\(planned instanceof Miss\)\) return planned;\s*miss = planned;\s*return undefined;\s*\}\)/,
     "the transaction catches the memtable up to the tail before the body reads, and appends nothing for a plan that waits for a load",
   );
-  need("db.ts", /const turn = this\.updating\.then\(\(\) => this\.updateOnce\(ks, body\)\);\s*this\.updating = turn\.catch\(\(\) => undefined\);/, "the updates of one handle run one at a time");
+  need("db.ts", /private readonly updating = serial\(\);[\s\S]*?return this\.updating\(\(\) => this\.updateOnce\(ks, body\)\);/, "the updates of one handle run one at a time");
   need("db.ts", /=== "gap" && ops\.length && !this\.closed\) await this\.sync\(\);/, "a row that lands with no ops waits for no catch-up");
   need("idb/wal.ts", /const nextHead = follows \? head : asSeq\(Math\.max\(past, nextSeq\(head\)\)\);/, "an adopt that drops the records moves the head by at least one");
   return out;

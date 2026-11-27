@@ -34,7 +34,7 @@ import { reconcileOpen } from "./recover.js";
 import { GENERATION_NONE, SEQ_ZERO, nextSeq, type Generation, type Seq } from "./seq.js";
 import { Memtable, type MemRow, type WalRecord } from "./store/memtable.js";
 import { Miss, ReadSet, type Entry, type Maybe } from "./store/cursor.js";
-import { coalesced } from "./turns.js";
+import { coalesced, serial } from "./turns.js";
 import type { OpenFile, ReadFs, RemovableFolder } from "./opfs/async-fs.js";
 import { findRemovableBrowserFs, openBrowserReadFs, openParent } from "./opfs/browser-fs.js";
 import { loadGeneration, manifestNumbers, runsOfCopy, type GenerationMeta } from "./store/generation.js";
@@ -616,8 +616,8 @@ class DbImpl implements Db {
   private readonly full: StorageFullResponder;
   /** Appends of this handle that have not joined the memtable yet. A read now would miss them. */
   private appending = 0;
-  /** The last `update` of this handle. Each waits for the one before it. */
-  private updating: Promise<unknown> = Promise.resolve();
+  /** The `update` turns of this handle. Each waits for the one before it. */
+  private readonly updating = serial();
   /** A row of an `update` of this handle lost its seq, and no transaction of one has found the tail empty since. */
   private beaten = false;
   /** The host counts this handle among its watchers. An open that failed or closed before `watch` must not take another tab's place. */
@@ -1122,9 +1122,7 @@ class DbImpl implements Db {
   ): Promise<T> {
     this.ensureOpen();
     const ks = keys.map(checkKey);
-    const turn = this.updating.then(() => this.updateOnce(ks, body));
-    this.updating = turn.catch(() => undefined);
-    return turn;
+    return this.updating(() => this.updateOnce(ks, body));
   }
 
   /**
