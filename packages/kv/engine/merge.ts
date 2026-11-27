@@ -145,11 +145,10 @@ class Reader {
   askAt: usize = 0;
   chunkBytes: usize = 0;
   tailBytes: usize = 0;
+  /** The current run's footer. The next run's replaces it only after `endRun`. */
   layout: Layout = new Layout();
 
-  // The current run, from its footer and its index.
-  dataLen: usize = 0;
-  entryCount: usize = 0;
+  // The current run.
   entriesSeen: usize = 0;
   /** Its blocks: `blockCount` of `lengths`, from `blockAt`. */
   blockAt: usize = 0;
@@ -381,8 +380,6 @@ class Reader {
     if (<usize>load<u32>(run, 8) != layout.dataLen) return TRUNCATED;
     this.blockCount = load<u32>(run, 4);
 
-    this.dataLen = layout.dataLen;
-    this.entryCount = layout.entryCount;
     this.entriesSeen = 0;
     this.requested = 0;
     this.arrived = 0;
@@ -446,7 +443,7 @@ class Reader {
   private takeDataBytes(at: usize, len: usize): i32 {
     this.crcData = crcUpdate(this.crcData, this.chunk.ptr + at, len);
     this.dataFed += len;
-    return this.dataFed == this.dataLen ? this.checkCrc() : 0;
+    return this.dataFed == this.layout.dataLen ? this.checkCrc() : 0;
   }
 
   /** Every data byte has arrived, and none of the last block was used yet. */
@@ -455,7 +452,7 @@ class Reader {
   }
 
   private endRun(): i32 {
-    if (this.entriesSeen != this.entryCount) return COUNT_MISMATCH;
+    if (this.entriesSeen != this.layout.entryCount) return COUNT_MISMATCH;
     this.blockAt += this.blockCount;
     this.run += 1;
     this.read = this.run * RUN < this.runs.len ? TAIL : READ_DONE;
