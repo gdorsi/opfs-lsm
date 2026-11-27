@@ -100,7 +100,7 @@ describe("the lists of LinearLite", () => {
   it("reads a search through the words of the text index", () => {
     const page = sortBy(from().where(({ i }) => ilike(i.title, "%Fix login%")), ["modified"]).limit(50);
     expect(explain(page)).toEqual({ kind: "index", index: "byModified", ranges: 1, ordered: true, exact: false });
-    expect(ranges(page)).toEqual([{ index: "byModified", match: expect.stringMatching(/^\s*Fix login\s*$/), reverse: true }]);
+    expect(ranges(page)).toEqual([{ index: "byModified", match: expect.stringContaining("Fix login"), reverse: true }]);
   });
 
   it("counts a status filter in the entries of the status index", () => {

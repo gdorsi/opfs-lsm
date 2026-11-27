@@ -156,8 +156,8 @@ function factsOf(where: readonly Node[], alias: string): Facts {
     if (name === "like" || name === "ilike") {
       const path = pathOf(left, alias);
       if (path === undefined || right?.kind !== "val" || typeof right.value !== "string") return;
-      // Each run of letters of the pattern lies inside one word of any text it matches, in the form the index stores.
-      words.set(path, `${words.get(path) ?? ""} ${normalized(right.value).replace(/[%_]/g, " ")}`);
+      // Each run of letters of the pattern lies inside one word of any text it matches, in the form the index stores. docstore cuts the words itself.
+      words.set(path, `${words.get(path) ?? ""} ${normalized(right.value)}`);
       return;
     }
     if (!(name in FLIP)) return;
