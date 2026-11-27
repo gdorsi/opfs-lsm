@@ -31,8 +31,8 @@ type CompactionOutput = {
  * write the output runs. Needs no ingest lock: a flush meanwhile only adds
  * L0 runs in front of the inputs, which stay contiguous and keep their
  * bottom status. Outputs are named
- * past every manifest number in use (`knownTop`, IndexedDB's
- * `topGeneration`, and `m/`), so they never overwrite a run one may list.
+ * past every manifest number in use (`base.generation`, `knownTop`, which
+ * is IndexedDB's `topGeneration`, and `m/`), so they never overwrite a run one may list.
  * The merge waits for its turn in the context's one merge slot, so another
  * database's step already running finishes first. `awaited` says whether a
  * flush waits for this step now (see `pumpMerge`).
