@@ -200,7 +200,7 @@ type Candidate = Extract<Plan, { kind: "ranges" }> & { readonly score: readonly 
  * starts with pinned fields of several values, their values split into one
  * query per combination, read in the order of the combinations.
  */
-function candidate(index: Index | undefined, facts: Facts, order: OrderKey, wantsFirst: boolean): Candidate | undefined {
+function candidate(index: Index | undefined, facts: Facts, order: OrderKey, wantsFirst: boolean, count: boolean): Candidate | undefined {
   const { name, info } = index ?? {};
   const by = info ? info.by : ["id"];
   const { pins, bands } = facts;
@@ -227,7 +227,9 @@ function candidate(index: Index | undefined, facts: Facts, order: OrderKey, want
 
   const consumed = new Set([...pinned.flatMap((f) => pins.get(f)!.from), ...(bound?.from ?? [])]);
   const exact = consumed.size === facts.conjuncts;
-  if (info && k === 0 && !bound && match === undefined && !ordered) return undefined;
+  // A count this index answers alone, from entries that are their key: no row is read, and a change tells whether it moves the count.
+  const entries = count && exact && keyOnly(info);
+  if (info && k === 0 && !bound && match === undefined && !ordered && !entries) return undefined;
 
   // One query per combination of the values the order starts with, in that order. Every other pinned field keeps its list.
   let combos: Map<string, Scalar>[] = [new Map()];
@@ -247,7 +249,7 @@ function candidate(index: Index | undefined, facts: Facts, order: OrderKey, want
     };
   });
   const n = [k, bound ? 1 : 0, match === undefined ? 0 : 1];
-  const score = wantsFirst ? [+ordered, +exact, ...n, -by.length] : [+exact, ...n, +ordered, -by.length];
+  const score = wantsFirst ? [+ordered, +exact, ...n, -by.length] : [+exact, ...n, +entries, +ordered, -by.length];
   return { kind: "ranges", ...(index && { index }), ranges, ordered, exact, score };
 }
 
@@ -263,17 +265,20 @@ type Planned = {
  * The plan of a query whose rows come in `order`. With a limit, an index
  * that yields the order comes first, since the read then stops early. A
  * count and a query with no limit read every match, so the index that
- * reaches the fewest other rows comes first.
+ * reaches the fewest other rows comes first. A count that an index answers
+ * alone counts its entries, so a count with no `where` reads an index and
+ * not the rows.
  */
 export function planQuery(query: Planned, order: OrderKey, indexes: ReadonlyMap<string, IndexInfo>): Plan {
   const facts = factsOf(query.where, query.from.alias);
   if (facts.empty || query.limit === 0) return { kind: "none" };
   const ids = facts.pins.get("id");
   if (ids) return { kind: "ids", ids: ids.values.filter(isId) };
-  const wantsFirst = query.limit !== undefined && query.shape !== "count";
-  let best = candidate(undefined, facts, order, wantsFirst)!;
+  const count = query.shape === "count";
+  const wantsFirst = query.limit !== undefined && !count;
+  let best = candidate(undefined, facts, order, wantsFirst, count)!;
   for (const [name, info] of indexes) {
-    const c = candidate({ name, info }, facts, order, wantsFirst);
+    const c = candidate({ name, info }, facts, order, wantsFirst, count);
     if (c && higher(c.score, best.score)) best = c;
   }
   const { score: _, ...plan } = best;

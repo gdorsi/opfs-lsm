@@ -203,7 +203,7 @@ open.explain();
 - `{ kind: "ids" }` is a read by id, for a `where` that names ids.
 - `{ kind: "none" }` reads nothing: no document can pass the `where`.
 
-With a `limit`, an index that yields the order is chosen first. Without one, and for a count, the index that reads the fewest other rows is chosen first.
+With a `limit`, an index that yields the order is chosen first. Without one, and for a count, the index that reads the fewest other rows is chosen first. A count that an index answers alone counts that index's entries. So a count with no `where` reads no row: it counts the entries of the sorted index with the fewest fields, among those that are not unique.
 
 An index serves an order when the `orderBy` fields are the index's fields after the ones the `where` pins. A field pinned to one value drops out of the order. A field pinned to several values with `inArray` can lead the order: the query then reads one range per value, one after the other.
 
@@ -214,6 +214,7 @@ An index serves an order when the `orderBy` fields are the index's fields after 
 | `inArray(status, [1, 2])`, `orderBy` modified, `limit` | `byModified`, ordered, filtered |
 | `ilike(title, "%login%")`, `orderBy` modified | `byModified` through its words, ordered, filtered |
 | `inArray(status, [1, 2])`, `count()` | `byStatus`, exact: entries counted, no document read |
+| no filter, `count()` | `byCreated`, exact: entries counted, no document read |
 
 ### Live results
 
