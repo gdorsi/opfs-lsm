@@ -241,7 +241,6 @@ class Feed {
   private apply(event: CollectionChange<JsonDoc>): void {
     if (event.kind === "closed") return this.end(new ClosedError(event.reason === "destroyed" ? "destroyed" : "closed"));
     for (const sub of this.subs) {
-      // A subscription with no result yet is dirty until its first read.
       const r = sub.result;
       if (!r || this.dirty.has(sub)) continue;
       if (event.kind === "gap" || (event.seq > r.seq && event.changes.some((change) => dirties(sub.q, r, change)))) this.dirty.add(sub);

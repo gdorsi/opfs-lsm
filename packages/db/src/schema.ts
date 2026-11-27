@@ -29,7 +29,6 @@ type Validator = StandardSchemaV1<unknown, JsonDoc>;
 type InferInput<V extends Validator> = NonNullable<V["~standard"]["types"]>["input"];
 type InferOutput<V extends Validator> = NonNullable<V["~standard"]["types"]>["output"];
 
-// docstore types the paths an index takes. Reading them off its declaration keeps one definition of them.
 type Fields<T extends JsonDoc> = Parameters<CollectionDecl<T>["unique"]>[1];
 type TextArgs<T extends JsonDoc> = Parameters<CollectionDecl<T>["text"]>;
 

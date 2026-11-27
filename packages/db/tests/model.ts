@@ -133,7 +133,6 @@ const indexedSpec: fc.Arbitrary<Spec> = fc
     const pins = fc.tuple(...by.slice(0, k).map((field) => fc.record({ op: fc.constant("in" as const), field: fc.constant(field), values: fc.uniqueArray(value(field), { minLength: 1, maxLength: 3 }) })));
     const bound = bounded && k < by.length ? leaf.filter((c) => "field" in c && c.field === by[k] && c.op !== "eq" && c.op !== "in") : fc.constant(undefined);
     return fc.record({ pins, bound, ...window }).map(({ pins, bound, ...rest }): Spec => {
-      // The pinned fields in a shuffled order, then the fields the index orders by after them.
       const seeds = orderSeed.take(k);
       const shuffled = by.slice(0, k).map((field, i) => ({ field, at: [...seeds][i] ?? i })).sort((x, y) => x.at - y.at).map((x) => x.field);
       const orderBy = [...shuffled.filter((_, i) => i % 2 === 0 || k === 1), ...by.slice(k)].map((field) => ({ field, desc }));

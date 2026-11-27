@@ -218,7 +218,6 @@ function candidate(name: string | undefined, info: IndexInfo | undefined, facts:
   let k = 0;
   for (let product = 1; info && k < by.length; k++) {
     const values = pins.get(by[k]!)?.values.length;
-    // A unique index and the rows take no list.
     if (values === undefined || (info.unique && values > 1) || product * values > MAX_RANGES) break;
     product *= values;
   }
