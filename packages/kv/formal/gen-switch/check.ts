@@ -107,7 +107,7 @@ function sourceSync(): string[] {
   need("db.ts", /if \(missing !== undefined\) return \(await this\.load\(missing, true\)\) \? "behind" : "gone";/, "write loads a missing generation as ahead, then tries again");
   need("db.ts", /=== "gap"\) \{\s*void this\.sync\(\)\.catch\(\(\) => undefined\);\s*break;/, "a BroadcastChannel row past a gap syncs");
   need("db.ts", /=== "gap" && ops\.length && !this\.closed\) await this\.sync\(\);/, "a landing past a gap waits for a sync");
-  need("store/memtable.ts", /const jumped = through > this\.applied;[\s\S]*?this\.applied = through > this\.applied \? through : this\.applied;\s*this\.rebuild\(jumped \? \[\] : this\.chunks\.flat\(\)\.filter\(\(row\) => row\.seq > through\)\);/, "advanceTo drops the rows at or below through, every row when it jumps");
+  need("store/memtable.ts", /const jumped = through > this\.applied;[\s\S]*?if \(jumped\) this\.applied = through;\s*this\.rebuild\(jumped \? \[\] : this\.chunks\.flat\(\)\.filter\(\(row\) => row\.seq > through\)\);/, "advanceTo drops the rows at or below through, every row when it jumps");
   need("store/memtable.ts", /if \(record\.seq <= this\.applied\) return "already";\s*if \(record\.seq !== nextSeq\(this\.applied\)\) return "gap";/, "apply takes only the next seq");
   need("turns.ts", /if \(running\) \{\s*again = true;\s*return running;/, "a sync called while one runs makes it run once more");
   need(

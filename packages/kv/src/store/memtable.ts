@@ -278,7 +278,7 @@ export class Memtable extends Chunks {
     this.ingested = through;
     const jumped = through > this.applied;
     if (this.held[0] && this.held[0].at <= through) this.held = this.held.filter((m) => m.at > through);
-    this.applied = through > this.applied ? through : this.applied;
+    if (jumped) this.applied = through;
     this.rebuild(jumped ? [] : this.chunks.flat().filter((row) => row.seq > through));
     return jumped;
   }
