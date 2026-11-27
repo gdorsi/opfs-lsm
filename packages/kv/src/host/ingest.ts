@@ -8,13 +8,6 @@ import { loadRecorded } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { retireMarks } from "../store/marks.js";
 
-export type IngestResult = {
-  readonly generation: Generation;
-  readonly ingestedThrough: Seq;
-  /** `flushBytes` of the WAL records this call folded into the new L0. */
-  readonly foldedBytes: number;
-};
-
 /** What bounds one `ingestChunk`. */
 type ChunkLimits = {
   /** `flushBytes` of WAL records folded into the run. At least one record is taken. */
@@ -24,12 +17,16 @@ type ChunkLimits = {
 };
 
 /** What `ingestChunk` did. */
-export type Chunk = IngestResult & {
+export type Chunk = {
   /**
    * "empty" when no record up to `head` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.
    */
   readonly kind: "folded" | "empty" | "stopped";
+  readonly generation: Generation;
+  readonly ingestedThrough: Seq;
+  /** `flushBytes` of the WAL records this call folded into the new L0. */
+  readonly foldedBytes: number;
 };
 
 /**

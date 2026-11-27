@@ -14,7 +14,7 @@ export type HostStats = {
   l0Stops: number;
   /** Compaction steps installed. */
   compactionSteps: number;
-  /** Σ IngestResult.foldedBytes. */
+  /** Σ Chunk.foldedBytes. */
   foldedBytes: number;
   generation: Generation;
   /** How the worker writes its OPFS files. Unset for a host on another fs, and for one that writes none. */

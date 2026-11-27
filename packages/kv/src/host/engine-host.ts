@@ -10,7 +10,7 @@ import { listRuns, liveRuns, reclaimManifests, reclaimRuns } from "./reclaim.js"
 import { recycleEngine } from "../store/engine.js";
 import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_DUE_MS, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
+import { ingestChunk, type Chunk } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   HOST_CALLS,
@@ -252,7 +252,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
    */
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
     if (writes) {
-      const { generation } = await fold();
+      const generation = await fold();
       const compaction = compact();
       if (!waitForCompaction) {
         compaction.catch(() => undefined);
@@ -280,64 +280,62 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    * A fold that published a run tells the tabs, whoever asked for it.
    */
-  function fold(): Promise<IngestResult> {
-    return foldTurn(foldRuns);
-  }
-
-  async function foldRuns(): Promise<IngestResult> {
-    const { head } = await walMetaOrDestroyed();
-    // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
-    const watched = watching;
-    const heard = watched?.pendingBytes ?? 0;
-    let foldedBytes = 0;
-    let pastStop = false;
-    try {
-      for (;;) {
-        const budget = currentBudget();
-        // Taken before the attempt, so an install that lands during it is not missed.
-        const installed = installSignal();
-        const chunk = await withRoom(() =>
-          exclusive(() =>
-            withStores(
-              async ({ wal, fs }) => {
-                const folded = await ingestChunk(wal, fs, head, trusted, {
-                  maxBytes: budget.flushRunBytes,
-                  l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-                });
-                // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-                await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
-                return folded;
-              },
+  function fold(): Promise<Generation> {
+    return foldTurn(async () => {
+      const { head } = await walMetaOrDestroyed();
+      // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
+      const watched = watching;
+      const heard = watched?.pendingBytes ?? 0;
+      let foldedBytes = 0;
+      let pastStop = false;
+      try {
+        for (;;) {
+          const budget = currentBudget();
+          // Taken before the attempt, so an install that lands during it is not missed.
+          const installed = installSignal();
+          const chunk = await withRoom(() =>
+            exclusive(() =>
+              withStores(
+                async ({ wal, fs }) => {
+                  const folded = await ingestChunk(wal, fs, head, trusted, {
+                    maxBytes: budget.flushRunBytes,
+                    l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
+                  });
+                  // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+                  await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
+                  return folded;
+                },
+              ),
             ),
-          ),
-        );
-        recycleEngine(budget.wasmRecycleBytes);
-        pastStop = false;
-        trusted = chunk.generation;
-        meter.flushed(name, chunk);
-        if (chunk.kind === "stopped") {
-          stopped = true;
-          pastStop = (await waitForInstall(installed)) === "idle";
-          stopped = false;
-          continue;
+          );
+          recycleEngine(budget.wasmRecycleBytes);
+          pastStop = false;
+          trusted = chunk.generation;
+          meter.flushed(name, chunk);
+          if (chunk.kind === "stopped") {
+            stopped = true;
+            pastStop = (await waitForInstall(installed)) === "idle";
+            stopped = false;
+            continue;
+          }
+          foldedBytes += chunk.foldedBytes;
+          const watch = watching;
+          if (watch) {
+            watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
+            watch.triggerAt = watch.maxWalBytes;
+          }
+          if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
+            // Nothing up to `head` was waiting, so the count was ahead of the WAL
+            // by what it heard before. Without this, it would stay over the
+            // trigger and ingest in a loop.
+            if (foldedBytes === 0 && watched) watched.pendingBytes = Math.max(0, watched.pendingBytes - heard);
+            return chunk.generation;
+          }
         }
-        foldedBytes += chunk.foldedBytes;
-        const watch = watching;
-        if (watch) {
-          watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
-          watch.triggerAt = watch.maxWalBytes;
-        }
-        if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
-          // Nothing up to `head` was waiting, so the count was ahead of the WAL
-          // by what it heard before. Without this, it would stay over the
-          // trigger and ingest in a loop.
-          if (foldedBytes === 0 && watched) watched.pendingBytes = Math.max(0, watched.pendingBytes - heard);
-          return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
-        }
+      } finally {
+        if (foldedBytes > 0) announceGeneration(name);
       }
-    } finally {
-      if (foldedBytes > 0) announceGeneration(name);
-    }
+    });
   }
 
   /** A promise for the next compaction install. */
