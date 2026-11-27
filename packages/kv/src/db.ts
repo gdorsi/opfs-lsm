@@ -303,9 +303,10 @@ export function prefixBound(prefix: Uint8Array): {
 /** What `@opfs-lsm/kv/testing` reads from an open Db. */
 type DbInternals = Pick<DbImpl, "name" | "wal" | "fs" | "ingestClient" | "flush">;
 
-/** Undefined for a Db this package did not open. */
-export function dbInternals(db: Db): DbInternals | undefined {
-  return db instanceof DbImpl ? db : undefined;
+/** Throws for a Db this package did not open. */
+export function dbInternals(db: Db): DbInternals {
+  if (db instanceof DbImpl) return db;
+  throw new Error("db was not opened by @opfs-lsm/kv");
 }
 
 export async function openDb(options: OpenOptions): Promise<Db> {

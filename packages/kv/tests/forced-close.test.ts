@@ -52,7 +52,7 @@ describe("a handle whose IndexedDB connection the browser closes by force", () =
     const events: ChangeEvent[] = [];
     db.changes((e) => events.push(e));
 
-    const connection = dbInternals(db)!.wal.db;
+    const connection = dbInternals(db).wal.db;
     connection.close();
     connection.dispatchEvent(new (await eventClass())("close"));
 
