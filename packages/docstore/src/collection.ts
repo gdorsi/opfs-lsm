@@ -221,7 +221,10 @@ function planRows(
           // Only a key another row holds asks, so the usual write builds no set.
           let released: Set<string> | undefined;
           const clash = uniqueConflict(claims, owners, (key) => (released ??= new Set(removes.map(keyString))).has(keyString(key)));
-          if (clash) throw uniqueError(idOf(clash[0]), idOf(clash[1]));
+          if (clash) {
+            const ids = [idOf(clash[0]), idOf(clash[1])];
+            throw new DocStoreError("unique", `"${ids[0]}" and "${ids[1]}" would share a unique value`, ids);
+          }
         }
       }
 
@@ -235,10 +238,6 @@ function planRows(
       return { next, existed };
     },
   };
-}
-
-function uniqueError(incoming: string, owner: string): DocStoreError {
-  return new DocStoreError("unique", `"${incoming}" and "${owner}" would share a unique value`, [incoming, owner]);
 }
 
 export class CollectionImpl<T extends JsonDoc, Ix, In> implements Collection<T, Ix, In> {

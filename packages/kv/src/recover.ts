@@ -26,7 +26,7 @@ export type Reconciled = {
   readonly kept: boolean;
 };
 
-/** Attempts when another tab or host changes `meta` under a reconcile. */
+/** Attempts of `untilAdopted` when another tab or host changes `meta` under it. */
 const RECONCILE_TRIES = 8;
 
 /** A generation whose manifest `reconcile` need not check, or undefined to check. */
@@ -73,7 +73,7 @@ export type Trusted = Generation | undefined;
  * - Rule 3 meets a manifest that does not decode before an intact one:
  *   throw, since it may be the newest state.
  *
- * Writes only for 1, 3 and the replacement, so a healthy database pays one
+ * Writes only for 0, 1, 3 and the replacement, so a healthy database pays one
  * `meta` read and one listing of `m/`. In a running database none holds: a
  * manifest's `through` is at most the head when it is written, `head` never
  * moves down, and reclaim never removes the recorded manifest or its runs.

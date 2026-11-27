@@ -11,10 +11,9 @@ import type { KeyRange } from "./sst.js";
  */
 const L0_RUNS_TO_COMPACT = 4;
 const LEVEL_RATIO = 10;
-/** Ten compaction-sized runs (`TARGET_RUN_BYTES`). */
-const L1_TARGET_BYTES = 40 * 1024 * 1024;
 /** Compaction cuts its output into runs of about this size. */
 export const TARGET_RUN_BYTES = 4 * 1024 * 1024;
+const L1_TARGET_BYTES = 10 * TARGET_RUN_BYTES;
 
 export type CompactionPlan = {
   /**
@@ -64,26 +63,19 @@ function bytesOf(runs: readonly RunMeta[]): number {
   return runs.reduce((n, r) => n + r.bytes, 0);
 }
 
-type PlanLimits = {
-  /**
-   * The most sources a step reads. A step holds a window of each, so its
-   * memory grows with the source count and not with the inputs' size. L0
-   * runs past `maxSources - 1` wait for the next step.
-   */
-  readonly maxSources: number;
-  /** Bytes of L1 past which it compacts into L2. */
-  readonly l1Target?: number;
-};
-
 /**
  * The next compaction step, or undefined when the layout is in shape and no
  * run holds back a mark. Once no level is over its target, a mark step
  * rewrites a run that keeps a mark from retiring. Its output absorbs every
  * mark of the manifest, so the steps end.
+ *
+ * `maxSources` is the most sources a step reads. A step holds a window of
+ * each, so its memory grows with the source count and not with the inputs'
+ * size. L0 runs past `maxSources - 1` wait for the next step.
  */
 export function planCompaction(
   { runs, marks }: Pick<GenerationMeta, "runs" | "marks">,
-  { maxSources, l1Target = L1_TARGET_BYTES }: PlanLimits,
+  maxSources: number,
 ): CompactionPlan | undefined {
   const inLevel = (level: number) => runs.filter((r) => r.level === level);
   const plan = (sources: RunMeta[][], outputLevel: number): CompactionPlan => {
@@ -106,7 +98,7 @@ export function planCompaction(
   if (l0.length >= L0_RUNS_TO_COMPACT) best = { level: 0, score: l0.length / L0_RUNS_TO_COMPACT };
   const deepest = Math.max(0, ...runs.map((r) => r.level));
   for (let level = 1; level <= deepest; level++) {
-    const score = bytesOf(inLevel(level)) / (l1Target * LEVEL_RATIO ** (level - 1));
+    const score = bytesOf(inLevel(level)) / (L1_TARGET_BYTES * LEVEL_RATIO ** (level - 1));
     if (score > 1 && score > best.score) best = { level, score };
   }
 

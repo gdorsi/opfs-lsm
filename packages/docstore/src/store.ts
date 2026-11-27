@@ -56,8 +56,7 @@ export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise
       return { bytes: storeEdit(tx, next), catalog: next.catalog };
     }));
   const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared), schema.collections);
-  store.startJobs();
-  await store.declaredBuilds();
+  await store.startBackfills();
   return store;
 }
 
@@ -110,8 +109,6 @@ function storeEdit(tx: BatchTx, edit: Edit): Uint8Array {
   return bytes;
 }
 
-const backfillKey = (coll: BoundCollection, plan: IndexPlan) => `backfill ${coll.id} ${plan.id}`;
-
 /** The collection and the plan of an index while it is building. By ids, as `settleIndex` names it. */
 function building(bound: Bound, collection: CollectionId, index: IndexId): { readonly coll: BoundCollection; readonly plan: IndexPlan } | undefined {
   for (const coll of bound.collections.values()) {
@@ -123,7 +120,7 @@ function building(bound: Bound, collection: CollectionId, index: IndexId): { rea
 }
 
 class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
-  private readonly jobs = new Map<string, Promise<void>>();
+  private readonly jobs = new Set<Promise<void>>();
   /**
    * The kv seq whose state has `bound` as its catalog, or NaN when none is
    * known, as at open, whose catalog read has no seq. A handle reads one
@@ -188,17 +185,7 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
   }
 
   async whenIdle(): Promise<void> {
-    while (this.jobs.size > 0) await Promise.all(this.jobs.values());
-  }
-
-  declaredBuilds(): Promise<unknown> {
-    const builds = [...this.bound.collections.values()].flatMap((coll) =>
-      coll.maintained.flatMap((plan) => {
-        const declared = coll.readable.get(plan.name) === plan;
-        return declared && plan.state.kind === "building" ? [this.jobs.get(backfillKey(coll, plan))] : [];
-      }),
-    );
-    return Promise.all(builds);
+    while (this.jobs.size > 0) await Promise.all(this.jobs);
   }
 
   collectionAt(snap: ViewSnapshot, name: string): BoundCollection | Promise<BoundCollection> {
@@ -286,21 +273,23 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     return bound;
   }
 
-  startJobs(): void {
+  /** Start a backfill for every building index. Resolves once the declared ones are ready. */
+  startBackfills(): Promise<unknown> {
+    const declared: Promise<void>[] = [];
     for (const coll of this.bound.collections.values()) {
       for (const plan of coll.maintained) {
-        if (plan.state.kind === "building") this.job(backfillKey(coll, plan), () => this.backfill(coll.id, plan.id));
+        if (plan.state.kind !== "building") continue;
+        // Start on the next task: kv's first scan copies every memtable row in its
+        // bounds at once, which would otherwise run inside `openDocStore`'s call.
+        const job: Promise<void> = new Promise((r) => setTimeout(r))
+          .then(() => this.backfill(coll.id, plan.id))
+          .finally(() => this.jobs.delete(job));
+        job.catch(() => undefined);
+        this.jobs.add(job);
+        if (coll.readable.get(plan.name) === plan) declared.push(job);
       }
     }
-  }
-
-  private job(key: string, run: () => Promise<void>): void {
-    if (this.jobs.has(key)) return;
-    // Start on the next task: kv's first scan copies every memtable row in its
-    // bounds at once, which would otherwise run inside `openDocStore`'s call.
-    const job = new Promise((r) => setTimeout(r)).then(run).finally(() => this.jobs.delete(key));
-    job.catch(() => undefined);
-    this.jobs.set(key, job);
+    return Promise.all(declared);
   }
 
   /**

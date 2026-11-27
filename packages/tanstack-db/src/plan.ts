@@ -1,5 +1,5 @@
-import type { IndexInfo, Scalar } from "@opfs-lsm/docstore";
-import { and, type IR, type LoadSubsetOptions } from "@tanstack/db";
+import type { IndexInfo, JsonDoc, Scalar } from "@opfs-lsm/docstore";
+import { and, compileSingleRowExpression, toBooleanPredicate, type IR, type LoadSubsetOptions } from "@tanstack/db";
 
 type BasicExpression<T = any> = IR.BasicExpression<T>;
 
@@ -285,10 +285,27 @@ function pin(facts: Facts, path: string, values: readonly Scalar[]): void {
   facts.pins.set(path, had ? had.filter((v) => distinct.some((w) => w === v)) : distinct);
 }
 
-export function conjuncts(where: BasicExpression<boolean> | undefined): BasicExpression<boolean>[] {
+function conjuncts(where: BasicExpression<boolean> | undefined): BasicExpression<boolean>[] {
   if (!where) return [];
   if (where.type === "func" && where.name === "and") return where.args.flatMap((a) => conjuncts(a));
   return [where];
+}
+
+/**
+ * The `where` as a predicate on stored documents. A conjunct on one of
+ * TanStack's virtual `$` properties has no value in a stored document, so
+ * it is left out and the predicate may keep more rows, never fewer.
+ */
+export function compile(where: BasicExpression<boolean> | undefined): (doc: JsonDoc) => boolean {
+  const kept = conjuncts(where).filter((c) => !readsVirtual(c));
+  if (kept.length === 0) return () => true;
+  const evaluate = compileSingleRowExpression(kept.reduce((a, b) => and(a, b)));
+  return (doc) => toBooleanPredicate(evaluate(doc));
+}
+
+function readsVirtual(e: BasicExpression): boolean {
+  if (e.type === "func") return e.args.some(readsVirtual);
+  return e.type === "ref" && isVirtual(ownPath(e));
 }
 
 /**
@@ -299,15 +316,18 @@ export function conjuncts(where: BasicExpression<boolean> | undefined): BasicExp
 function pathOf(expression: BasicExpression): string | undefined {
   if (expression.type !== "ref") return undefined;
   const own = ownPath(expression);
-  if (own.length === 0 || own.some((s) => s.includes(".")) || own[0]!.startsWith("$")) return undefined;
+  if (own.length === 0 || own.some((s) => s.includes(".")) || isVirtual(own)) return undefined;
   return own.join(".");
 }
 
 /** A ref's path inside its row, without the alias of the source it reads. */
-export function ownPath(ref: IR.PropRef): readonly string[] {
+function ownPath(ref: IR.PropRef): readonly string[] {
   const { path, sourceAlias } = ref;
   return sourceAlias !== undefined && path[0] === sourceAlias ? path.slice(1) : path;
 }
+
+/** Whether a path reads one of TanStack's virtual `$` properties. */
+const isVirtual = (own: readonly string[]): boolean => own[0]?.startsWith("$") ?? false;
 
 /**
  * docstore refuses a query whose key passes 8 KiB. A string this short
@@ -316,8 +336,10 @@ export function ownPath(ref: IR.PropRef): readonly string[] {
  */
 const MAX_STRING_UNITS = 256;
 
+const utf8 = new TextEncoder();
+
 /** An id a document can have. docstore refuses any other, and none is stored. */
-const isId = (id: string): boolean => id !== "" && id.length <= 1024 && new TextEncoder().encode(id).length <= 1024;
+const isId = (id: string): boolean => id !== "" && id.length <= 1024 && utf8.encode(id).length <= 1024;
 
 /** An id pin becomes a lookup by id, so it takes a string of any length: `isId` drops what no document has. */
 const pinnable = (path: string, v: unknown): v is Scalar => (path === "id" && typeof v === "string" ? v.isWellFormed() : isScalar(v));

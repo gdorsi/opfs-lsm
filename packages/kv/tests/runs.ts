@@ -9,9 +9,12 @@ import type { ScanStep } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import type { EncodedRun, RecordWalker, SstEntry } from "../src/store/sst.js";
 import { indexBlob, sstRunEnd } from "./oracle/sst-ref.js";
-import { bytesFile, SstReader } from "../src/store/sst-reader.js";
+import { SstReader, type RunFile } from "../src/store/sst-reader.js";
 
-export { bytesFile };
+/** A run file whose bytes are already in memory. */
+export function bytesFile(buf: Uint8Array): RunFile {
+  return { size: buf.byteLength, read: async (offset, length) => buf.subarray(offset, offset + length) };
+}
 
 /** What a cache holds now: resident bytes, the Bloom filters among them, and the loads in flight. */
 export function cacheUsage(cache: PageCache) {

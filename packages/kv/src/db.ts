@@ -41,7 +41,7 @@ import { loadGeneration, manifestNumbers, runsOfCopy, type GenerationMeta } from
 import { NO_MARKS, type Marks } from "./store/marks.js";
 import { countOf, keysReader, pointGet, runLevels, type RunLevel } from "./store/read.js";
 import { ensureEngine } from "./store/engine.js";
-import { DEFAULT_BUDGET, PageCache } from "./store/page-cache.js";
+import { DEFAULT_CACHE_BYTES, PageCache } from "./store/page-cache.js";
 import { SstReader } from "./store/sst-reader.js";
 import { ViewSnapshotImpl, rangeScan, scanStep, type Decode, type ViewSnapshot } from "./view.js";
 import type { ChangeEvent, ChangeListener } from "./changes.js";
@@ -91,8 +91,8 @@ export type OpenOptions = {
   readonly reserveBytes?: number;
 };
 
-/** Below this, one page per merge source may not fit. */
-const MIN_MEMORY_BUDGET = 1024 * 1024;
+/** The least `cacheBytes` takes. It floors the tab's read cache only: merges run in the host. */
+const MIN_CACHE_BYTES = 1024 * 1024;
 
 /**
  * What an open runs on: where this tab reads the run files, who flushes
@@ -424,9 +424,9 @@ async function openStores(
     // The recorded manifest's runs are checked by the load, which opens them.
     const recovering = reconcileOpen(wal, tabFs, () => ingest.repair(name));
     recovering.catch(() => undefined);
-    const cacheBytes = options.cacheBytes ?? DEFAULT_BUDGET;
+    const cacheBytes = options.cacheBytes ?? DEFAULT_CACHE_BYTES;
     // A comparison, not Math.max: NaN gets the minimum too.
-    const cache = new PageCache(cacheBytes > MIN_MEMORY_BUDGET ? cacheBytes : MIN_MEMORY_BUDGET);
+    const cache = new PageCache(cacheBytes > MIN_CACHE_BYTES ? cacheBytes : MIN_CACHE_BYTES);
     const db = new DbImpl(
       name,
       parts.writerId,
@@ -908,7 +908,7 @@ class DbImpl implements Db {
    * recovery checks, and the tail applies when recovery wrote nothing.
    * Otherwise the tail is not one any more, and a sync reads again.
    */
-  async boot(recovering: Promise<boolean>, head?: HeadStart): Promise<void> {
+  async boot(recovering: Promise<boolean>, head: HeadStart): Promise<void> {
     this.head = head;
     // The runs open while the records are read. The read settles once the
     // load has, so no load installs its generation after the fallback below.

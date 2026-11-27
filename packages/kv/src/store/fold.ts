@@ -2,7 +2,7 @@ import { throughAt, type Mark, type Marks } from "./marks.js";
 import type { WalRecord } from "./memtable.js";
 import type { SstEntry } from "./sst.js";
 
-export type Folded = {
+type Folded = {
   /**
    * The chunk's puts and deletes in the order they were written, without
    * those its marks cover. The run encoder sorts them and keeps the last

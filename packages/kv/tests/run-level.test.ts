@@ -7,9 +7,9 @@ import { scanStep } from "../src/view.js";
 import { NO_ROWS } from "../src/store/memtable.js";
 import type { SstEntry } from "../src/store/sst.js";
 import { encodeSstRef, sstBlockIndex, sstRunEnd } from "./oracle/sst-ref.js";
-import { bytesFile, SstReader } from "../src/store/sst-reader.js";
+import { SstReader } from "../src/store/sst-reader.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { entries, loadsDone, ownedEntry, readerOfBytes, runGet } from "./runs.js";
+import { bytesFile, entries, loadsDone, ownedEntry, readerOfBytes, runGet } from "./runs.js";
 import { coversRun, NO_MARKS, type Mark, type Marks } from "../src/store/marks.js";
 import { ensureEngine } from "../src/store/engine.js";
 

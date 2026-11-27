@@ -37,7 +37,7 @@ type Entry = {
 
 let runs = 0;
 
-export const DEFAULT_BUDGET = 256 * 1024 * 1024;
+export const DEFAULT_CACHE_BYTES = 256 * 1024 * 1024;
 const PROBATION_SHARE = 0.1;
 
 /**
@@ -61,7 +61,7 @@ export class PageCache {
   private readonly queueBytes: Record<Admit, number> = { probation: 0, main: 0, meta: 0 };
   private resident = 0;
 
-  constructor(readonly budget: number = DEFAULT_BUDGET) {}
+  constructor(readonly budget: number = DEFAULT_CACHE_BYTES) {}
 
   /**
    * A fresh run id. No other run has it, in this cache or another, so a

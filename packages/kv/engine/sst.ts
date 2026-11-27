@@ -255,11 +255,6 @@ export class Writer {
     end.seps.swap(this.seps);
     this.firstKey.clear();
     this.lastKey.clear();
-    this.first.clear();
-    this.recs.clear();
-    this.staged.clear();
-    this.keys = 0;
-    this.overhead = 0;
     this.hashes.clear();
     this.lens.clear();
     this.seps.clear();

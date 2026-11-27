@@ -31,8 +31,8 @@ type CompactionOutput = {
  * write the output runs. Needs no ingest lock: a flush meanwhile only adds
  * L0 runs in front of the inputs, which stay contiguous and keep their
  * bottom status. Outputs are named
- * past every manifest number in use (`knownTop`, IndexedDB's
- * `topGeneration`, and `m/`), so they never overwrite a run one may list.
+ * past every manifest number in use (`base.generation`, `knownTop`, which
+ * is IndexedDB's `topGeneration`, and `m/`), so they never overwrite a run one may list.
  * The merge waits for its turn in the context's one merge slot, so another
  * database's step already running finishes first. `awaited` says whether a
  * flush waits for this step now (see `pumpMerge`).
@@ -45,7 +45,7 @@ export async function mergeNextStep(
   awaited: () => boolean,
 ): Promise<CompactionOutput | undefined> {
   const top = Math.max(base.generation, knownTop, (await manifestNumbers(fs))[0] ?? 0);
-  const plan = planCompaction(base, { maxSources: budget.maxSources });
+  const plan = planCompaction(base, budget.maxSources);
   if (!plan) return undefined;
   const name = (i: number) => levelRunPath(plan.outputLevel, `c${top + 1}.${i}`);
   // Only an L0 step has more than two sources. One that starts with half the runs of the stop ends after L0 is full.

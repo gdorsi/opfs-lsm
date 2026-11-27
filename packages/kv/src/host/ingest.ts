@@ -1,4 +1,3 @@
-import { flushBytes } from "../check.js";
 import type { IdBWal } from "../idb/wal.js";
 import { advanceIngested, readUningested } from "../idb/wal.js";
 import type { AsyncFs } from "../opfs/async-fs.js";
@@ -9,13 +8,6 @@ import { loadRecorded } from "../store/generation.js";
 import { foldRecords } from "../store/fold.js";
 import { retireMarks } from "../store/marks.js";
 
-export type IngestResult = {
-  readonly generation: Generation;
-  readonly ingestedThrough: Seq;
-  /** `flushBytes` of the WAL records this call folded into the new L0. */
-  readonly foldedBytes: number;
-};
-
 /** What bounds one `ingestChunk`. */
 type ChunkLimits = {
   /** `flushBytes` of WAL records folded into the run. At least one record is taken. */
@@ -25,12 +17,16 @@ type ChunkLimits = {
 };
 
 /** What `ingestChunk` did. */
-export type Chunk = IngestResult & {
+export type Chunk = {
   /**
    * "empty" when no record up to `head` was waiting, and "stopped" when
    * some were but L0 holds `l0Stop` runs. Neither published anything.
    */
   readonly kind: "folded" | "empty" | "stopped";
+  readonly generation: Generation;
+  readonly ingestedThrough: Seq;
+  /** `flushBytes` of the WAL records this call folded into the new L0. */
+  readonly foldedBytes: number;
 };
 
 /**
@@ -57,7 +53,7 @@ export async function ingestChunk(
   limits: ChunkLimits,
 ): Promise<Chunk> {
   const base = await reconcile(wal, fs, trusted);
-  const { records, through: ingested } = await readUningested(wal, limits.maxBytes, head);
+  const { records, bytes, through: ingested } = await readUningested(wal, limits.maxBytes, head);
   if (records.length === 0) {
     return { kind: "empty", generation: base.generation, ingestedThrough: ingested, foldedBytes: 0 };
   }
@@ -79,8 +75,6 @@ export async function ingestChunk(
     through: last,
     marks: retireMarks([...prev.marks, ...folded.marks], runs),
   });
-  let foldedBytes = 0;
-  for (const r of records) foldedBytes += flushBytes(r.ops);
   await advanceIngested(wal, { through: last, generation, manifest });
-  return { kind: "folded", generation, ingestedThrough: last, foldedBytes };
+  return { kind: "folded", generation, ingestedThrough: last, foldedBytes: bytes };
 }

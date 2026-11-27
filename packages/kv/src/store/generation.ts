@@ -191,7 +191,7 @@ export function decodeGeneration(buf: Uint8Array): GenerationMeta {
 }
 
 /** What a manifest head names: its generation, and its runs by path. */
-export type ManifestHead = {
+type ManifestHead = {
   readonly generation: Generation;
   readonly runs: readonly string[];
 };

@@ -23,10 +23,10 @@ import { crc32 } from "../src/store/crc32.js";
 import { Miss, valueOf, type LayerCursor, type LayerEntry, type Maybe } from "../src/store/cursor.js";
 import { decodeGeneration, type GenerationMeta } from "../src/store/generation.js";
 import { PageCache } from "../src/store/page-cache.js";
-import { bytesFile, SstReader } from "../src/store/sst-reader.js";
+import { SstReader } from "../src/store/sst-reader.js";
 import { decodeIndex, SST_FOOTER_BYTES, type RunEnd, type SstEntry } from "../src/store/sst.js";
 import { blockLength, decodeSst } from "../tests/oracle/sst-ref.js";
-import { loadsDone, ownedEntry } from "../tests/runs.js";
+import { bytesFile, loadsDone, ownedEntry } from "../tests/runs.js";
 
 export class RuleBroken extends Error {
   constructor(message: string) {

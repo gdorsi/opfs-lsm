@@ -8,9 +8,9 @@ import { asGeneration, GENERATION_NONE, type Generation } from "../seq.js";
 import { loadGeneration } from "../store/generation.js";
 import { listRuns, liveRuns, reclaimManifests, reclaimRuns } from "./reclaim.js";
 import { recycleEngine } from "../store/engine.js";
-import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_DUE_MS, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget, type HostOverrides } from "./budget.js";
+import { DEFAULT_COMPACTION_MEMORY_BYTES, hostBudget, IDLE_FLUSH_DUE_MS, IDLE_FLUSH_MS, IDLE_FLUSH_SHARE, type HostBudget } from "./budget.js";
 import { installStep, mergeNextStep } from "./compact.js";
-import { ingestChunk, type Chunk, type IngestResult } from "./ingest.js";
+import { ingestChunk, type Chunk } from "./ingest.js";
 import { fillReserve, inspectReserve, removeReserve, step, type Reserve, type ReserveEffect, type ReserveEvent } from "./reserve.js";
 import {
   HOST_CALLS,
@@ -49,8 +49,10 @@ export type Meter = {
 
 const UNMETERED: Meter = { fs: (_name, inner) => inner, flushed() {}, compacted() {} };
 
-/** How a host is built. */
-export type HostOptions = HostOverrides & {
+/** How a host is built: figures of the budget and idle waits a test replaces, and whether it writes. */
+export type HostOptions = Partial<HostBudget> & {
+  readonly idleFlushMs?: number;
+  readonly idleFlushDueMs?: number;
   /**
    * False where the host cannot write run files (design.md, "Where code
    * runs"): it folds nothing, compacts nothing and keeps no reserve, so every
@@ -65,6 +67,10 @@ type Stores = { readonly wal: IdBWal; readonly fs: AsyncFs };
 /** What a tab's request to the host rejects with once `destroyDb` removed the database. */
 export function destroyed(): ClosedError {
   return new ClosedError("database was destroyed");
+}
+
+function throwDestroyed(): never {
+  throw destroyed();
 }
 
 /** Compaction steps per pass. A real database's cascade needs far fewer. */
@@ -109,10 +115,9 @@ type IngestWatch = {
 export class EngineHost implements HostCalls {
   private readonly dbs = new Map<DbName, HostedDb>();
 
-  /** `overrides` may replace figures of the budget, for tests that need a small flush run or no L0 stop. */
   constructor(
     protected readonly fsFactory: FsFactory,
-    private readonly overrides: HostOptions = {},
+    private readonly options: HostOptions = {},
     private readonly meter: Meter = UNMETERED,
   ) {}
 
@@ -120,7 +125,7 @@ export class EngineHost implements HostCalls {
     const dbName = checkDbName(name);
     let db = this.dbs.get(dbName);
     if (!db) {
-      db = hostedDb(dbName, this.fsFactory, this.overrides, this.meter);
+      db = hostedDb(dbName, this.fsFactory, this.options, this.meter);
       this.dbs.set(dbName, db);
     }
     return db;
@@ -194,8 +199,8 @@ export class EngineHost implements HostCalls {
  * numbers past every one the removed one used, so `trusted` and the
  * reserve's answer never meet a reused number.
  */
-function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, meter: Meter) {
-  const writes = overrides.writes !== false;
+function hostedDb(name: DbName, fsFactory: FsFactory, options: HostOptions, meter: Meter) {
+  const writes = options.writes !== false;
   const publishTurn = serial();
   const foldTurn = serial();
   /** A flush waits on a full L0 for the next compaction install. */
@@ -222,7 +227,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
 
   function currentBudget(): HostBudget {
     const asked = watching?.compactionMemoryBytes ?? DEFAULT_COMPACTION_MEMORY_BYTES;
-    return { ...hostBudget(asked), ...overrides };
+    return { ...hostBudget(asked), ...options };
   }
 
   /** The folder as it is now. Every fs the host uses goes through the meter, so ingest and compaction need no hooks for IO. */
@@ -232,16 +237,12 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
   }
 
   /** `fn` on the WAL database, then the folder, opened for one operation. Rejects when either is gone. */
-  async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
-    const wal = await openExistingWal(name);
-    if (!wal) throw destroyed();
-    try {
+  function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
+    return withWal(async (wal) => {
       const fs = await folder();
       if (!fs) throw destroyed();
-      return await fn({ wal, fs });
-    } finally {
-      wal.close();
-    }
+      return fn({ wal, fs });
+    }, throwDestroyed);
   }
 
   /**
@@ -252,7 +253,7 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
    */
   async function ingest(waitForCompaction: boolean): Promise<{ generation: Generation }> {
     if (writes) {
-      const { generation } = await fold();
+      const generation = await fold();
       const compaction = compact();
       if (!waitForCompaction) {
         compaction.catch(() => undefined);
@@ -280,64 +281,62 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
    * `l0StopRuns` runs it publishes none, and waits for compaction instead.
    * A fold that published a run tells the tabs, whoever asked for it.
    */
-  function fold(): Promise<IngestResult> {
-    return foldTurn(foldRuns);
-  }
-
-  async function foldRuns(): Promise<IngestResult> {
-    const { head } = await walMetaOrDestroyed();
-    // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
-    const watched = watching;
-    const heard = watched?.pendingBytes ?? 0;
-    let foldedBytes = 0;
-    let pastStop = false;
-    try {
-      for (;;) {
-        const budget = currentBudget();
-        // Taken before the attempt, so an install that lands during it is not missed.
-        const installed = installSignal();
-        const chunk = await withRoom(() =>
-          exclusive(() =>
-            withStores(
-              async ({ wal, fs }) => {
-                const folded = await ingestChunk(wal, fs, head, trusted, {
-                  maxBytes: budget.flushRunBytes,
-                  l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
-                });
-                // Skipped while a tab loads a generation; the next flush or reclaim removes them.
-                await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
-                return folded;
-              },
+  function fold(): Promise<Generation> {
+    return foldTurn(async () => {
+      const { head } = await walMetaOrDestroyed();
+      // A tab posts a row once it commits, so every byte heard by now is of a seq at or below `head`.
+      const watched = watching;
+      const heard = watched?.pendingBytes ?? 0;
+      let foldedBytes = 0;
+      let pastStop = false;
+      try {
+        for (;;) {
+          const budget = currentBudget();
+          // Taken before the attempt, so an install that lands during it is not missed.
+          const installed = installSignal();
+          const chunk = await withRoom(() =>
+            exclusive(() =>
+              withStores(
+                async ({ wal, fs }) => {
+                  const folded = await ingestChunk(wal, fs, head, trusted, {
+                    maxBytes: budget.flushRunBytes,
+                    l0Stop: pastStop ? Number.POSITIVE_INFINITY : budget.l0StopRuns,
+                  });
+                  // Skipped while a tab loads a generation; the next flush or reclaim removes them.
+                  await unlessHeld(name, () => reclaimManifests(fs, folded.generation));
+                  return folded;
+                },
+              ),
             ),
-          ),
-        );
-        recycleEngine(budget.wasmRecycleBytes);
-        pastStop = false;
-        trusted = chunk.generation;
-        meter.flushed(name, chunk);
-        if (chunk.kind === "stopped") {
-          stopped = true;
-          pastStop = (await waitForInstall(installed)) === "idle";
-          stopped = false;
-          continue;
+          );
+          recycleEngine(budget.wasmRecycleBytes);
+          pastStop = false;
+          trusted = chunk.generation;
+          meter.flushed(name, chunk);
+          if (chunk.kind === "stopped") {
+            stopped = true;
+            pastStop = (await waitForInstall(installed)) === "idle";
+            stopped = false;
+            continue;
+          }
+          foldedBytes += chunk.foldedBytes;
+          const watch = watching;
+          if (watch) {
+            watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
+            watch.triggerAt = watch.maxWalBytes;
+          }
+          if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
+            // Nothing up to `head` was waiting, so the count was ahead of the WAL
+            // by what it heard before. Without this, it would stay over the
+            // trigger and ingest in a loop.
+            if (foldedBytes === 0 && watched) watched.pendingBytes = Math.max(0, watched.pendingBytes - heard);
+            return chunk.generation;
+          }
         }
-        foldedBytes += chunk.foldedBytes;
-        const watch = watching;
-        if (watch) {
-          watch.pendingBytes = Math.max(0, watch.pendingBytes - chunk.foldedBytes);
-          watch.triggerAt = watch.maxWalBytes;
-        }
-        if (chunk.kind === "empty" || chunk.ingestedThrough >= head) {
-          // Nothing up to `head` was waiting, so the count was ahead of the WAL
-          // by what it heard before. Without this, it would stay over the
-          // trigger and ingest in a loop.
-          if (foldedBytes === 0 && watched) watched.pendingBytes = Math.max(0, watched.pendingBytes - heard);
-          return { generation: chunk.generation, ingestedThrough: chunk.ingestedThrough, foldedBytes };
-        }
+      } finally {
+        if (foldedBytes > 0) announceGeneration(name);
       }
-    } finally {
-      if (foldedBytes > 0) announceGeneration(name);
-    }
+    });
   }
 
   /** A promise for the next compaction install. */
@@ -452,11 +451,11 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
       maybeIngest(watch, true);
       // No flush will end a pass on a quiet database, and the reserve is written at the end of one.
       if (watch.state === "idle" && reserve.kind !== "held") compact().catch(() => undefined);
-    }, overrides.idleFlushMs ?? IDLE_FLUSH_MS);
+    }, options.idleFlushMs ?? IDLE_FLUSH_MS);
     watch.due ??= setTimeout(() => {
       watch.due = undefined;
       maybeIngest(watch, true);
-    }, overrides.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
+    }, options.idleFlushDueMs ?? IDLE_FLUSH_DUE_MS);
   }
 
   /**
@@ -555,10 +554,8 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
   }
 
   /** The WAL database's meta. Rejects with `destroyed()` when it does not exist. */
-  async function walMetaOrDestroyed(): Promise<WalMeta> {
-    const meta = await walMeta();
-    if (!meta) throw destroyed();
-    return meta;
+  function walMetaOrDestroyed(): Promise<WalMeta> {
+    return withWal((wal) => wal.meta(), throwDestroyed);
   }
 
   /**

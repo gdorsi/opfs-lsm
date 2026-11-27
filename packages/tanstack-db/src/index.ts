@@ -1,17 +1,16 @@
 import type { Collection, CollectionChange, DocChange, JsonDoc } from "@opfs-lsm/docstore";
 import { ClosedError } from "@opfs-lsm/kv";
-import { and, compileSingleRowExpression, toBooleanPredicate, withCollectionConfigFactory } from "@tanstack/db";
+import { withCollectionConfigFactory } from "@tanstack/db";
 import type {
   BaseCollectionConfig,
   ChangeMessageOrDeleteKeyMessage,
   CollectionConfig,
-  IR,
   LoadSubsetOptions,
   PendingMutation,
   SyncConfig,
   UtilsRecord,
 } from "@tanstack/db";
-import { conjuncts, ownPath, planLoad, type Plan } from "./plan.js";
+import { compile, planLoad, type Plan } from "./plan.js";
 import { atOrBefore, boundaryOf, read, type Boundary, type Snapshot } from "./read.js";
 
 /**
@@ -173,6 +172,11 @@ class Run {
     return this.phase.kind === "loading" ? this.phase.done.promise : Promise.resolve();
   }
 
+  private fail(err: unknown): void {
+    this.stop();
+    this.p.fail(err);
+  }
+
   private onChange(event: CollectionChange<JsonDoc>): void {
     switch (event.kind) {
       case "append":
@@ -183,8 +187,7 @@ class Run {
         if (this.phase.kind !== "stopped") this.load();
         return;
       case "closed":
-        this.stop();
-        this.p.fail(new ClosedError("database is closed"));
+        this.fail(new ClosedError("database is closed"));
         return;
     }
   }
@@ -208,8 +211,7 @@ class Run {
       },
       (err: unknown) => {
         if (this.phase !== mine) return;
-        this.stop();
-        this.p.fail(err);
+        this.fail(err);
       },
     );
   }
@@ -227,8 +229,7 @@ class Run {
         this.p.commit();
       }
     } catch (err) {
-      this.stop();
-      this.p.fail(err);
+      this.fail(err);
       return;
     }
     this.syncedThrough = Math.max(this.syncedThrough, snapshot?.at ?? 0, events.at(-1)?.seq ?? 0);
@@ -318,6 +319,11 @@ class DemandRun {
     for (const load of was.loads) load.done.resolve();
   }
 
+  private fail(err: unknown): void {
+    this.stop();
+    this.p.fail(err);
+  }
+
   /** Every change is applied as it arrives, so a write shows without waiting for a load. */
   settled(): Promise<void> {
     return Promise.resolve();
@@ -370,13 +376,11 @@ class DemandRun {
         // Rows that read fails to refresh could be stale, so the collection fails rather than keep them as ready.
         void this.fetch([...this.phase.demands.values()], true).catch((err: unknown) => {
           if (this.phase.kind === "stopped") return;
-          this.stop();
-          this.p.fail(err);
+          this.fail(err);
         });
         return;
       case "closed":
-        this.stop();
-        this.p.fail(new ClosedError("database is closed"));
+        this.fail(new ClosedError("database is closed"));
         return;
     }
   }
@@ -531,8 +535,7 @@ class DemandRun {
     try {
       this.commit(batch);
     } catch (err) {
-      this.stop();
-      this.p.fail(err);
+      this.fail(err);
     }
   }
 
@@ -550,22 +553,4 @@ async function readDemand(snap: Snapshot, demand: Demand): Promise<{ docs: JsonD
   const byId = new Map<string, JsonDoc>();
   for (const f of found) for (const doc of f.docs) byId.set(doc.id, doc);
   return { docs: [...byId.values()], boundary: found[0]?.boundary };
-}
-
-/**
- * The `where` as a predicate on stored documents. A conjunct on one of
- * TanStack's virtual `$` properties has no value in a stored document, so
- * it is left out and the predicate may keep more rows, never fewer.
- */
-function compile(where: IR.BasicExpression<boolean> | undefined): Match {
-  const kept = conjuncts(where).filter((c) => !readsVirtual(c));
-  if (kept.length === 0) return () => true;
-  const evaluate = compileSingleRowExpression(kept.reduce((a, b) => and(a, b)));
-  return (doc) => toBooleanPredicate(evaluate(doc));
-}
-
-function readsVirtual(e: IR.BasicExpression): boolean {
-  if (e.type === "func") return e.args.some(readsVirtual);
-  if (e.type !== "ref") return false;
-  return ownPath(e)[0]?.startsWith("$") ?? false;
 }
