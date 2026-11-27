@@ -1,5 +1,5 @@
 diff --git a/dist/cjs/sqlite-core-adapter.cjs b/dist/cjs/sqlite-core-adapter.cjs
-index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..f630f11cff0e4a7b41cb56ed815d8000edc84796 100644
+index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..094ae156e555e2390c57f623df4645b5645a0d9f 100644
 --- a/dist/cjs/sqlite-core-adapter.cjs
 +++ b/dist/cjs/sqlite-core-adapter.cjs
 @@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
@@ -37,7 +37,7 @@ index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..f630f11cff0e4a7b41cb56ed815d8000
 +	].includes(expression.name)) {
 +		const [left, right] = expression.args;
 +		const literal = left?.type === `ref` ? right : right?.type === `ref` ? left : void 0;
-+		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isFinite(literal.value) && compiled.supported;
++		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isSafeInteger(literal.value) && compiled.supported && !hasDeepNumericPath(expression);
 +	}
 +	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
@@ -80,7 +80,7 @@ index 1b63e4ce985519bd5c8047a598ebc62f3abffdf9..f630f11cff0e4a7b41cb56ed815d8000
  	applyInMemoryWhere(rows, where) {
  		if (!where) return rows;
 diff --git a/dist/esm/sqlite-core-adapter.js b/dist/esm/sqlite-core-adapter.js
-index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..0360b88e9c31ab0696240827ca9ac5a4c5f82b38 100644
+index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..c1f71aaa91ae7d0b818ff6bfb4c8e2cd90ee3f82 100644
 --- a/dist/esm/sqlite-core-adapter.js
 +++ b/dist/esm/sqlite-core-adapter.js
 @@ -438,7 +438,7 @@ function hasUnpairedSurrogate(value) {
@@ -118,7 +118,7 @@ index 905a24a7cfc9f594c1ce5d3e342c0e57003ea308..0360b88e9c31ab0696240827ca9ac5a4
 +	].includes(expression.name)) {
 +		const [left, right] = expression.args;
 +		const literal = left?.type === `ref` ? right : right?.type === `ref` ? left : void 0;
-+		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isFinite(literal.value) && compiled.supported;
++		return expression.args.length === 2 && literal?.type === `val` && typeof literal.value === `number` && Number.isSafeInteger(literal.value) && compiled.supported && !hasDeepNumericPath(expression);
 +	}
 +	if (expression.name !== `eq` && expression.name !== `in`) return false;
 +	return compiled.supported && compileSafeSqlPrefilter(expression, compiled)?.sql === compiled.sql;
