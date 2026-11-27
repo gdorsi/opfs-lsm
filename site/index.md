@@ -85,16 +85,16 @@ bench:
         versus: against each library's IndexedDB storage
         stores: [opfs-lsm, the IndexedDB option]
         setup: TanStack DB, y-indexeddb, automerge-repo's IndexedDB storage and, for TanStack Query, idb-keyval
-        note: No frames dropped while typing, on any of the four. A Yjs keystroke takes 0.153 ms of the main thread on kv against 0.125 ms on y-indexeddb, and the runs do not separate Automerge's two.
+        note: No frames dropped while typing, on any of the four. A Yjs keystroke takes 0.153 ms of the main thread on kv against 0.118 ms on y-indexeddb, and the runs do not separate the two stores on Yjs or on Automerge.
         rows:
           - { measure: "TanStack DB: cold load of 91,000 rows", ours: 108 ms, theirs: 591 ms, ratio: 5.5× }
           - { measure: "TanStack DB: bulk insert, 100,000 rows", ours: 195k rows/s, theirs: 20.3k rows/s, ratio: 9.6× }
           - { measure: "TanStack Query: restore of 644 queries", ours: 5.02 ms, theirs: 6.28 ms, ratio: 1.3× }
           - { measure: "TanStack Query: opening its store", ours: 11.9 ms, theirs: 7.26 ms, ratio: 0.61× }
           - { measure: "Yjs: cold load of 500 notes", ours: 72.3 ms, theirs: 142 ms, ratio: 2.0× }
-          - { measure: "Yjs: reopening right after typing", ours: 19.2 ms, theirs: 10.4 ms, ratio: 0.54× }
+          - { measure: "Yjs: reopening right after typing", ours: 20.0 ms, theirs: 10.9 ms, ratio: 0.55× }
           - { measure: "Automerge: cold load of 500 notes", ours: 180 ms, theirs: 250 ms, ratio: 1.4× }
-          - { measure: "Automerge: reopening right after typing", ours: 44.8 ms, theirs: 45.6 ms, ratio: 1.0× ‡ }
+          - { measure: "Automerge: reopening right after typing", ours: 41.1 ms, theirs: 48.5 ms, ratio: 1.2× ‡ }
       - title: Your own adapter on kv
         versus: kv against IndexedDB
         stores: [kv, IndexedDB]

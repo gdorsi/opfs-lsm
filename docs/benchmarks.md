@@ -62,19 +62,19 @@ The editing-trace workloads write the trace's first 25,700 keystrokes, then type
 <!-- bench:table typing-reopening -->
 | | y-indexeddb | Yjs on kv | automerge-repo IndexedDB | Automerge on kv | Yjs, kv vs y-indexeddb | Automerge, kv vs IndexedDB |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| One keystroke, main-thread time | 0.116 ms | 0.146 ms | 0.304 ms | 0.300 ms | 0.79× | 1.0× ‡ |
+| One keystroke, main-thread time | 0.118 ms | 0.153 ms | 0.294 ms | 0.302 ms | 0.77× ‡ | 0.98× ‡ |
 | Frames dropped over 300 keystrokes | 0 | 0 | 0 | 0 | | |
-| Cold open before the settle | 10.6 ms | 19.7 ms | 37.3 ms | 44.1 ms | 0.54× | 0.85× ‡ |
-| Cold open after the settle | 10.0 ms | 50.4 ms | 36.5 ms | 44.0 ms | 0.20× | 0.83× ‡ |
+| Cold open before the settle | 10.9 ms | 20.0 ms | 48.5 ms † | 41.1 ms † | 0.55× | 1.2× ‡ |
+| Cold open after the settle | 10.1 ms | 29.3 ms | 48.8 ms † | 40.7 ms † | 0.34× | 1.2× ‡ |
 
-Medians of 4 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.0 to 2.2, commit 36e2977a. Full results: [2026-11-27T09-06-08-apple-m5-max](results/2026-11-27T09-06-08-apple-m5-max.md).
+Medians of 5 runs per contender, in headless Chrome 158 on Apple M5 Max, load average 1.2 to 2.5, commit f96c5229. Full results: [2026-11-27T11-11-09-apple-m5-max](results/2026-11-27T11-11-09-apple-m5-max.md).
 
 ‡ These runs do not separate the two contenders (rank-sum test, 5% level).
 
-No cell of fewer than 5 runs is checked for two clusters, so a median here can hide two states.
+† The runs of a marked cell form two clusters, so its median hides two states.
 <!-- /bench:table -->
 
-Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 13.3 ms before the settle and 22.5 ms after for Yjs, 6.2 ms and 5.7 ms for Automerge.
+Yjs stores each update as it happens. automerge-repo saves a document at most every 100 ms (`saveDebounceRate`), so most Automerge keystrokes write nothing, and Automerge's own load of the document takes most of its cold open on both stores. On kv a cold open includes opening the database in the new tab: 13.9 ms before the settle and 22.3 ms after for Yjs, 6.6 ms and 5.6 ms for Automerge.
 
 ### On demand, against SQLite
 
