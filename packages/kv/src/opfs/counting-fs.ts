@@ -36,7 +36,7 @@ function add(into: Record<string, IoCount>, path: string, bytes: number): void {
 
 /** Counts every IO call of `inner` by path class. Integer adds per call, never per key. */
 export class CountingFs implements AsyncFs {
-  readonly inner: AsyncFs;
+  private readonly inner: AsyncFs;
   readonly counters: IoCounters;
 
   constructor(inner: AsyncFs, counters: IoCounters = emptyIoCounters()) {
