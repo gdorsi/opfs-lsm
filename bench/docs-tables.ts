@@ -206,7 +206,7 @@ export const TABLES: readonly Table[] = [
   },
   {
     id: "live-queries",
-    file: "2026-11-25T09-58-56-apple-m5-max",
+    file: "2026-11-27T05-43-39-apple-m5-max",
     workload: "tanstack-live/screens",
     columns: [
       { head: "" },
