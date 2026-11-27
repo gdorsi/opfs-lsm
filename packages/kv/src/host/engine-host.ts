@@ -231,27 +231,16 @@ function hostedDb(name: DbName, fsFactory: FsFactory, overrides: HostOptions, me
     return inner && meter.fs(name, inner);
   }
 
-  /** Open the WAL database, then the folder, for one operation. Undefined when either is gone. */
-  async function openStores(): Promise<Stores | undefined> {
-    const wal = await openExistingWal(name);
-    if (!wal) return undefined;
-    const fs = await folder().catch((err: unknown) => {
-      wal.close();
-      throw err;
-    });
-    if (fs) return { wal, fs };
-    wal.close();
-    return undefined;
-  }
-
-  /** `fn` on the stores of one operation, rejecting when the database is not there. */
+  /** `fn` on the WAL database, then the folder, opened for one operation. Rejects when either is gone. */
   async function withStores<T>(fn: (stores: Stores) => Promise<T>): Promise<T> {
-    const stores = await openStores();
-    if (!stores) throw destroyed();
+    const wal = await openExistingWal(name);
+    if (!wal) throw destroyed();
     try {
-      return await fn(stores);
+      const fs = await folder();
+      if (!fs) throw destroyed();
+      return await fn({ wal, fs });
     } finally {
-      stores.wal.close();
+      wal.close();
     }
   }
 
