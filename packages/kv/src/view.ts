@@ -246,7 +246,14 @@ export class ViewSnapshotImpl implements ViewSnapshot {
     const attempt = keysReader(mems, keys, this.at, decode);
     const read = () => attempt(this.levels);
     const first = read();
-    return first instanceof Miss ? untilHit(read, first) : first;
+    if (!(first instanceof Miss)) return first;
+    // The view's callback can return while a page loads: hold the runs until the read settles.
+    const release = this.hold();
+    try {
+      return await untilHit(read, first);
+    } finally {
+      release();
+    }
   }
 
   /** What `read` makes of the scan of `range`. Holds the readers until it settles. */
