@@ -227,9 +227,9 @@ and waits at one whose filter says it may hold the key. It touches neither Index
 `range` merges one cursor per source: the memtable, each L0 run, and each deeper level as a
 whole. For each key the newest source wins, and tombstones are dropped. The waiting sources sit
 in a list sorted by key and then by age, which a source enters from the front, so one that keeps
-winning costs one comparison per key, and two that tie on a key are compared once. A level
-cursor opens one run at a time, in key order, and only the runs the scan reaches. `reverse`
-returns the same keys in descending order. Bloom filters play no part in a scan.
+winning costs one comparison per key, and two that tie on a key are compared once. A level cursor
+opens only the runs the scan reaches, and finds each bound in a block with one search of its offset
+table. `reverse` reads a block 4 records at a time from its end. No scan asks a Bloom filter.
 
 `range({ valueContains })` keeps the live puts whose current value holds every pattern. Each
 source filters on its own, one block at a time, and only the hits are copied out. A newer source

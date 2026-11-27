@@ -100,14 +100,15 @@ export class SstReader {
    */
   scanContains(patterns: readonly Uint8Array[], bounds?: ScanBounds, reverse = false): LayerCursor {
     const packed = packPatterns(patterns);
-    const outside = reverse ? isAtOrAbove : isBelow;
-    return this.blocks(bounds, reverse, (block, seek) => {
+    const before = reverse ? isAtOrAbove : isBelow;
+    const past = reverse ? isBelow : isAtOrAbove;
+    return this.blocks(bounds, reverse, (block, seek, stop) => {
       const hits = unpackHits(scanBlock(block.buf.subarray(block.start, block.end), packed));
       const walk = reverse ? [...hits].reverse().values() : hits;
       return () => {
         for (let h = walk.next(); !h.done; h = walk.next()) {
-          if (seek && outside(h.value, seek, 0)) continue;
-          return h.value;
+          if (seek && before(h.value, seek)) continue;
+          return stop && past(h.value, stop) ? undefined : h.value;
         }
         return undefined;
       };
@@ -123,14 +124,15 @@ export class SstReader {
    * A cursor over the blocks that may hold keys in `bounds`, in key order or
    * from the last block back. Entering a block calls `open` with its bytes,
    * and the returned function yields that block's entries. `seek` is where
-   * the first block starts: `start`, or `endExclusive` going back.
+   * the first block starts: `start`, or `endExclusive` going back. `stop` is
+   * the other bound, given only for a block that may hold a key past it.
    * Scans admit blocks to probation. Only entering a block can miss, and a
    * miss leaves the cursor where it was.
    */
   private blocks(
     bounds: ScanBounds | undefined,
     reverse: boolean,
-    open: (block: BlockBytes, seek: Uint8Array | undefined) => () => BlockEntry | undefined,
+    open: (block: BlockBytes, seek: Uint8Array | undefined, stop: Uint8Array | undefined) => () => BlockEntry | undefined,
   ): LayerCursor {
     const { range, index } = this;
     if (!range) return { peek: () => undefined, next() {} };
@@ -138,7 +140,6 @@ export class SstReader {
     const start = bounds?.start;
     const end = bounds?.endExclusive;
     const stopAt = reverse ? start : end;
-    const stop = reverse ? isBelow : isAtOrAbove;
     const step = reverse ? -1 : 1;
     let seek = reverse ? end : start;
     let b = reverse
@@ -148,22 +149,11 @@ export class SstReader {
     let take: (() => BlockEntry | undefined) | undefined;
     let cur: BlockEntry | undefined | null = null;
     let ahead: ReadAhead | undefined;
-    // Whether the block the cursor is in may hold a key past `stopAt`. The
-    // separators tell, so only the block the scan ends in compares its keys.
-    let mayPass = false;
-    // How many bytes of `stopAt` that block's prefix shares with it, so each of its keys is compared from there on. -1 until its first key asks.
-    let shared = -1;
     const peek = (): BlockEntry | undefined | Miss => {
       if (cur !== null) return cur;
       for (;;) {
         const e: BlockEntry | undefined = take?.();
-        if (e) {
-          if (mayPass) {
-            if (shared < 0) shared = e.prefixShared(stopAt!);
-            cur = stop(e, stopAt!, shared) ? undefined : e;
-          } else cur = e;
-          return cur;
-        }
+        if (e) return (cur = e);
         take = undefined;
         if (
           reverse
@@ -181,16 +171,16 @@ export class SstReader {
         const block = ahead?.take(b) ?? this.block(b, "probation");
         if (block instanceof Miss) return block;
         entered = true;
-        // Every key of block `b` is at or after its separator and before the next block's.
-        mayPass =
+        // Every key of block `b` is at or after its separator and before the next
+        // block's, so only the block the scan ends in looks for `stopAt`.
+        const mayPass =
           !!stopAt &&
           (reverse
             ? compareSepAt(index, b, stopAt) < 0
             : b + 1 < blockCount
               ? compareSepAt(index, b + 1, stopAt) > 0
               : compareBytes(range.largest, stopAt) >= 0);
-        take = open(block, seek);
-        shared = -1;
+        take = open(block, seek, mayPass ? stopAt : undefined);
         b += step;
         seek = undefined;
       }
@@ -290,9 +280,8 @@ function lastBlock(index: BlockIndex, bounds: ScanBounds | undefined, reverse: b
   return reverse ? 0 : index.sepEnd.length - 1;
 }
 
-/** `from` is how many leading bytes of the entry's key are known to equal the bound's. */
-const isBelow = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) < 0;
-const isAtOrAbove = (e: BlockEntry, bound: Uint8Array, from: number) => e.compareKey(bound, from) >= 0;
+const isBelow = (e: BlockEntry, bound: Uint8Array) => e.compareKey(bound, 0) < 0;
+const isAtOrAbove = (e: BlockEntry, bound: Uint8Array) => e.compareKey(bound, 0) >= 0;
 
 /**
  * The last block whose separator is <= `key`, or -1 when `key` sorts before
