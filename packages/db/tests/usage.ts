@@ -1,6 +1,6 @@
 // The code of the README, as an app writes it. It is compiled with the tests and never run.
 import * as v from "valibot";
-import { and, collection, eq, ilike, inArray, not, NotFoundError, openDatabase, query, ValidationError, type AnyDbError, type QueryRoot } from "../src/index.js";
+import { and, collection, deleteDatabase, eq, ilike, inArray, not, NotFoundError, openDatabase, query, ValidationError, type AnyDbError, type QueryRoot } from "../src/index.js";
 
 declare function render(rows: readonly unknown[]): void;
 declare function showError(error: AnyDbError): void;
@@ -113,6 +113,7 @@ export async function linearlite() {
   }
 
   await db.close();
+  await deleteDatabase("linearlite");
   return [details, next satisfies { status: 0 | 1 | 2 | 3 | 4 }, stored?.title, rows[0]?.title, await page.run(), (await total.run()) satisfies number, (await search.run())?.title satisfies string | undefined];
 }
 

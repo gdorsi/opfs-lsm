@@ -224,7 +224,17 @@ A write reruns only the queries it may affect. The queries of one collection tha
 
 Writes from other tabs rerun queries the same way.
 
-`error` gets the `DbError` that ended the subscription. `db.close()` ends every subscription with `ClosedError` code `closed`, and a database deleted in another tab ends them with code `destroyed`. Nothing is called after `error`.
+`error` gets the `DbError` that ended the subscription. `db.close()` ends every subscription with `ClosedError` code `closed`, and a [deleted](#delete) database ends them with code `destroyed`. Nothing is called after `error`.
+
+## Delete
+
+```ts
+import { deleteDatabase } from "@opfs-lsm/db";
+
+await deleteDatabase("linearlite");
+```
+
+`deleteDatabase(name)` deletes every document and index stored under `name`. Every open handle on it, in any tab, ends its subscriptions with `ClosedError` code `destroyed`, and its later calls reject with `ClosedError`. It resolves once the storage is gone, so the next `openDatabase` of that name starts empty.
 
 ## Errors
 
@@ -250,7 +260,7 @@ try {
 | `NotFoundError` | `missing` | `update` found no document. |
 | `QueryError` | `operand`, `source` | A query that cannot run: an `orderBy` that is not a field, a `limit` or an `offset` that is not a count, a `from` that is not a collection of an open database. A mistake the builder can see is thrown by `query` itself. |
 | `SchemaError` | `version`, `catalog` | `openDatabase`. `version`: this version is stored with other collections or indexes, so raise it. `catalog`: any other disagreement with the stored schema. |
-| `ClosedError` | `closed`, `destroyed` | The database was closed, or deleted in another tab. |
+| `ClosedError` | `closed`, `destroyed` | The database was closed, or deleted. |
 | `StorageError` | `commit`, `quota`, `unavailable`, `corrupt`, `limit`, `index-failed` | The storage failed. `cause` is the storage's own error. |
 
 `AnyDbError` is the union of the seven classes, so a `switch` on `_tag` narrows to one of them. The `_tag` is also what Effect's `catchTag` matches, so a wrapper needs no mapping of its own.

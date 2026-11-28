@@ -4,7 +4,7 @@
  * through `wrap`.
  */
 import { openDocStore, type Collection as DocCollection } from "@opfs-lsm/docstore";
-import { openDb, type Db } from "@opfs-lsm/kv";
+import { destroyDb, openDb, type Db } from "@opfs-lsm/kv";
 import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap } from "./errors.js";
 import { docstoreSchema, isId, prepare, writeRules, type Collections, type DocOf, type InputOf, type JsonDoc, type WriteRules } from "./schema.js";
 
@@ -144,6 +144,19 @@ export async function openDatabase<C extends Collections>(options: OpenOptions<C
     throw wrap(err);
   }
   return openOn(kv, options);
+}
+
+/**
+ * Delete the database `name`, in every tab of the origin. Each open handle
+ * on it ends its subscriptions with ClosedError `destroyed`, and its later
+ * calls reject with ClosedError. Resolves once the storage is gone.
+ */
+export async function deleteDatabase(name: string): Promise<void> {
+  try {
+    await destroyDb(name);
+  } catch (err) {
+    throw wrap(err);
+  }
 }
 
 /** Open on a kv handle, which this function now owns and closes. @internal */
