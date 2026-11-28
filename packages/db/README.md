@@ -203,7 +203,7 @@ open.explain();
 - `{ kind: "ids" }` is a read by id, for a `where` that names ids.
 - `{ kind: "none" }` reads nothing: no document can pass the `where`.
 
-With a `limit`, an index that yields the order is chosen first. Without one, and for a count, the index that reads the fewest other rows is chosen first.
+With a `limit`, an index that yields the order is chosen first. Without one, and for a count, the index that reads the fewest other rows is chosen first. A count that an index answers alone counts that index's entries. So a count with no `where` reads no row: it counts the entries of the sorted index with the fewest fields, among those that are not unique.
 
 An index serves an order when the `orderBy` fields are the index's fields after the ones the `where` pins. A field pinned to one value drops out of the order. A field pinned to several values with `inArray` can lead the order: the query then reads one range per value, one after the other.
 
@@ -214,6 +214,7 @@ An index serves an order when the `orderBy` fields are the index's fields after 
 | `inArray(status, [1, 2])`, `orderBy` modified, `limit` | `byModified`, ordered, filtered |
 | `ilike(title, "%login%")`, `orderBy` modified | `byModified` through its words, ordered, filtered |
 | `inArray(status, [1, 2])`, `count()` | `byStatus`, exact: entries counted, no document read |
+| no filter, `count()` | `byCreated`, exact: entries counted, no document read |
 
 ### Live results
 
@@ -236,6 +237,70 @@ await deleteDatabase("linearlite");
 ```
 
 `deleteDatabase(name)` deletes every document and index stored under `name`. Every open handle on it, in any tab, ends its subscriptions with `ClosedError` code `destroyed`, and its later calls reject with `ClosedError`. It resolves once the storage is gone, so the next `openDatabase` of that name starts empty.
+
+## Solid
+
+```tsx
+import { eq, query } from "@opfs-lsm/db";
+import { useLiveQuery } from "@opfs-lsm/db/solid";
+import { createSignal, Errored, For, isPending, Loading } from "solid-js";
+
+const withStatus = (status: number) =>
+	query((q) =>
+		q
+			.from({ i: issues })
+			.where(({ i }) => eq(i.status, status))
+			.orderBy(({ i }) => i.modified, "desc")
+			.limit(50),
+	);
+const countWithStatus = (status: number) =>
+	query((q) =>
+		q
+			.from({ i: issues })
+			.where(({ i }) => eq(i.status, status))
+			.count(),
+	);
+
+function IssueList() {
+	const [status, setStatus] = createSignal(1);
+	const rows = useLiveQuery(() => withStatus(status()));
+	const total = useLiveQuery(() => countWithStatus(status()));
+
+	return (
+		<Errored fallback={(error) => <p>{String(error())}</p>}>
+			<Loading fallback={<p>Reading</p>}>
+				<button onClick={() => setStatus(2)}>In progress</button>
+				<p class={{ stale: isPending(total) }}>{total()} issues</p>
+				<ul>
+					<For each={rows()}>{(issue) => <li>{issue.title}</li>}</For>
+				</ul>
+			</Loading>
+		</Errored>
+	);
+}
+```
+
+`@opfs-lsm/db/solid` is the adapter for Solid 2. It needs `solid-js` 2.0.3 or later, which the core entry does not import.
+
+`useLiveQuery(() => query)` subscribes to the query and returns an accessor of its result: the rows, one row, or a number.
+
+- The function may read signals and props. When one changes, the subscription moves to the new query. The accessor keeps the last result until the new one is read, and `isPending(rows)` is true meanwhile.
+- Until the first read the accessor is not ready, as an async memo is. Read it under `<Loading>`.
+- The result is a store whose rows are matched by `id`. A change to one document updates only what reads the fields that changed, so an edited title redraws one text node and a row that moved keeps its elements. A `select` without `id` gives rows that are replaced when they change.
+- The error that ends a subscription is thrown where the accessor is read, for `<Errored>` or an effect's `error` to catch.
+- The subscription stops when the component that called `useLiveQuery` is disposed.
+
+## Tests
+
+```ts
+import "fake-indexeddb/auto";
+import { openMemoryDatabase } from "@opfs-lsm/db/testing";
+
+const here = await openMemoryDatabase({ name: "test", version: 1, collections });
+const there = await openMemoryDatabase({ name: "test", version: 1, collections });
+```
+
+`openMemoryDatabase` takes what `openDatabase` takes and stores the data in memory, so a test of an app's queries and writes runs in Node. Two opens of one name share the data, as two tabs of one origin do. The process needs an `indexedDB`, such as the one of [`fake-indexeddb`](https://github.com/dumbmatter/fakeIndexedDB).
 
 ## Errors
 

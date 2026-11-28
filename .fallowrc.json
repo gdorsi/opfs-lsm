@@ -10,6 +10,7 @@
     "packages/*/fuzz/jazzer/*.ts",
     "packages/docstore/tests/usage.ts",
     "packages/db/tests/usage.ts",
+    "packages/db/tests/usage-solid.tsx",
     "examples/*/scripts/**/*.ts",
     "examples/*/src/service-worker.js",
     "examples/linearlite-docstore/src/seed-worker.ts",

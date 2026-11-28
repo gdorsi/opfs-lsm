@@ -108,6 +108,17 @@ describe("the lists of LinearLite", () => {
     expect(ranges(total)).toEqual([{ index: "byStatus", eq: [[1, 2]] }]);
   });
 
+  it("counts every document in the entries of the smallest index whose entries are their key, not in the rows", () => {
+    const total = from().count();
+    expect(explain(total)).toEqual({ kind: "index", index: "byCreated", ranges: 1, ordered: false, exact: true });
+    expect(ranges(total)).toEqual([{ index: "byCreated" }]);
+    expect(summarize(plan(total, new Map([["byModified", indexes.get("byModified")!]])))).toEqual({ kind: "scan", ordered: true, exact: true });
+  });
+
+  it("counts in the rows when no index decides the count alone", () => {
+    expect(explain(from().where(({ i }) => eq(i.title, "x")).count())).toEqual({ kind: "scan", ordered: true, exact: false });
+  });
+
   it("reads the filter of the README in the order of its sort", () => {
     const open = from()
       .where(({ i }) => and(inArray(i.status, [1, 2]), not(eq(i.priority, 4))))

@@ -1,177 +1,144 @@
-import { createList, type Change } from "./list.ts";
-import { DEFAULT_FILTER, describe, type Detail, type Filter, type Issue } from "./model.ts";
+import { deleteDatabase, type LiveQuery, type PlanSummary } from "@opfs-lsm/db";
+import { createSignal } from "solid-js";
+import { anyIssue, pageOf, totalOf } from "./list.ts";
+import { DEFAULT_FILTER, describe, type Filter, type Store } from "./model.ts";
 import { failed, post } from "./protocol.ts";
-import { createIssue, detailOf, editIssue, matches, placeBefore, writeIssues, type Draft, type Store } from "./store.ts";
+import { createIssue, editIssue, writeIssues, type NewIssue } from "./store.ts";
 
 /** A run of generated issues: the first ones into the empty database, or more beside the ones it holds. */
 export type Generating = { readonly written: number; readonly count: number };
 
-export type AppState = {
-  /** The database holds no issue, so the list makes way for the Generate button. It ends with the first issues written. */
-  readonly empty: boolean;
-  readonly generating: Generating | undefined;
-  readonly filter: Filter;
-  /** The total beside the title. Undefined while a count is running. */
-  readonly total: number | undefined;
-  /** The issue on the issue page, as last stored, while the page is open. */
-  readonly issue: Issue | undefined;
-  /** The open issue's description and comments, once read. */
-  readonly detail: Detail | undefined;
+/**
+ * A read the app times: the first page of a list and its total, from `from` until the store hands each over, before
+ * it is drawn. Without a label it is the first list after the open.
+ */
+type Read = {
+  readonly label: string | undefined;
+  readonly from: number;
+  plan?: PlanSummary;
+  rows?: { readonly n: number; readonly at: number };
+  total?: { readonly n: number; readonly at: number };
 };
+
+/** `query`, with `first` called on the first result of each subscription. */
+function watched<V>(query: LiveQuery<V>, first: (value: V) => void): LiveQuery<V> {
+  return {
+    ...query,
+    subscribe(next, error) {
+      let seen = false;
+      return query.subscribe((value) => {
+        if (!seen) first(value);
+        seen = true;
+        next(value);
+      }, error);
+    },
+  };
+}
 
 export type App = ReturnType<typeof createApp>;
 
-/** Everything the page does besides drawing: reads, writes, the change feed and the timings it posts. */
-export function createApp(store: Store) {
-  const list = createList(store);
-  let state: AppState = { empty: false, generating: undefined, filter: DEFAULT_FILTER, total: undefined, issue: undefined, detail: undefined };
-  const listeners = new Set<(state: AppState) => void>();
-  const set = (patch: Partial<AppState>) => {
-    state = { ...state, ...patch };
-    for (const listener of listeners) listener(state);
+/**
+ * Everything the page does besides drawing: the filter and the open issue, the list's queries, the writes and the
+ * timings it posts. `opening` says when the database was asked to open and how long that took.
+ */
+export function createApp(store: Store, name: string, opening: { readonly from: number; readonly ms: number }) {
+  const [filter, setFilter] = createSignal(DEFAULT_FILTER);
+  const [opened, setOpened] = createSignal<string>();
+  const [generating, setGenerating] = createSignal<Generating>();
+  let read: Read | undefined = { label: undefined, from: opening.from };
+  let deleting = false;
+
+  function landed(mine: Read) {
+    if (read !== mine || !mine.rows) return;
+    if (mine.label === undefined) {
+      read = undefined;
+      post({ type: "opened", ms: opening.ms, issues: mine.rows.n });
+      if (mine.rows.n > 0) post({ type: "first-rows", ms: mine.rows.at - mine.from });
+    } else if (mine.total && mine.plan) {
+      read = undefined;
+      post({ type: "filter", label: mine.label, plan: mine.plan, rowsMs: mine.rows.at - mine.from, total: mine.total.n, totalMs: mine.total.at - mine.from });
+    }
+  }
+
+  const leave = () => {
+    if (parent === window) location.reload();
+    else post({ type: "deleted" });
   };
-  let run = 0;
-
-  /**
-   * Reads the list under the filter and its total, from the first row or, with `stay`, from the rows in view.
-   * Resolves with the first page's row count and when the store returned them, before they are drawn.
-   */
-  function show(label?: string, stay = false) {
-    const mine = ++run;
-    const from = performance.now();
-    if (!stay) set({ total: undefined });
-    const shown = list.show(state.filter, stay);
-    const counted = shown.total.then((total) => {
-      const at = performance.now();
-      if (mine === run) set({ total });
-      return { total, at };
-    });
-    void Promise.allSettled([shown.rows, counted]).then(([r, c]) => {
-      if (r.status === "rejected") return;
-      if (c.status === "rejected") return failed(c.reason);
-      if (!label || mine !== run) return;
-      post({ type: "filter", label, path: shown.path, rowsMs: r.value.at - from, total: c.value.total, totalMs: c.value.at - from });
-    });
-    return shown.rows;
-  }
-
-  /** Set while this tab writes generated issues, all of them new. */
-  let appending = false;
-
-  let syncing = false;
-  let stale = false;
-  /** Reads the rows in view and the total again, once at a time. */
-  async function resync() {
-    stale = true;
-    if (syncing) return;
-    syncing = true;
-    try {
-      while (stale) {
-        stale = false;
-        await show(undefined, true);
-      }
-    } finally {
-      syncing = false;
-    }
-  }
-
-  // Every write to an issue, from this tab or another, arrives here. Each change says where the issue was, from the
-  // index entries the write replaced, and what it is now, so the list moves its rows and its total without a read.
-  store.issues.changes((event) => {
-    if (event.kind === "gap") return void resync().catch(failed);
-    if (event.kind !== "append") return;
-    if (appending) {
-      const { status, priority, q } = state.filter;
-      const open = status.length === 0 && priority.length === 0 && q === "";
-      const keep = matches(state.filter);
-      const total = list.grow(open ? event.changes.length : event.changes.filter((c) => !c.deleted && keep(c.doc!)).length);
-      if (total !== undefined) set({ total });
-      return;
-    }
-    const changes: Change[] = [];
-    for (const change of event.changes) {
-      const after = change.doc;
-      changes.push({ before: placeBefore(change), after });
-      // A deleted issue closes the issue page.
-      if (state.issue?.id === change.id) set(after ? { issue: after } : { issue: undefined, detail: undefined });
-    }
-    const total = list.apply(changes);
-    if (total === undefined) void resync().catch(failed);
-    else set({ total });
-  });
 
   return {
-    list,
-    /** Calls `listener` with the state now, and again after every change. Returns the call that stops it. */
-    subscribe(listener: (state: AppState) => void) {
-      listeners.add(listener);
-      listener(state);
-      return () => listeners.delete(listener);
-    },
-    show,
+    store,
+    filter,
+    /** The id of the issue on the issue page, while the page is open. */
+    opened,
+    generating,
 
-    filter(patch: Partial<Filter>) {
-      const next = { ...state.filter, ...patch };
-      const label = describe(next, state.filter);
-      set({ filter: next });
-      show(label).catch(failed);
-    },
-
-    /** The first read: the database is empty when it returns no row. */
-    async start() {
-      const first = await show();
-      if (first.rows === 0) set({ empty: true });
-      return first;
+    /** Page `at` of the list under the filter. */
+    page(at: number) {
+      const query = pageOf(store.issues, filter(), at);
+      const mine = read;
+      if (at > 0 || !mine) return query;
+      mine.plan = query.explain();
+      return watched(query, (rows) => {
+        mine.rows = { n: rows.length, at: performance.now() };
+        landed(mine);
+      });
     },
 
-    open(issue: Issue) {
-      set({ issue, detail: undefined });
-      detailOf(store, issue).then((detail) => {
-        if (state.issue?.id === issue.id) set({ detail });
-      }, failed);
+    /** How many issues the list under the filter holds. */
+    total() {
+      const query = totalOf(store.issues, filter());
+      const mine = read;
+      if (!mine) return query;
+      return watched(query, (n) => {
+        mine.total = { n, at: performance.now() };
+        landed(mine);
+      });
     },
-    close: () => set({ issue: undefined, detail: undefined }),
+
+    setFilter(patch: Partial<Filter>) {
+      const next = { ...filter(), ...patch };
+      read = { label: describe(next, filter()), from: performance.now() };
+      setFilter(next);
+    },
+
+    open: (id: string) => void setOpened(id),
+    close: () => void setOpened(undefined),
 
     edit(id: string, patch: Parameters<typeof editIssue>[2]) {
       editIssue(store, id, patch).catch(failed);
     },
 
-    create(draft: Draft) {
-      const id = crypto.randomUUID();
-      if (state.empty) set({ empty: false });
-      createIssue(store, id, draft).catch(failed);
+    create(draft: NewIssue) {
+      createIssue(store, crypto.randomUUID(), draft).catch(failed);
     },
 
-    /**
-     * Writes `count` generated issues: the first ones into the empty database, or more beside the ones it holds. The
-     * list shows them from the first batch on, and reads the rows in view again after each batch.
-     */
+    /** Writes `count` generated issues: the first ones into the empty database, or more beside the ones it holds. */
     async generate(count: number) {
-      if (state.generating) return;
-      set({ generating: { written: 0, count } });
+      if (generating()) return;
+      setGenerating({ written: 0, count });
       try {
-        appending = true;
         // The first issues are always the same ones. Later ones come from a seed of their own, so their ids are new.
-        const seed = state.empty ? 1 : crypto.getRandomValues(new Uint32Array(1))[0]! || 2;
-        const { generateMs, writeMs } = await writeIssues(store, count, seed, async (written) => {
-          set({ generating: { written, count }, empty: false });
+        const empty = (await anyIssue(store.issues).run()) === undefined;
+        const seed = empty ? 1 : crypto.getRandomValues(new Uint32Array(1))[0]! || 2;
+        const { generateMs, writeMs } = await writeIssues(store, count, seed, (written) => {
+          setGenerating({ written, count });
           post({ type: "progress", written, total: count });
-          await list.refresh();
         });
-        appending = false;
         post({ type: "generated", count, generateMs, writeMs });
-        await show(undefined, true);
       } finally {
-        appending = false;
-        set({ generating: undefined });
+        setGenerating(undefined);
       }
     },
 
+    /** Removes the database. Every tab that has it open then starts over: see `gone`. */
     destroy() {
-      store.db.dangerousDestroy().then(() => {
-        if (parent === window) location.reload();
-        else post({ type: "deleted" });
-      }, failed);
+      deleting = true;
+      deleteDatabase(name).then(leave, failed);
+    },
+
+    /** The database was removed, by this tab or another. The tab that removes it leaves once the removal is done. */
+    gone() {
+      if (!deleting) leave();
     },
   };
 }

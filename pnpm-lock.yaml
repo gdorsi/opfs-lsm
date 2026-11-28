@@ -95,9 +95,9 @@ importers:
       '@everr/otel-web':
         specifier: 0.11.0
         version: 0.11.0(@opentelemetry/api-logs@0.218.0)(@opentelemetry/api@1.10.0)(react@19.3.1)
-      '@opfs-lsm/docstore':
+      '@opfs-lsm/db':
         specifier: workspace:*
-        version: link:../../packages/docstore
+        version: link:../../packages/db
       '@opfs-lsm/kv':
         specifier: workspace:*
         version: link:../../packages/kv
@@ -350,12 +350,18 @@ importers:
         specifier: workspace:*
         version: link:../kv
     devDependencies:
+      '@solidjs/web':
+        specifier: ^2.0.3
+        version: 2.0.3(solid-js@2.0.3)
       fake-indexeddb:
         specifier: ^6.0.0
         version: 6.2.7
       fast-check:
         specifier: ^4.10.2
         version: 4.10.2
+      solid-js:
+        specifier: ^2.0.3
+        version: 2.0.3
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

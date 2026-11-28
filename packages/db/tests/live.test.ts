@@ -98,6 +98,26 @@ describe("a subscription", () => {
     expect(seen.values.map(ids)).toEqual([["i3", "i2"], ["i9", "i3"]]);
   });
 
+  it("reads a count of every document again for an insert and a delete, and not for an edit", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const seen = watch(query((q) => q.from({ i: issues }).count()));
+    await until(() => seen.values.length === 1);
+    const reads = views.views();
+
+    await issues.update("i1", (draft) => {
+      draft.status = 2;
+      draft.modified = 9;
+    });
+    await issues.upsert(issue(2, { title: "Renamed" }));
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    await issues.delete("i1");
+    await until(() => seen.values.length === 3);
+    expect(seen.values).toEqual([2, 3, 2]);
+    expect(views.views()).toBe(reads + 2);
+  });
+
   it("hands out the same object for a row that did not change", async () => {
     const { issues } = await openDb();
     await issues.insert([issue(1), issue(2), issue(3)]);

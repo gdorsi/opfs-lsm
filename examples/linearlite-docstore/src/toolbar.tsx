@@ -1,4 +1,4 @@
-import { createMemo, createSignal, onSettled, Show } from "solid-js";
+import { createSignal, isPending, onSettled, Show } from "solid-js";
 import { Dots } from "./icons.tsx";
 import { codeItems, MenuButton, type Item } from "./menu.tsx";
 import { PRIORITY_LABELS, SORTS, SORT_LABELS, STATUS_LABELS, type Code, type Filter } from "./model.ts";
@@ -9,11 +9,10 @@ const chipText = (name: "Status" | "Priority", codes: readonly Code[], labels: r
   codes.length === 0 ? name : codes.length === 1 ? labels[codes[0]!]! : `${codes.length} ${name === "Status" ? "statuses" : "priorities"}`;
 
 /** The issue total. While a count runs, the last total stays on screen, dimmed. */
-function Total(props: { total: number | undefined }) {
-  const shown = createMemo<number | undefined>((last) => props.total ?? last);
+function Total(props: { total: number }) {
   return (
-    <span id="count" class={["count", "mono", { counting: props.total === undefined && shown() !== undefined }]}>
-      {shown()?.toLocaleString("en-US")}
+    <span id="count" class={["count", "mono", { counting: isPending(() => props.total) }]}>
+      {props.total.toLocaleString("en-US")}
     </span>
   );
 }
@@ -24,7 +23,7 @@ function Total(props: { total: number | undefined }) {
  */
 export function Toolbar(props: {
   filter: Filter;
-  total: number | undefined;
+  total: number;
   data: Item[];
   progress: string | undefined;
   set(patch: Partial<Filter>): void;

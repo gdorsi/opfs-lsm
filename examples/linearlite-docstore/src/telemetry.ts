@@ -9,12 +9,11 @@ import {
   WebSDK,
   type InstrumentationContext,
 } from "@everr/otel-web";
-import type { ReadPath } from "./store.ts";
 
 export type Kpi = {
   readonly name: `linearlite.${string}`;
   readonly ms: number;
-  readonly attributes: { readonly [key: `linearlite.${string}`]: number | boolean | ReadPath | undefined };
+  readonly attributes: { readonly [key: `linearlite.${string}`]: number | boolean | string | undefined };
 };
 
 const endpoint = import.meta.env?.VITE_EVERR_INGEST_ENDPOINT;

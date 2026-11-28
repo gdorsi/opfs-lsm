@@ -1,14 +1,16 @@
-import { destroyDb } from "@opfs-lsm/kv";
+import { ClosedError, deleteDatabase } from "@opfs-lsm/db";
+import { useLiveQuery } from "@opfs-lsm/db/solid";
 import { ensureEngine } from "@opfs-lsm/kv/testing";
 import { render } from "@solidjs/web";
-import { createEffect, createMemo, createSignal, Errored, from, onSettled, Show } from "solid-js";
-import { createApp, type App, type AppState } from "./app.ts";
+import { createEffect, createSignal, Errored, latest, Loading, onSettled, Show } from "solid-js";
+import { createApp, type App, type Generating } from "./app.ts";
 import "./app.css";
 import { Compose } from "./compose.tsx";
-import { Detail } from "./detail.tsx";
+import { IssuePage } from "./detail.tsx";
 import { IssueList } from "./issues.tsx";
+import { anyIssue } from "./list.ts";
 import type { Item } from "./menu.tsx";
-import { SOURCE, failed, post, type ToDemo } from "./protocol.ts";
+import { SOURCE, failed, type ToDemo } from "./protocol.ts";
 import { openStore } from "./store.ts";
 import { Toolbar } from "./toolbar.tsx";
 
@@ -26,19 +28,21 @@ const COUNT = Number(params.get("count")) || 100_000;
 if (params.get("theme") === "dark") document.documentElement.dataset.theme = "dark";
 const n = (x: number) => x.toLocaleString("en-US");
 
-const width = (g: NonNullable<AppState["generating"]>) => `${(g.written / g.count) * 100}%`;
+const width = (g: Generating) => `${(g.written / g.count) * 100}%`;
 
 const Frame = () => <div class="topbar" />;
 
-/** The page. Until the database is open there is no `app`, and the page shows its frame only. */
+/** The page. Until the database is open and the first list is read, the page shows its frame only. */
 function Page(props: { app: App | undefined }) {
   return (
     <div class="app">
       <main class="main">
         <Show when={props.app} fallback={<Frame />}>
           {(app) => (
-            <Errored fallback={(error) => <Failed error={error()} />}>
-              <Issues app={app()} />
+            <Errored fallback={(error) => <Failed error={error()} gone={app().gone} />}>
+              <Loading fallback={<Frame />}>
+                <Issues app={app()} />
+              </Loading>
             </Errored>
           )}
         </Show>
@@ -47,13 +51,22 @@ function Page(props: { app: App | undefined }) {
   );
 }
 
-function Failed(props: { error: unknown }) {
-  createEffect(() => props.error, failed);
+/** A database removed under the page, by this tab or another, is no failure: the page starts over. */
+function Failed(props: { error: unknown; gone(): void }) {
+  createEffect(
+    () => props.error,
+    (error) => {
+      if (!(error instanceof ClosedError)) failed(error);
+      else if (error.code === "destroyed") props.gone();
+    },
+  );
   return <Frame />;
 }
 
 function Issues(props: { app: App }) {
-  const state = createMemo(() => from(props.app.subscribe));
+  const total = useLiveQuery(() => props.app.total());
+  const any = useLiveQuery(() => anyIssue(props.app.store.issues));
+  const empty = () => any() === undefined;
   const [composing, setComposing] = createSignal(false);
   const [createMore, setCreateMore] = createSignal(false);
   const generate = () => void props.app.generate(COUNT).catch(failed);
@@ -73,17 +86,19 @@ function Issues(props: { app: App }) {
   return (
     <>
       <Toolbar
-        filter={state().filter}
-        total={state().total}
+        // The filter as picked, before the list under it is read: the chips answer the click at once.
+        filter={latest(props.app.filter)}
+        total={total()}
         data={data}
-        progress={state().generating && !state().empty ? width(state().generating!) : undefined}
-        set={(patch) => props.app.filter(patch)}
+        progress={props.app.generating() && !empty() ? width(props.app.generating()!) : undefined}
+        set={(patch) => props.app.setFilter(patch)}
         create={() => setComposing(true)}
       />
-      <Show when={state().empty} fallback={<IssueList app={props.app} />}>
+      <IssueList app={props.app} total={total()} hidden={empty()} />
+      <Show when={empty()}>
         <div class="empty">
           <Show
-            when={state().generating}
+            when={props.app.generating()}
             fallback={
               <div id="start">
                 <h2>No issues yet</h2>
@@ -108,7 +123,13 @@ function Issues(props: { app: App }) {
           </Show>
         </div>
       </Show>
-      <Show when={state().issue}>{(issue) => <Detail app={props.app} issue={issue()} detail={state().detail} />}</Show>
+      <Show when={props.app.opened()}>
+        {(id) => (
+          <Loading>
+            <IssuePage app={props.app} id={id()} />
+          </Loading>
+        )}
+      </Show>
       <Show when={composing()}>
         <Compose create={(draft) => props.app.create(draft)} close={() => setComposing(false)} more={createMore()} setMore={setCreateMore} />
       </Show>
@@ -121,10 +142,9 @@ async function main() {
   render(() => <Page app={opened()} />, document.getElementById("root")!);
   // The wasm module is fetched and compiled before the clock starts, so network time stays out of the open time.
   await ensureEngine();
-  const t0 = performance.now();
-  const store = await openStore(NAME);
-  const openedMs = performance.now() - t0;
-  const app = createApp(store);
+  const from = performance.now();
+  const db = await openStore(NAME);
+  const app = createApp(db.collections, NAME, { from, ms: performance.now() - from });
   setOpened(app);
 
   addEventListener("message", (e: MessageEvent<ToDemo & { source?: string }>) => {
@@ -132,16 +152,12 @@ async function main() {
     if (e.data.type === "generate") void app.generate(e.data.count).catch(failed);
     else if (e.data.type === "delete") app.destroy();
   });
-
-  const { rows, at } = await app.start();
-  post({ type: "opened", ms: openedMs, issues: rows });
-  if (rows > 0) post({ type: "first-rows", ms: at - t0 });
   void dropRetired();
 }
 
 /**
  * The databases earlier builds stored their issues in: the TanStack DB demo's, the unversioned one, and every lower
- * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back. `destroyDb` on a
+ * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back. `deleteDatabase` on a
  * name with nothing stored creates nothing, so it runs on every load.
  */
 const RETIRED = [
@@ -151,7 +167,7 @@ const RETIRED = [
 ].filter((name) => name !== NAME);
 
 async function dropRetired(): Promise<void> {
-  for (const name of RETIRED) await destroyDb(name).catch(() => undefined);
+  for (const name of RETIRED) await deleteDatabase(name).catch(() => undefined);
 }
 
 main().catch(failed);

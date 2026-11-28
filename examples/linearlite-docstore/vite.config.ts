@@ -24,5 +24,5 @@ export default defineConfig({
   // Module workers: kv's SharedWorker loads its wasm glue with a dynamic import, which a classic worker cannot do.
   worker: { format: "es" },
   // Serve the workspace packages as real files, so kv finds `engine.wasm` next to its own module.
-  optimizeDeps: { exclude: ["@opfs-lsm/kv", "@opfs-lsm/docstore"] },
+  optimizeDeps: { exclude: ["@opfs-lsm/kv", "@opfs-lsm/docstore", "@opfs-lsm/db"] },
 });

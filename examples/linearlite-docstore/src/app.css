@@ -76,11 +76,12 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .scroller { flex: 1; overflow-y: auto; position: relative; }
 .rows { position: relative; width: 100%; }
 .row, .skel { position: absolute; top: 0; left: 0; right: 0; height: var(--row); display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); cursor: default; }
-.row { cursor: pointer; }
+.row { cursor: pointer; transition: opacity 150ms cubic-bezier(0.22, 1, 0.36, 1); }
+.row.stale { opacity: 0.5; }
 .row:hover { background: var(--hover); }
-.row .id { width: 64px; flex: none; color: var(--faint); font-variant-numeric: tabular-nums; }
+.row .id { width: 64px; flex: none; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .date { width: 56px; flex: none; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row .date { width: 88px; flex: none; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .icon-btn { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 5px; flex: none; }
 .row .icon-btn:hover { background: var(--hover); }
 .avatar { width: 20px; height: 20px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; flex: none; }

@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@everr/otel-web": "0.11.0",
-    "@opfs-lsm/docstore": "workspace:*",
+    "@opfs-lsm/db": "workspace:*",
     "@opfs-lsm/kv": "workspace:*",
     "@solidjs/web": "^2.0.3",
     "solid-js": "^2.0.3",

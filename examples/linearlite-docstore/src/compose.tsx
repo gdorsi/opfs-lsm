@@ -1,14 +1,14 @@
 import { createSignal, onSettled } from "solid-js";
 import { CodeLabel, codeItems, MenuButton } from "./menu.tsx";
 import type { Code } from "./model.ts";
-import type { Draft } from "./store.ts";
+import type { NewIssue } from "./store.ts";
 
 /**
  * The dialog for a new issue. `create` gets the draft when it has a title. With "Create more" on, the dialog stays
  * open for the next issue, empty but with the same status and priority, as in Linear. `more` and `setMore` hold that
  * switch, which outlives the dialog.
  */
-export function Compose(props: { create(draft: Draft): void; close(): void; more: boolean; setMore(more: boolean): void }) {
+export function Compose(props: { create(draft: NewIssue): void; close(): void; more: boolean; setMore(more: boolean): void }) {
   let titleField!: HTMLInputElement;
   let description!: HTMLTextAreaElement;
   const [picked, setPicked] = createSignal<{ status: Code; priority: Code }>({ status: 1, priority: 4 });
