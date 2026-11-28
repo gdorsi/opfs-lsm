@@ -2,7 +2,7 @@ import type { IndexInfo } from "@opfs-lsm/docstore";
 import { describe, expect, it } from "vitest";
 import { IR, root, type Buildable, type QueryBuilder } from "../src/builder.js";
 import type { Collection } from "../src/database.js";
-import { and, eq, gt, gte, ilike, inArray, like, lt, lte, not, or, orderKeyOf } from "../src/expr.js";
+import { and, eq, gt, gte, ilike, inArray, like, lt, lte, not, or, orderKeyOf, refProxy, type Ref } from "../src/expr.js";
 import { planQuery, summarize, type Plan } from "../src/plan.js";
 
 type Issue = {
@@ -216,5 +216,51 @@ describe("the choice of a plan", () => {
     const q = from().where(({ i }) => and(inArray(i.status, many), inArray(i.priority, many)));
     expect(ranges(q)).toEqual([{ index: "byStatus", eq: [many] }]);
     expect(explain(q)).toMatchObject({ exact: false });
+  });
+});
+
+describe("what the planner leaves to the filter", () => {
+  const nested = new Map<string, IndexInfo>([["byNested", sorted("n.m")], ...indexes]);
+  type Nested = { id: string; n: { m: number }; "n.m": number; "": number; other: number };
+  const docs = { name: "docs" } as Collection<Nested>;
+  const only = () => root.from({ d: docs });
+  const scan = { kind: "scan", ordered: true, exact: false };
+
+  it("reads a nested field through its index, and a field whose name holds a dot or is empty through none", () => {
+    expect(summarize(plan(only().where(({ d }) => eq(d.n.m, 1)), nested))).toMatchObject({ kind: "index", index: "byNested" });
+    expect(summarize(plan(only().where(({ d }) => eq(d["n.m"], 1)), nested))).toEqual(scan);
+    expect(summarize(plan(only().where(({ d }) => gt(d[""], 1)), nested))).toEqual(scan);
+  });
+
+  it("reads no index for a condition that is no comparison of one field with values", () => {
+    expect(explain(from().where(({ i }) => i.done))).toEqual(scan);
+    expect(explain(from().where(({ i }) => eq(i.status, i.priority)))).toEqual(scan);
+    expect(explain(from().where(() => eq(1 as never, 2)))).toEqual(scan);
+    expect(explain(from().where(({ i }) => inArray(i.status, i.tags as never)))).toEqual(scan);
+    expect(explain(from().where(({ i }) => inArray(i.status, "12" as never)))).toEqual(scan);
+    expect(explain(from().where(({ i }) => gt(i.created, i.modified)))).toEqual(scan);
+    expect(explain(from().where(({ i }) => like(i.title, i.key as never)))).toEqual(scan);
+    expect(explain(from().where(({ i }) => like(i.title, 5 as never)))).toEqual(scan);
+  });
+
+  it("reads no index for a node that is no function, which a query that compiles never holds", () => {
+    const ir = { ...from()[IR], where: [{ kind: "val", value: true } as const, { kind: "ref", alias: "i", path: ["done"] } as const] };
+    expect(summarize(planQuery(ir, orderKeyOf(ir.orderBy), indexes))).toEqual(scan);
+  });
+
+  it("reads no index for a field of another source", () => {
+    const other = refProxy("j") as Ref<Issue>;
+    expect(explain(from().where(() => eq(other.status, 1)))).toEqual(scan);
+    expect(explain(from().where(() => gt(other.created, 1)))).toEqual(scan);
+  });
+
+  it("keeps the tighter bound, and the open one when two bounds on one side are equal", () => {
+    const one = (where: (i: Ref<Issue>) => ReturnType<typeof and>) => ranges(from().where(({ i }) => where(i)));
+    expect(one((i) => and(gte(i.created, 5), gt(i.created, 5)))).toEqual([{ index: "byCreated", gt: 5, lt: "" }]);
+    expect(one((i) => and(gt(i.created, 5), gte(i.created, 5)))).toEqual([{ index: "byCreated", gt: 5, lt: "" }]);
+    expect(one((i) => and(lte(i.created, 5), lt(i.created, 5)))).toEqual([{ index: "byCreated", gt: true, lt: 5 }]);
+    expect(one((i) => and(lt(i.created, 5), lte(i.created, 5)))).toEqual([{ index: "byCreated", gt: true, lt: 5 }]);
+    expect(one((i) => and(gt(i.created, 5), gt(i.created, 9)))).toEqual([{ index: "byCreated", gt: 9, lt: "" }]);
+    expect(one((i) => and(gt(i.created, 9), gt(i.created, 5)))).toEqual([{ index: "byCreated", gt: 9, lt: "" }]);
   });
 });
