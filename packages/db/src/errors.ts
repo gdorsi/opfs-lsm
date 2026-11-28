@@ -127,8 +127,9 @@ export function wrap(err: unknown, collection = ""): unknown {
     // The ids are checked before docstore sees them, so what is left is a value an index cannot hold.
     case "document":
       return new ValidationError("indexed-field", err.message, collection);
+    case "version":
     case "schema":
-      return new SchemaError(/^version \d+ is stored with/.test(err.message) ? "version" : "catalog", err.message, { cause: err });
+      return new SchemaError(err.code === "version" ? "version" : "catalog", err.message, { cause: err });
     case "index-failed":
       return new StorageError("index-failed", err.message, { cause: err });
     // "query" and "cursor" would be a bug of the planner.

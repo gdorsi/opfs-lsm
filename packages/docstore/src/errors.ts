@@ -6,6 +6,8 @@
 export type DocStoreErrorCode =
   /** The stored catalog and this schema disagree in a way this handle cannot work with. */
   | "schema"
+  /** This version is stored with other collections or indexes than the schema declares. */
+  | "version"
   /** A write would give two documents one value of a unique index. `ids` is [incoming, owner]. */
   | "unique"
   /** A query on an index whose backfill met data it cannot hold. `ids` names the documents. */
