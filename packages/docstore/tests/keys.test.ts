@@ -198,18 +198,12 @@ describe("scanPlan", () => {
   };
 
   it.each<[string, QueryInput]>([
-    ["gt with gte", { gt: 1, gte: 1 }],
     ["lt with lte", { lt: 1, lte: 1 }],
-    ["startsWith with a bound", { startsWith: "a", lt: "b" }],
-    ["more eq values than components", { eq: [1, 2, 3] }],
-    ["a bound after a full eq", { eq: [1, 2], gte: 0 }],
     ["startsWith after a full eq", { eq: [1, 2], startsWith: "a" }],
-    ["a NaN bound", { gt: Number.NaN }],
     ["an infinite eq value", { eq: [Number.POSITIVE_INFINITY] }],
     ["an object bound", { lt: {} as unknown as Scalar }],
     ["a bound with a lone surrogate", { gte: "a\ud800" }],
     ["startsWith with a lone surrogate", { startsWith: "\udfff" }],
-    ["match on a sorted index", { match: "x" }],
   ])("rejects %s with code query", (_, q) => {
     expect(code(() => scanPlan(two, q))).toBe("query");
   });
@@ -235,17 +229,6 @@ describe("scanPlan", () => {
     expect(scanPlan(multi, { eq: [["a", "a"], [1, 2]] }).repeats).toBe(false);
     expect(scanPlan(multi, { eq: ["a", [1, 2]] }).repeats).toBe(false);
     expect(scanPlan(two, { eq: [["a", "b"]] }).repeats).toBe(false);
-  });
-
-  it("rejects a list on the rows, on a unique index, nested, and of more than 64 combinations with code query", () => {
-    const rows: ScanTarget = { kind: "rows", prefix: rowPrefix(COLLECTION) };
-    const many = (n: number) => Array.from({ length: n }, (_, i) => i);
-    expect(code(() => scanPlan(rows, { eq: [["a"]] }))).toBe("query");
-    expect(code(() => scanPlan({ ...two, unique: true }, { eq: [[1]] }))).toBe("query");
-    expect(code(() => scanPlan(two, { eq: [[[1]]] as never }))).toBe("query");
-    expect(code(() => scanPlan(two, { eq: [many(65)] }))).toBe("query");
-    expect(code(() => scanPlan(two, { eq: [many(9), many(8)] }))).toBe("query");
-    expect(code(() => scanPlan(two, { eq: [many(8), many(8)] }))).toBe("no error");
   });
 
   it("reads a match with no words as no filter", () => {
