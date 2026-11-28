@@ -9,6 +9,7 @@
     [
       "@opfs-lsm/kv",
       "@opfs-lsm/docstore",
+      "@opfs-lsm/db",
       "@opfs-lsm/tanstack-db",
       "@opfs-lsm/yjs",
       "@opfs-lsm/automerge",

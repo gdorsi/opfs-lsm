@@ -33,6 +33,7 @@ Run every row that matches the diff. When several rows match, run `formal:kv`, t
 | In-page `EngineHost` | `drive two-tab-local`. |
 | `reserveBytes`, `onStorageFull`, the reserve file, the storage-full offer or its Web Lock | `tests/reserve.test.ts`, `tests/reserve-step.test.ts`, `tests/wal-full.test.ts`, and `KV_WALFULL_SEEDS=400` on `tests/sim/wal-full-random.test.ts` (`KV_WALFULL_FIRST=<seed> KV_WALFULL_SEEDS=1` replays a seed), then `drive quota`. Add `formal:kv` when the WAL append changed. |
 | `packages/docstore/src`, or a kv change claimed to speed up documents | `drive bench tracker/`. For a performance claim, run it with `--reps 5` before and after, then `node bench/cli.ts compare`. |
+| `packages/db/src` | `pnpm --filter @opfs-lsm/db test`. After a change to the planner or the executor, `DB_RUNS=2000` on `tests/plan-property.test.ts`. After a change to the dirty rule, the feed or the planner, `DB_RUNS=2000` on `tests/live-property.test.ts`. Each prints its seed, and `DB_SEED` replays it. |
 | `packages/tanstack-db/src` | `pnpm --filter @opfs-lsm/tanstack-db test`, with `TSDB_DIFF_RUNS=2000` after a change to the planner or the on-demand run. For a performance claim, `drive bench tanstack/ tanstack-ondemand/ tanstack-live/` with `--reps 5` before and after, then `node bench/cli.ts compare`. |
 | `examples/linearlite-tanstackdb` | `pnpm --filter @opfs-lsm/example-linearlite-tanstackdb test`, `check` and `build`. For a change to its reads, counts or sync, drive the app in a browser against a server seeded with 100k issues, in two tabs and offline. |
 | `examples/notes-manager-automerge` | `pnpm --filter @opfs-lsm/example-notes-manager-automerge test`, `check` and `build`. For a change to the editor, the tree, the bodies or the UI, run the browser proof (`examples/notes-manager-automerge/DESIGN.md`, "Browser proof") with `agent-browser`. |
@@ -252,7 +253,7 @@ The Sync commit in `verify-kv` is the commit where those models were last confir
 pnpm test
 ```
 
-Exit 0. The root script checks that `README.md` still contains its required phrases and builds the six packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, `@opfs-lsm/tanstack-db` and `@opfs-lsm/tanstack-query` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
+Exit 0. The root script checks that `README.md` still contains its required phrases and builds the seven packages. Then it runs the unit suites of `@opfs-lsm/kv`, `@opfs-lsm/docstore`, `@opfs-lsm/db`, `@opfs-lsm/yjs`, `@opfs-lsm/automerge`, `@opfs-lsm/tanstack-db` and `@opfs-lsm/tanstack-query` (`test:suites`) while it builds the example apps (`test:examples`). A failure in either fails the command.
 
 The kv suite includes a model-based test (`packages/kv/tests/sim/model.test.ts`): random histories of writes, reads, views, ingests, compactions and reopens on one handle, checked against a log-prefix oracle, with `checkDatabase` (`tests/sim/check-database.ts`) walking the WAL, manifest and runs after every run. It runs 100 + 25 histories by default. For a longer sweep, or to replay a failure from the seed, path and `replayPath` it prints:
 
