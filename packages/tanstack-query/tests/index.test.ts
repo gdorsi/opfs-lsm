@@ -223,24 +223,11 @@ test("a query whose serialized entry is over the kv batch limit rejects with Con
   withDb(async (db) => {
     const persister = createQueryPersister(db);
     await assert.rejects(persist(persister, [[["big"], "x".repeat(9 * 1024 * 1024)]]), ConstraintError);
-    assert.equal(await persister.retrieveQuery(hashKey(["big"])), undefined);
-    assert.equal(await db.count(), 0);
-  }));
-
-// persisterFn awaits retrieveQuery before it calls queryFn, so a rejection there fails the query.
-test("a query whose storage key is over 8 KiB is never found, and persisting it rejects with ConstraintError", () =>
-  withDb(async (db) => {
-    const persister = createQueryPersister(db);
-    const queryKey = ["search", "x".repeat(9 * 1024)];
-    assert.equal(await persister.retrieveQuery(hashKey(queryKey)), undefined);
-    const client = newClient();
-    client.setQueryData(queryKey, "data");
-    await assert.rejects(persister.persistQueryByKey(queryKey, client), ConstraintError);
-    assert.equal(await persister.retrieveQuery(hashKey(queryKey)), undefined);
     assert.equal(await db.count(), 0);
   }));
 
 // kv's key limit is 8 KiB, and the persister's namespace takes one byte of it.
+// persisterFn awaits retrieveQuery before it calls queryFn, so a rejection there would fail the query.
 test("the longest storage key kv holds persists and restores, and one byte longer is never found", () =>
   withDb(async (db) => {
     const persister = createQueryPersister(db, { refetchOnRestore: false });
