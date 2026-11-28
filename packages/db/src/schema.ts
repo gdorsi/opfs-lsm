@@ -29,8 +29,8 @@ type Validator = StandardSchemaV1<unknown, JsonDoc>;
 type InferInput<V extends Validator> = NonNullable<V["~standard"]["types"]>["input"];
 type InferOutput<V extends Validator> = NonNullable<V["~standard"]["types"]>["output"];
 
-type Fields<T extends JsonDoc> = Parameters<CollectionDecl<T>["unique"]>[1];
 type TextArgs<T extends JsonDoc> = Parameters<CollectionDecl<T>["text"]>;
+type Fields<T extends JsonDoc> = TextArgs<T>[1];
 
 declare const types: unique symbol;
 
@@ -46,7 +46,7 @@ type Fresh<Names, N extends string> = N extends Names ? "an index of this name i
  */
 export interface CollectionDef<T extends JsonDoc, In = T, Names extends string = never> {
   readonly [types]: { readonly doc: T; readonly input: In };
-  /** A sorted index. A first field written `"tags[]"` indexes each element of an array, and no query reads such an index yet. */
+  /** A sorted index. */
   index<const N extends string>(name: Fresh<Names, N>, by: Fields<T>): CollectionDef<T, In, Names | N>;
   /** A sorted index in which no two documents share the values at `by`. */
   unique<const N extends string>(name: Fresh<Names, N>, by: Fields<T>): CollectionDef<T, In, Names | N>;
@@ -120,8 +120,6 @@ export function writeRules(name: string, def: unknown, indexes: Iterable<IndexIn
   const scalar = new Set<string>();
   const text = new Set<string>();
   for (const info of indexes) {
-    // No plan reads a multi index, so a document may be absent from one.
-    if (info.kind === "multi") continue;
     for (const field of info.by) scalar.add(field);
     if (info.text !== undefined) text.add(info.text);
   }

@@ -266,8 +266,7 @@ type Planned = {
  * The plan of a query whose rows come in `order`. With a limit, an index
  * that yields the order comes first, since the read then stops early. A
  * count and a query with no limit read every match, so the index that
- * reaches the fewest other rows comes first. A multi index is never read:
- * it holds a document once per element.
+ * reaches the fewest other rows comes first.
  */
 export function planQuery(query: Planned, order: OrderKey, indexes: ReadonlyMap<string, IndexInfo>): Plan {
   const facts = factsOf(query.where, query.from.alias);
@@ -277,7 +276,7 @@ export function planQuery(query: Planned, order: OrderKey, indexes: ReadonlyMap<
   const wantsFirst = query.limit !== undefined && query.shape !== "count";
   let best = candidate(undefined, undefined, facts, order, wantsFirst)!;
   for (const [name, info] of indexes) {
-    const c = info.kind === "multi" ? undefined : candidate(name, info, facts, order, wantsFirst);
+    const c = candidate(name, info, facts, order, wantsFirst);
     if (c && higher(c.score, best.score)) best = c;
   }
   const { score: _, ...plan } = best;

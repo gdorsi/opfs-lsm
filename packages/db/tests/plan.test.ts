@@ -26,7 +26,6 @@ const indexes = new Map<string, IndexInfo>([
   ["byStatus", sorted("status", "priority", "modified")],
   ["byPriority", sorted("priority", "status", "modified")],
   ["byKey", { kind: "sorted", by: ["key"], unique: true }],
-  ["byTag", { kind: "multi", by: ["tags[]"], unique: false }],
 ]);
 
 const issues = { name: "issues" } as Collection<Issue>;
@@ -207,8 +206,7 @@ describe("the choice of a plan", () => {
     expect(explain(from().where(({ i }) => gt(i.key, "\uD800")))).toEqual({ kind: "scan", ordered: true, exact: false });
   });
 
-  it("never reads a multi index, and uses a like only as the words of a text index", () => {
-    expect(explain(from().where(({ i }) => eq(i.tags as never, "a")))).toEqual({ kind: "scan", ordered: true, exact: false });
+  it("uses a like only as the words of a text index", () => {
     expect(explain(from().where(({ i }) => like(i.key, "K-%")))).toEqual({ kind: "scan", ordered: true, exact: false });
     expect(explain(from().where(({ i }) => like(i.title, "%")))).toEqual({ kind: "scan", ordered: true, exact: false });
   });

@@ -8,7 +8,7 @@ type Issue = { id: string; title: string; status: number; assignee?: string | nu
 type User = { id: string; email: string | null; name: string };
 
 const collections = {
-  issues: collection<Issue>().index("byStatus", ["status", "meta.due"]).text("search", "status", "title").index("byTag", "tags[]"),
+  issues: collection<Issue>().index("byStatus", ["status", "meta.due"]).text("search", "status", "title"),
   users: collection<User>().unique("byEmail", "email"),
 };
 
@@ -120,13 +120,6 @@ describe("the write gate", () => {
     const nulls = { id: "a", title: null, status: null, meta: { due: null } } as unknown as Issue;
     await issues.insert(nulls);
     expect(await issues.get("a")).toEqual(nulls);
-  });
-
-  it("leaves the fields of a multi index optional", async () => {
-    const { issues } = (await openDb(collections)).collections;
-    await issues.insert(issue("a"));
-    await issues.insert(issue("b", { tags: ["x", "y"] }));
-    expect((await issues.get("a"))?.tags).toBeUndefined();
   });
 
   it("reports a value the storage cannot index", async () => {
@@ -275,11 +268,13 @@ export function types(db: Database<typeof collections>, tasks: Collection<{ id: 
   void tasks.insert({ id: "t" });
   void tasks.get("t").then((task) => task?.done satisfies boolean | undefined);
 
-  collection<Issue>().index("a", "status").index("b", ["status", "meta.due"]).unique("c", "title").text("d", "meta.due", "title").index("e", "tags[]");
+  collection<Issue>().index("a", "status").index("b", ["status", "meta.due"]).unique("c", "title").text("d", "meta.due", "title");
   // @ts-expect-error not a field of Issue
   collection<Issue>().index("a", "nope");
-  // @ts-expect-error an array field is written "tags[]"
+  // @ts-expect-error an array is no index value
   collection<Issue>().index("a", "tags");
+  // @ts-expect-error db declares no multi index
+  collection<Issue>().index("a", "tags[]");
   // @ts-expect-error an object is no index value
   collection<Issue>().index("a", "meta");
   // @ts-expect-error status is not text

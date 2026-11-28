@@ -77,8 +77,6 @@ Each index method takes the index name, then `by`: a field, a dot path such as `
 - `unique` declares a sorted index in which no two documents share the values at `by`.
 - `text` declares a sorted index that also holds the words of a string field, its third argument. `like` and `ilike` on that field search those words.
 
-**Note.** A first field written `"tags[]"` indexes each element of an array. No query reads such an index yet.
-
 ## Write
 
 ```ts

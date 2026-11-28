@@ -24,8 +24,7 @@ export const rowsDef = collection<Row>()
   .index("byCBA", ["c", "b", "a"])
   .index("byNested", "n.m")
   .unique("byU", "u")
-  .text("search", ["c", "a"], "t")
-  .index("byTag", "tags[]");
+  .text("search", ["c", "a"], "t");
 
 const scalar: fc.Arbitrary<Scalar> = fc.constantFrom<Scalar>(null, false, true, -1, 0, 1, 1.5, 2, "", "a", "b", "é", "\u{1F600}");
 const small: fc.Arbitrary<number | null> = fc.constantFrom(null, 0, 1, 2, 3);
