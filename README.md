@@ -17,7 +17,7 @@ Use another store in these cases:
 
 - **Your users run older browsers.** kv is [Baseline 2026](docs/browser-support.md): every major browser has run it since May 2026, when Chrome on Android added SharedWorker. Samsung Internet and Android WebView run it without SST files, so it never compacts and keeps the whole database in each tab's memory. So does Safari 16 to 25 wherever its SharedWorker cannot write files [without `createWritable()`](docs/browser-support.md#without-createwritable).
 - **Your app stores little and writes one record at a time.** IndexedDB writes a single awaited record about as fast, and it loads no SharedWorker and no wasm engine.
-- **You need SQL.** opfs-lsm has no query language. docstore reads only through the indexes you declare in its schema.
+- **You need SQL.** opfs-lsm has no SQL. db queries use TanStack DB's query syntax, and each query reads one collection, so there are no joins. A query is fast only through an index you declare. With no index that fits, it reads the whole collection.
 
 ## Packages
 
@@ -32,12 +32,13 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 
 ### Building blocks
 
+- **[`@opfs-lsm/db`](packages/db)** keeps your app's documents in typed collections on docstore, and checks each write with a Standard Schema validator before it stores anything. Live queries use TanStack DB's query syntax, read through the indexes you declare, and update when a write from any tab changes their result. Its own errors are typed classes with a fixed `_tag` and `code`.
 - **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. A Standard Schema validator checks the writes of a collection. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
 - **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a reserve that gives your app room to free space when the browser refuses a write.
 
 ## Set it up
 
-Every package runs on a kv database, so setup starts the same way.
+Every package except db runs on a kv database that your app opens, so setup starts the same way. db opens its own database with `openDatabase`, as [its page](packages/db) shows.
 
 1. Install `@opfs-lsm/kv` and the package you use. Each package page lists the other packages it needs.
 2. Open the database when your app starts. Every tab that passes the same `name` shares it.
@@ -63,7 +64,7 @@ kv is fastest when it reads local data and writes in batches. These rules help y
 
 ### Open one database for the whole app
 
-Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. Pass the same `db` to every package.
+Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. Pass the same `db` to every package that takes one.
 
 Closing an Automerge storage also closes its database, so close that storage last.
 
