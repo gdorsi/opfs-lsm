@@ -3,7 +3,7 @@ import { createSignal } from "solid-js";
 import { anyIssue, pageOf, totalOf } from "./list.ts";
 import { DEFAULT_FILTER, describe, type Filter, type Store } from "./model.ts";
 import { failed, post } from "./protocol.ts";
-import { createIssue, editIssue, writeIssues, type Draft } from "./store.ts";
+import { createIssue, editIssue, writeIssues, type NewIssue } from "./store.ts";
 
 /** A run of generated issues: the first ones into the empty database, or more beside the ones it holds. */
 export type Generating = { readonly written: number; readonly count: number };
@@ -108,7 +108,7 @@ export function createApp(store: Store, name: string, opening: { readonly from: 
       editIssue(store, id, patch).catch(failed);
     },
 
-    create(draft: Draft) {
+    create(draft: NewIssue) {
       createIssue(store, crypto.randomUUID(), draft).catch(failed);
     },
 

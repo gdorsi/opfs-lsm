@@ -92,10 +92,10 @@ export async function writeIssues(
   }
 }
 
-export type Draft = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };
+export type NewIssue = Pick<Issue, "title" | "status" | "priority"> & { readonly description: string };
 
 /** A new issue under `id`, with its description: two writes, the description first. */
-export async function createIssue({ issues, details }: Store, id: string, { description, ...fields }: Draft): Promise<void> {
+export async function createIssue({ issues, details }: Store, id: string, { description, ...fields }: NewIssue): Promise<void> {
   const now = Date.now();
   await details.insert({ id, description, comments: [] });
   await issues.insert({ id, ...fields, username: "you", created: now, modified: now });
