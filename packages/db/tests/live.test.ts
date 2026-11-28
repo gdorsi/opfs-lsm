@@ -292,6 +292,111 @@ describe("a subscription that follows the changes without a read", () => {
     expect(read()).toBe(0);
   });
 
+  it("keeps a list with no limit in order for an insert, a delete, a move and an edit, and keeps the rows that did not change", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 }), issue(5)]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified, "desc"));
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+    const base = views.views();
+    const next = async (change: () => Promise<unknown>) => {
+      const n = seen.values.length;
+      await change();
+      await until(() => seen.values.length === n + 1);
+      return seen.values.at(-1) as Issue[];
+    };
+
+    expect(ids(seen.values[0])).toEqual(["i5", "i2", "i1"]);
+    expect(ids(await next(() => issues.insert(issue(4))))).toEqual(["i5", "i4", "i2", "i1"]);
+    const before = seen.values.at(-1) as Issue[];
+    const renamed = await next(() => issues.update("i2", (draft) => void (draft.title = "Renamed")));
+    expect(renamed.map((r) => r.title)).toEqual(["Issue 5", "Issue 4", "Renamed", "Issue 1"]);
+    expect(renamed[0]).toBe(before[0]);
+    expect(renamed[1]).toBe(before[1]);
+    expect(renamed[3]).toBe(before[3]);
+    expect(renamed).not.toBe(before);
+    expect(ids(await next(() => issues.update("i1", (draft) => void (draft.modified = 9))))).toEqual(["i1", "i5", "i4", "i2"]);
+    expect(ids(await next(() => issues.update("i3", (draft) => void (draft.status = 1))))).toEqual(["i1", "i5", "i4", "i3", "i2"]);
+    expect(ids(await next(() => issues.update("i5", (draft) => void (draft.status = 2))))).toEqual(["i1", "i4", "i3", "i2"]);
+    expect(ids(await next(() => issues.delete("i4")))).toEqual(["i1", "i3", "i2"]);
+    expect(ids(await next(() => issues.insert([issue(6), issue(7), issue(8, { status: 2 })])))).toEqual(["i1", "i7", "i6", "i3", "i2"]);
+    // A write that touches no row of the result is no new value.
+    await issues.update("i8", (draft) => void (draft.title = "Elsewhere"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values).toHaveLength(8);
+    expect(read()).toBe(0);
+    expect(views.views()).toBe(base);
+    expect(await open.run()).toEqual(seen.values.at(-1));
+  });
+
+  it("places rows by the fields a select renames", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(3)]);
+    const named = query((q) =>
+      q
+        .from({ i: issues })
+        .where(({ i }) => eq(i.status, 1))
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ key: i.id, at: i.modified, title: i.title })),
+    );
+    const seen = watch(named);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+
+    await issues.insert(issue(2));
+    await until(() => seen.values.length === 2);
+    expect(seen.values[1]).toEqual([
+      { key: "i1", at: 1, title: "Issue 1" },
+      { key: "i2", at: 2, title: "Issue 2" },
+      { key: "i3", at: 3, title: "Issue 3" },
+    ]);
+    expect(seen.values[1]![0]).toBe(seen.values[0]![0]);
+    await issues.update("i2", (draft) => void (draft.status = 5));
+    await issues.update("i3", (draft) => void (draft.title = "Three"));
+    await until(() => seen.values.length === 4);
+    expect(seen.values[3]!.map((r) => r.title)).toEqual(["Issue 1", "Three"]);
+    expect(read()).toBe(0);
+    expect(await named.run()).toEqual(seen.values.at(-1));
+  });
+
+  it("reads again for a select that drops a field of the order, and for a plan on a text index", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(3)]);
+    const dropped = query((q) =>
+      q
+        .from({ i: issues })
+        .where(({ i }) => eq(i.status, 1))
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ title: i.title })),
+    );
+    const text = query((q) => q.from({ i: issues }).orderBy(({ i }) => i.modified));
+    expect(text.explain()).toMatchObject({ kind: "index", index: "byModified" });
+    const seen = [watch(dropped), watch(text)] as const;
+    await until(() => seen.every((s) => s.values.length === 1));
+    const read = reads(issues);
+
+    await issues.insert(issue(2));
+    await until(() => seen.every((s) => s.values.length === 2));
+    expect(seen[0].values[1]).toEqual([{ title: "Issue 1" }, { title: "Issue 2" }, { title: "Issue 3" }]);
+    expect(ids(seen[1].values[1] as Issue[])).toEqual(["i1", "i2", "i3"]);
+    expect(read()).toBeGreaterThan(0);
+  });
+
+  it("places a document an index does not hold as a read does: it is not in the result", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified));
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    // docstore takes a document that has no value at an indexed field, and gives it no entry.
+    await tableOf(issues).docs.put({ id: "i3", title: "No status", modified: 3 } as never);
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i2", "i4"]);
+    expect(await open.run()).toEqual(seen.values[1]);
+  });
+
   it("reads again for a count with a residual filter and for a limited window", async () => {
     const { issues } = await openDb();
     await issues.insert([issue(1), issue(2)]);
@@ -317,6 +422,23 @@ describe("a subscription that follows the changes without a read", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(total.values).toEqual([0, 5]);
     expect(list.values.map((rows) => rows.length)).toEqual([0, 5]);
+  });
+
+  it("reads again after a gap, and goes on patching from the new result", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const total = watch(query((q) => q.from({ i: issues }).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await tableOf(issues).docs.clear();
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const read = reads(issues);
+    await issues.insert(issue(3));
+    await until(() => total.values.length === 3 && list.values.length === 3);
+    expect(total.values).toEqual([2, 0, 1]);
+    expect(list.values.map(ids)).toEqual([["i1", "i2"], [], ["i3"]]);
+    expect(read()).toBe(0);
   });
 });
 
@@ -439,7 +561,7 @@ describe("the end of a subscription", () => {
   it("is a ClosedError destroyed when the database is deleted while a read is in flight", async () => {
     const name = freshName();
     const { issues, views } = await openDb(name);
-    const seen = watch(query((q) => q.from({ i: issues })));
+    const seen = watch(query((q) => q.from({ i: issues }).limit(10)));
     await until(() => seen.values.length === 1);
     const reads = views.views();
     views.hold();
@@ -453,7 +575,7 @@ describe("the end of a subscription", () => {
 
   it("is the storage's failure when a read fails, and later writes call nothing", async () => {
     const { issues, views } = await openDb();
-    const all = query((q) => q.from({ i: issues }));
+    const all = query((q) => q.from({ i: issues }).limit(10));
     const seen = watch(all);
     await until(() => seen.values.length === 1);
     views.fail(new CorruptDatabaseError("a block failed its checksum"));

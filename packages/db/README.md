@@ -222,9 +222,12 @@ An index serves an order when the `orderBy` fields are the index's fields after 
 
 A row whose content did not change is the same object as in the previous result. A keyed list, such as Solid's `createProjection` or a React list with `key`, then redraws only the rows that changed. Rows are shared by every subscriber of the query and by later results: read them, and write changes to the collection, never to a row.
 
-A write reads again only the queries it may affect, except a count with no `offset` or `limit` whose plan is exact on an index declared with `index` (the `count()` rows of the table above). The write patches that count from its own index entries: the count moves by those it added and removed in the plan's ranges, with no read.
+A write reads again only the queries it may affect, except two kinds that it patches from the change itself, with no read:
 
-The queries that read again read together, from one snapshot, once per microtask batch, and a collection's subscriptions wait for one read at a time. Writes that arrive during a read become one more read. So a page and its count are read from one state of the collection, and handed over one after the other in the same task.
+- A count with no `offset` or `limit` whose plan is exact on an index declared with `index` (the `count()` rows of the table above). The count moves by the index entries the write added and removed in its ranges.
+- A list with no `limit` or `offset` whose plan reads no `text` index. Each write puts its document where the order says, takes it out, or leaves it. A `select` must include every field of the order, since the rows are placed by their own fields.
+
+The other queries read again: a window with `limit` or `offset`, `findOne`, a plan on a `text` index, a count with a filter its ranges do not cover, a `select` that drops a field of the order. Those that need a read read together, from one snapshot, once per microtask batch, and a collection's subscriptions wait for one read at a time. Writes that arrive during a read become one more read. So a page and its count are read from one state of the collection, and handed over one after the other in the same task.
 
 Writes from other tabs update queries the same way.
 
