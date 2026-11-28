@@ -1,3 +1,4 @@
+import { DocStoreError } from "@opfs-lsm/docstore";
 import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -453,5 +454,62 @@ describe("a window that starts past rows", () => {
     await issues.update("a4", leave);
     await until(() => seen.values.length === 2);
     expect(ids(seen.values[1])).toEqual(["b4"]);
+  });
+});
+
+describe("a change that cannot say where its document was", () => {
+  const unreadable = (change: object) =>
+    new Proxy(change, {
+      get(target, prop) {
+        if (prop === "before") {
+          return () => {
+            throw new DocStoreError("schema", "the catalog of the change holds the index otherwise");
+          };
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  /** Every change `issues` hands to a listener refuses `before`, as when the catalog moved under it. */
+  function faultBefore(issues: Awaited<ReturnType<typeof openDb>>["issues"]) {
+    const docs = tableOf(issues).docs;
+    const real = docs.changes.bind(docs);
+    vi.spyOn(docs, "changes").mockImplementation((listener) =>
+      real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => unreadable(c) as typeof c) } : event)),
+    );
+  }
+
+  it("is read again by a window with an offset, which then shows the shifted rows", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([1, 2, 3, 4, 5, 6].map((n) => issue(n)));
+    faultBefore(issues);
+    const window = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified).offset(2).limit(2));
+    const seen = watch(window);
+    await until(() => seen.values.length === 1);
+    const reads = views.views();
+
+    await issues.update("i6", (draft) => {
+      draft.status = 2;
+    });
+    await until(() => views.views() === reads + 1);
+    await issues.delete("i1");
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i4", "i5"]);
+    expect(seen.values).toHaveLength(2);
+    expect(seen.errors).toEqual([]);
+  });
+
+  it("is read again by a limited count, which is otherwise left alone by an edit", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    faultBefore(issues);
+    const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
+    await until(() => seen.values.length === 1);
+    const reads = views.views();
+    await issues.upsert(issue(2, { title: "Renamed" }));
+    await until(() => views.views() === reads + 1);
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(seen.values).toEqual([2, 3]);
   });
 });
