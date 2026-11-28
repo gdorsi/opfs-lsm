@@ -397,3 +397,61 @@ describe("a query", () => {
     expect(ids(await byDue.run())).toEqual(["t1", "t2"]);
   });
 });
+
+describe("a window that starts past rows", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const leave = (draft: Issue) => {
+    draft.status = 2;
+  };
+  /** The documents `i1` to `i6` and one of status 2, which no window reads, unless `docs` says others. */
+  async function opened(order: "asc" | "desc", offset: number, docs = [...[1, 2, 3, 4, 5, 6].map((n) => issue(n)), issue(7, { status: 2 })]) {
+    const ctx = await openDb();
+    await ctx.issues.insert(docs);
+    const window = query((q) => q.from({ i: ctx.issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified, order).offset(offset).limit(2));
+    const seen = watch(window);
+    await until(() => seen.values.length === 1);
+    /** A change the window cannot see: no read, and no call. */
+    const quiet = async (change: Promise<unknown>) => {
+      const reads = ctx.views.views();
+      await change;
+      await tick();
+      expect(ctx.views.views()).toBe(reads);
+      expect(seen.values).toHaveLength(1);
+    };
+    return { ...ctx, seen, quiet };
+  }
+
+  it("reads again when a document leaves the rows it passes over, and not when one leaves after the window", async () => {
+    const { issues, seen, quiet } = await opened("asc", 2);
+    expect(ids(seen.values[0])).toEqual(["i3", "i4"]);
+    await quiet(issues.update("i6", leave));
+    await quiet(issues.update("i7", (draft) => void (draft.modified = 0)));
+    await quiet(issues.delete("i7"));
+    await issues.update("i1", leave);
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i4", "i5"]);
+    await issues.delete("i2");
+    await until(() => seen.values.length === 3);
+    expect(ids(seen.values[2])).toEqual(["i5"]);
+  });
+
+  it("does the same in a descending order, where the rows passed over are the greater ones", async () => {
+    const { issues, seen, quiet } = await opened("desc", 1);
+    expect(ids(seen.values[0])).toEqual(["i5", "i4"]);
+    await quiet(issues.update("i1", leave));
+    await quiet(issues.update("i2", leave));
+    await issues.update("i6", leave);
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i4", "i3"]);
+  });
+
+  it("places a document that ties with the last row on the sort field by its id", async () => {
+    const tied = (id: string) => issue(0, { id, modified: 4 });
+    const { issues, seen, quiet } = await opened("asc", 2, [issue(1), issue(2), tied("a4"), tied("b4"), tied("c4")]);
+    expect(ids(seen.values[0])).toEqual(["a4", "b4"]);
+    await quiet(issues.update("c4", leave));
+    await issues.update("a4", leave);
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["b4"]);
+  });
+});
