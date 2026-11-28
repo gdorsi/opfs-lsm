@@ -23,4 +23,9 @@ describe("openMemoryDatabase", () => {
     expect(await other.collections.todos.get("t1")).toBeUndefined();
     await other.close();
   });
+
+  it("rejects with a StorageError for a name the storage refuses", async () => {
+    const options = { version: 1, collections: { todos: collection<Todo>() } };
+    await expect(openMemoryDatabase({ ...options, name: "not a name" })).rejects.toMatchObject({ _tag: "StorageError", code: "limit" });
+  });
 });
