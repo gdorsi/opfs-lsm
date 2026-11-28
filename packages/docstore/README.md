@@ -770,7 +770,7 @@ try {
 
 | Error | When | What to do |
 |---|---|---|
-| `"schema"` | The stored catalog and this schema disagree, the catalog has another format (open a new database name after an upgrade that changes it), the catalog lacks the collection, or a queried index is still building. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema, or bump `version`. Query a building index again later. Rename the collection or index. |
+| `"schema"` | The catalog has another format (open a new database name after an upgrade that changes it), the catalog lacks the collection or a queried index, or a newer schema redefined a queried index or is still building it. Or a collection or index name is not a letter or `_` followed by letters, digits or `_`, or is one `Object.prototype` holds, such as `toString`. | Open with the newer schema. Query a building index again later. Rename the collection or index. |
 | `"version"` | This `version` is stored with other collections or indexes than the schema declares. | Bump `version`. |
 | `"unique"` | Two documents would share a unique value. | Change or delete one of `ids`. |
 | `"index-failed"` | A query reads an index whose backfill failed. | Fix the documents in `ids`, then bump `version`. |

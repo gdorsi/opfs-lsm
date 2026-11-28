@@ -258,7 +258,13 @@ describe("a query source", () => {
 describe("a filter that lists values", () => {
   it("reads the same documents on both sides of the most ranges docstore reads at once", async () => {
     const { issues } = (await openDb(collections)).collections;
-    await issues.insert([issue("a", { status: 3, meta: { due: 5 } }), issue("b", { status: 3, meta: { due: 8 } }), issue("c", { status: 8, meta: { due: 5 } })]);
+    // d matches neither list, so a split that drops the filter shows it.
+    await issues.insert([
+      issue("a", { status: 3, meta: { due: 5 } }),
+      issue("b", { status: 3, meta: { due: 8 } }),
+      issue("c", { status: 8, meta: { due: 5 } }),
+      issue("d", { status: 9, meta: { due: 100 } }),
+    ]);
     const listed = (n: number) => {
       const values = Array.from({ length: n }, (_, k) => k);
       return query((q) => q.from({ i: issues }).where(({ i }) => and(inArray(i.status, values), inArray(i.meta.due, values))).orderBy(({ i }) => i.id));
