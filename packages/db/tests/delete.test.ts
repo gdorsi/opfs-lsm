@@ -23,7 +23,11 @@ describe("deleteDatabase", () => {
     const there = await openDatabase(options(name));
     await here.collections.tasks.insert({ id: "t1", title: "Write" });
     const seen = [here, there].map((db) => watch(query((q) => q.from({ t: db.collections.tasks }))));
-    await until(() => seen.every((s) => s.values.length === 1));
+    // A handle learns of another handle's write a moment after it lands, so `there` may first read no task.
+    await until(
+      () => seen.every((s) => s.values.at(-1)?.length === 1),
+      () => JSON.stringify(seen.map((s) => s.values)),
+    );
 
     await deleteDatabase(name);
     await until(() => seen.every((s) => s.errors.length === 1));
