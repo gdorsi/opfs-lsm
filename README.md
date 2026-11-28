@@ -32,13 +32,52 @@ Each adapter stores the data of one framework in opfs-lsm. Your app keeps callin
 
 ### Building blocks
 
-- **[`@opfs-lsm/db`](packages/db)** keeps your app's documents in typed collections on docstore, and checks each write with a Standard Schema validator before it stores anything. Live queries use TanStack DB's query syntax, read through the indexes you declare, and update when a write from any tab changes their result. Its own errors are typed classes with a fixed `_tag` and `code`.
+- **[`@opfs-lsm/db`](packages/db)** keeps your app's documents in typed collections on docstore. A collection can check each write with a Standard Schema validator before it stores anything. Live queries use TanStack DB's query syntax, read through the indexes you declare, and update when a write from any tab changes their result. Its own errors are typed classes with a fixed `_tag` and `code`.
 - **[`@opfs-lsm/docstore`](packages/docstore)** stores JSON documents in typed collections. You declare indexes in a versioned schema: sorted, array, text, and unique. A Standard Schema validator checks the writes of a collection. Queries read through them in pages, and each collection has counts, snapshot reads, and a change feed. Example: [LinearLite on docstore](examples/linearlite-docstore).
 - **[`@opfs-lsm/kv`](packages/kv)** is the key-value store under every other package. Keys and values are bytes, kept in key order. It has batches, range scans, range deletes, counts, snapshot reads, read-modify-write, a change feed with a sequence number for every write, and a reserve that gives your app room to free space when the browser refuses a write.
 
 ## Set it up
 
-Every package except db runs on a kv database that your app opens, so setup starts the same way. db opens its own database with `openDatabase`, as [its page](packages/db) shows.
+### Store your app's data with db
+
+db opens kv and docstore for you, so one package covers an app's own data.
+
+1. Install `@opfs-lsm/db`.
+2. Declare each collection and the indexes its queries read through.
+3. Open the database when your app starts. Every tab that passes the same `name` shares it.
+4. Decide what your app does when `openDatabase` rejects with `StorageError` code `unavailable`. db never falls back to memory.
+
+```sh
+pnpm add @opfs-lsm/db
+```
+
+```ts
+import { collection, eq, openDatabase, query, StorageError } from "@opfs-lsm/db";
+
+type Todo = { id: string; title: string; done: boolean; created: number };
+
+const db = await openDatabase({
+	name: "app",
+	version: 1,
+	collections: { todos: collection<Todo>().index("byDone", ["done", "created"]) },
+}).catch((err) => {
+	// The browser lacks an API the storage needs, or failed to load one.
+	if (err instanceof StorageError && err.code === "unavailable") return undefined;
+	throw err;
+});
+if (db) {
+	const { todos } = db.collections;
+	const open = query((q) => q.from({ t: todos }).where(({ t }) => eq(t.done, false)).orderBy(({ t }) => t.created));
+	open.subscribe((rows) => console.log(rows)); // again each time the open todos change, in any tab
+	await todos.insert({ id: "t1", title: "Buy milk", done: false, created: Date.now() });
+}
+```
+
+[db's page](packages/db) covers writes, queries, live results, and errors.
+
+### Start from kv for the other packages
+
+The adapters and docstore run on a kv database that your app opens.
 
 1. Install `@opfs-lsm/kv` and the package you use. Each package page lists the other packages it needs.
 2. Open the database when your app starts. Every tab that passes the same `name` shares it.
@@ -64,7 +103,7 @@ kv is fastest when it reads local data and writes in batches. These rules help y
 
 ### Open one database for the whole app
 
-Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. Pass the same `db` to every package that takes one.
+Each database name gets its own SharedWorker and its own files, so a second database costs a second open. The packages keep their keys apart, so they can share one database. Pass the same `db` to every package that takes one. db opens its own database by name, so give it a name no other package uses.
 
 Closing an Automerge storage also closes its database, so close that storage last.
 
