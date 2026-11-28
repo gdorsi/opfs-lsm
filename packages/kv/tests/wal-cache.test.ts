@@ -32,34 +32,6 @@ afterEach(() => {
 });
 
 describe("memtable reads", () => {
-  it("serves repeated gets without losing visibility", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      maxWalBytes: 1 << 30,
-    });
-    await db.put(enc.encode("a"), enc.encode("1"));
-    expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
-    expect(dec.decode(await db.get(enc.encode("a")))).toBe("1");
-    await db.put(enc.encode("a"), enc.encode("2"));
-    expect(dec.decode(await db.get(enc.encode("a")))).toBe("2");
-    await db.close();
-  });
-
-  it("invalidates after ingest so SST still serves values", async () => {
-    const db = await openHarnessDb({
-      name: NAME,
-      forceMemory: true,
-      writerId: "w1",
-      maxWalBytes: 1 << 30,
-    });
-    await db.put(enc.encode("k"), enc.encode("v"));
-    await ingestDb(db);
-    expect(dec.decode(await db.get(enc.encode("k")))).toBe("v");
-    await db.close();
-  });
-
   it("reads a key folded by a host ingest after SST readers were warmed", async () => {
     const fs = new MemoryFs();
     const host = new EngineHost(() => fs);

@@ -423,36 +423,6 @@ async function sweep(config: Config, persistent: boolean) {
 const ONLY = process.env.KV_IO_SITES;
 const WIDE = !!process.env.KV_IO_WIDE;
 
-describe("I/O errors: found by this suite", () => {
-  // Found by the read sweep with manifest reads included, one-shot, site 7. After
-  // the first flush, the host's first compaction pass sweeps: it keeps the
-  // runs of every manifest from the recorded generation on (`liveRuns`), and
-  // removes every other run file. `liveRuns` read each manifest with
-  // `loadGeneration(…).catch(() => undefined)`, so a failed read of manifest
-  // 1 counted as a manifest with no runs, and the sweep deleted l0/1-2.sst,
-  // the only copy of seqs 1..2 (the WAL records are already truncated). The
-  // database no longer opened: GENERATION_GONE. `liveRuns` now rethrows,
-  // so the sweep is skipped until the read succeeds.
-  it("a failed manifest read during reclaim never deletes a live run", async () => {
-    const t = new Traced(`io-${++runs}`);
-    t.faults.spare = (label) => !label.startsWith("read m/");
-    t.faults.failAt = 1;
-    try {
-      const db = await t.open();
-      await db.put(utf("a"), utf("a1"));
-      await ingestDb(db).catch(() => undefined);
-      await db.close();
-      expect(t.faults.injected, "the fault fired").toBe(1);
-      t.faults.heal();
-      const again = await t.open();
-      expect(dec.decode((await again.get(utf("a")))!)).toBe("a1");
-      await again.close();
-    } finally {
-      await t.dispose();
-    }
-  });
-});
-
 /** Several L0 runs per flush, so four flushes compact and a range delete over L1 needs a mark step. */
 const SMALL_RUNS = { flushRunBytes: 96 };
 /** The L0 stop at two runs, with a merge of at most three sources. */

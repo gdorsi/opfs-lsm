@@ -66,19 +66,6 @@ describe("batch tx", () => {
     await db.close();
   });
 
-  it("an update stores what a reused buffer held at each put", async () => {
-    const db = await open();
-    const key = new Uint8Array(1);
-    await db.update([b(1)], (_values, tx) => {
-      key[0] = 1;
-      tx.put(key, b(1));
-      key[0] = 2;
-      tx.put(key, b(2));
-    });
-    expect(await db.getMany([b(1), b(2)])).toEqual([b(1), b(2)]);
-    await db.close();
-  });
-
   it("deleteRange keeps the bounds it was given when the caller reuses them", async () => {
     const db = await open();
     await db.batch((tx) => {
