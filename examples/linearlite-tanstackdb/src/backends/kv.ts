@@ -2,6 +2,7 @@ import { collection, defineSchema, openDocStore, type Cursor, type DocStore, typ
 import type { Db } from "@opfs-lsm/kv";
 import { docstoreCollectionOptions } from "@opfs-lsm/tanstack-db";
 import { createCollection, type Collection } from "@tanstack/db";
+import * as v from "valibot";
 import { Body, Comment, priorityOrder, STATUSES, stored, StoredIssue, SyncState, type Issue, type StatusCode } from "../domain/model.ts";
 import { STORES, type Stream } from "../domain/stores.ts";
 import type { Anchor, Backend, CollectionRows, StoreName, StoreRows } from "../model/backend.ts";
@@ -13,19 +14,22 @@ import { recount, type Pause } from "./recount.ts";
 export const schema = defineSchema({
   version: 5,
   collections: {
-    issues: collection(StoredIssue)
+    issues: collection<StoredIssue>()
       .index("byCreated", ["deleted", "created"])
       .index("byTitle", ["deleted", "title"])
       .index("byPriority", ["deleted", "priority", "priorityOrder"])
       .text("byStatus", ["deleted", "status", "statusOrder"], "title")
       .text("search", ["deleted", "modified"], "title")
       .index("pending", "pending"),
-    bodies: collection(Body).index("pending", "pending"),
-    comments: collection(Comment).index("byIssue", "issue_id").index("pending", "pending"),
-    sync: collection(SyncState),
+    bodies: collection<Body>().index("pending", "pending"),
+    comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
+    sync: collection<SyncState>(),
   },
   drop: ["outbox"],
 });
+
+/** Docstore stores what it is given, so `transact` checks each row against its schema first: it is the one write path. */
+const ROW_SCHEMAS: Record<StoreName, v.GenericSchema<object>> = { issues: StoredIssue, bodies: Body, comments: Comment, sync: SyncState };
 
 export type Docs = DocStore<typeof schema>;
 const issueDocs = (docs: Docs) => docs.collection("issues");
@@ -96,7 +100,7 @@ export async function openKvBackend(db: Db, { hidden = () => false }: KvOptions 
           (rows) =>
             slice.map((item, i) => {
               const row = merge(rows[i], item);
-              return store === "issues" && row ? stored(row as Issue) : row;
+              return row && v.parse(ROW_SCHEMAS[store], store === "issues" ? stored(row as Issue) : row);
             }),
         );
       }

@@ -1,9 +1,9 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { DocStoreError } from "@opfs-lsm/docstore";
 import type { Db } from "@opfs-lsm/kv";
 import { openHarnessDb } from "@opfs-lsm/kv/testing";
+import * as v from "valibot";
 import type { Body, Issue, PriorityCode, StatusCode, SyncState } from "../domain/model.ts";
 import { parseIssueFilter, SORT_FIELDS } from "../model/filter.ts";
 import { windowQuery } from "../model/query.ts";
@@ -143,7 +143,7 @@ describe("the kv backend", () => {
       assert.deepEqual((await backend.read("sync", ["sync"]))[0], state);
     });
 
-    it("rejects a row of the wrong shape with \"invalid\" and stores nothing", async () => {
+    it("rejects a row of the wrong shape with a ValiError and stores nothing", async () => {
       const wrong: [string, object][] = [
         ["a status that is no code", { ...edited, id: "w1", status: 7 }],
         ["a title that is no string", { ...edited, id: "w2", title: 1 }],
@@ -155,14 +155,14 @@ describe("the kv backend", () => {
         const id = (row as { id: string }).id;
         await assert.rejects(
           backend.transact("issues", [{ id }], () => row as never),
-          (e) => e instanceof DocStoreError && e.code === "invalid" && e.issues !== undefined,
+          (e) => e instanceof v.ValiError && e.issues.length > 0,
           what,
         );
         assert.equal((await backend.read("issues", [id]))[0], undefined, what);
       }
       await assert.rejects(
         backend.transact("sync", [{ id: "sync" }], () => ({ ...state, evict: "later" }) as never),
-        (e) => e instanceof DocStoreError && e.code === "invalid",
+        (e) => e instanceof v.ValiError,
       );
       assert.equal((await backend.read("sync", ["sync"]))[0]!.evict, "asked", "the stored sync row is untouched");
     });
