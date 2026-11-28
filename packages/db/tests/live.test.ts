@@ -26,6 +26,30 @@ afterEach(async () => {
 const issue = (n: number, over: Partial<Issue> = {}): Issue => ({ id: `i${n}`, title: `Issue ${n}`, status: 1, modified: n, ...over });
 const ids = (rows: readonly { id: string }[] | undefined) => rows?.map((r) => r.id);
 
+type Issues = Awaited<ReturnType<typeof openDb>>["issues"];
+
+/** Every change `issues` hands to a listener refuses `member`, as when the catalog moved under it or a document cannot be read. */
+function faultChanges(issues: Issues, member: "before" | "written" | "doc") {
+  const refusing = (change: object) =>
+    new Proxy(change, {
+      get(target, prop) {
+        if (prop === member) {
+          const refuse = () => {
+            throw new DocStoreError("schema", "the catalog of the change holds the index otherwise");
+          };
+          return member === "doc" ? refuse() : refuse;
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  const docs = tableOf(issues).docs;
+  const real = docs.changes.bind(docs);
+  vi.spyOn(docs, "changes").mockImplementation((listener) =>
+    real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => refusing(c) as typeof c) } : event)),
+  );
+}
+
 describe("a subscription", () => {
   it("is not called again when another document gives an equal result", async () => {
     const { issues } = await openDb();
@@ -760,31 +784,10 @@ describe("a window past rows ordered by a nested field", () => {
 });
 
 describe("a change that cannot say where its document was", () => {
-  const unreadable = (change: object) =>
-    new Proxy(change, {
-      get(target, prop) {
-        if (prop === "before") {
-          return () => {
-            throw new DocStoreError("schema", "the catalog of the change holds the index otherwise");
-          };
-        }
-        const value = Reflect.get(target, prop, target) as unknown;
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-  /** Every change `issues` hands to a listener refuses `before`, as when the catalog moved under it. */
-  function faultBefore(issues: Awaited<ReturnType<typeof openDb>>["issues"]) {
-    const docs = tableOf(issues).docs;
-    const real = docs.changes.bind(docs);
-    vi.spyOn(docs, "changes").mockImplementation((listener) =>
-      real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => unreadable(c) as typeof c) } : event)),
-    );
-  }
-
   it("is read again by a window with an offset, which then shows the shifted rows", async () => {
     const { issues, views } = await openDb();
     await issues.insert([1, 2, 3, 4, 5, 6].map((n) => issue(n)));
-    faultBefore(issues);
+    faultChanges(issues, "before");
     const window = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified).offset(2).limit(2));
     const seen = watch(window);
     await until(() => seen.values.length === 1);
@@ -804,7 +807,7 @@ describe("a change that cannot say where its document was", () => {
   it("is read again by a limited count, which is otherwise left alone by an edit", async () => {
     const { issues, views } = await openDb();
     await issues.insert([issue(1), issue(2)]);
-    faultBefore(issues);
+    faultChanges(issues, "before");
     const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
     await until(() => seen.values.length === 1);
     const reads = views.views();
