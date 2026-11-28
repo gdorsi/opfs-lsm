@@ -98,10 +98,10 @@ describe("a subscription", () => {
     expect(seen.values.map(ids)).toEqual([["i3", "i2"], ["i9", "i3"]]);
   });
 
-  it("reads a count of every document again for an insert and a delete, and not for an edit", async () => {
+  it("reads a limited count again for an insert and a delete, and not for an edit", async () => {
     const { issues, views } = await openDb();
     await issues.insert([issue(1), issue(2)]);
-    const seen = watch(query((q) => q.from({ i: issues }).count()));
+    const seen = watch(query((q) => q.from({ i: issues }).limit(10).count()));
     await until(() => seen.values.length === 1);
     const reads = views.views();
 
@@ -217,6 +217,106 @@ describe("a subscription", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+});
+
+describe("a subscription that follows the changes without a read", () => {
+  /** Counts the reads of the collection from now on. */
+  function reads(issues: Database<typeof collections>["collections"]["issues"]): () => number {
+    const { docs } = tableOf(issues);
+    const spies = (["view", "query", "count", "getMany"] as const).map((method) => vi.spyOn(docs, method));
+    return () => spies.reduce((n, spy) => n + spy.mock.calls.length, 0);
+  }
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("moves an exact count by the entries each write added to its ranges and removed from them", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 })]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count());
+    expect(open.explain()).toMatchObject({ kind: "index", index: "byStatus", exact: true });
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+    const base = views.views();
+
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 2);
+    await issues.update("i1", (draft) => {
+      draft.status = 2;
+    });
+    await until(() => seen.values.length === 3);
+    // The entry moves inside the range: the count stays.
+    await issues.update("i2", (draft) => {
+      draft.modified = 50;
+    });
+    await issues.update("i2", (draft) => {
+      draft.title = "Renamed";
+    });
+    await issues.delete("i4");
+    await until(() => seen.values.length === 4);
+    await issues.update("i3", (draft) => {
+      draft.status = 1;
+    });
+    await until(() => seen.values.length === 5);
+    await issues.insert([issue(5), issue(6), issue(7, { status: 2 })]);
+    await until(() => seen.values.length === 6);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values).toEqual([2, 3, 2, 1, 2, 4]);
+    expect(read()).toBe(0);
+    expect(views.views()).toBe(base);
+    expect(await open.run()).toBe(4);
+  });
+
+  it("follows a count of the whole collection, and the ranges of an inArray", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2, { status: 2 }), issue(3, { status: 3 })]);
+    const all = watch(query((q) => q.from({ i: issues }).count()));
+    const some = watch(query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.status, [1, 3])).count()));
+    await until(() => all.values.length === 1 && some.values.length === 1);
+    const read = reads(issues);
+    await issues.update("i2", (draft) => {
+      draft.status = 3;
+    });
+    await until(() => some.values.length === 2);
+    await issues.delete("i1");
+    await until(() => some.values.length === 3 && all.values.length === 2);
+    await issues.insert(issue(4, { status: 9 }));
+    await until(() => all.values.length === 3);
+    await issues.delete(["i3", "i4"]);
+    await until(() => all.values.length === 4 && some.values.length === 4);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(all.values).toEqual([3, 2, 3, 1]);
+    expect(some.values).toEqual([2, 3, 2, 1]);
+    expect(read()).toBe(0);
+  });
+
+  it("reads again for a count with a residual filter and for a limited window", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const counted = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).where(({ i }) => ilike(i.title, "%issue%")).count()));
+    const window = watch(query((q) => q.from({ i: issues }).orderBy(({ i }) => i.modified, "desc").limit(2)));
+    await until(() => counted.values.length === 1 && window.values.length === 1);
+    const read = reads(issues);
+
+    await issues.insert(issue(3));
+    await until(() => counted.values.length === 2 && window.values.length === 2);
+    expect(counted.values).toEqual([2, 3]);
+    expect(ids(window.values[1])).toEqual(["i3", "i2"]);
+    expect(read()).toBeGreaterThan(0);
+  });
+
+  it("hands a burst of writes to the subscriber as one value", async () => {
+    const { issues } = await openDb();
+    const total = watch(query((q) => q.from({ i: issues }).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await issues.insert([1, 2, 3, 4, 5].map((n) => issue(n)));
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([0, 5]);
+    expect(list.values.map((rows) => rows.length)).toEqual([0, 5]);
   });
 });
 

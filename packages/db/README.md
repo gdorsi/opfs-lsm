@@ -222,9 +222,11 @@ An index serves an order when the `orderBy` fields are the index's fields after 
 
 A row whose content did not change is the same object as in the previous result. A keyed list, such as Solid's `createProjection` or a React list with `key`, then redraws only the rows that changed. Rows are shared by every subscriber of the query and by later results: read them, and write changes to the collection, never to a row.
 
-A write reruns only the queries it may affect. The queries of one collection that need a rerun read together, from one snapshot, once per microtask batch, and a collection's subscriptions wait for one read at a time. Writes that arrive during a read become one more read. So a page and its count are read from one state of the collection, and handed over one after the other in the same task.
+A write reads again only the queries it may affect, except a count with no `offset` or `limit` whose plan is exact on an index declared with `index` (the `count()` rows of the table above). The write patches that count from its own index entries: the count moves by those it added and removed in the plan's ranges, with no read.
 
-Writes from other tabs rerun queries the same way.
+The queries that read again read together, from one snapshot, once per microtask batch, and a collection's subscriptions wait for one read at a time. Writes that arrive during a read become one more read. So a page and its count are read from one state of the collection, and handed over one after the other in the same task.
+
+Writes from other tabs update queries the same way.
 
 `error` gets the `DbError` that ended the subscription. `db.close()` ends every subscription with `ClosedError` code `closed`, and a [deleted](#delete) database ends them with code `destroyed`. Nothing is called after `error`.
 

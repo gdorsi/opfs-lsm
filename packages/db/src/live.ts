@@ -63,7 +63,7 @@ export function query<V>(build: (q: QueryRoot) => Buildable<V>): LiveQuery<V> {
     subscribe(next, error) {
       try {
         const q = open();
-        const sub: Subscription = { q, next: next as (value: unknown) => void, error, result: undefined };
+        const sub: Subscription = { q, patch: patchOf(q), next: next as (value: unknown) => void, error, result: undefined, told: UNSENT };
         let feed = feeds.get(q.table);
         if (!feed) feeds.set(q.table, (feed = new Feed(q.table)));
         feed.add(sub);
@@ -94,21 +94,35 @@ function valueOf(q: Compiled, found: Found): unknown {
 
 /** What a subscription keeps of its last run: what the dirty rule and row identity read. The rows are the ones its subscriber holds. */
 type Result = {
-  /** A change at or below this seq is in the result. */
-  readonly seq: number;
+  /** A change at or below this seq is in the result. A patch moves it on. */
+  seq: number;
   /** The rows handed out, by document id, in order. A count has none. */
   readonly rows: ReadonlyMap<string, unknown>;
   /** The order fields of the last row, copied from its stored document, when the result holds `limit` rows: every match after it is outside the result. */
   readonly last: JsonDoc | undefined;
-  readonly value: unknown;
+  value: unknown;
 };
+
+/**
+ * How a subscription follows the feed without a read, when its result can be
+ * kept exactly from the changes. Every other query reads again when a change
+ * may alter it.
+ *
+ * - `count`: no offset or limit, on an exact plan over a key-only index.
+ *   Its count is the entries in the plan's ranges, and each change says the
+ *   entries it added and removed.
+ */
+type Patch = { readonly kind: "count" };
 
 type Subscription = {
   readonly q: Compiled;
+  readonly patch: Patch | undefined;
   readonly next: (value: unknown) => void;
   readonly error: ((error: AnyDbError) => void) | undefined;
   /** Undefined until the first read. */
   result: Result | undefined;
+  /** The last value `next` got. */
+  told: unknown;
 };
 
 function call(listener: () => void): void {
@@ -197,6 +211,30 @@ function dirties({ ir, plan, where, order }: Compiled, r: Result, change: DocCha
   return was.some((e) => !placed || compareRows(entryRow(index!.info.by, e), last, order) <= 0);
 }
 
+function patchOf({ ir, plan }: Compiled): Patch | undefined {
+  const count = ir.shape === "count" && ir.offset === 0 && ir.limit === undefined;
+  return count && plan.kind === "ranges" && plan.exact && keyOnly(plan.index?.info) ? { kind: "count" } : undefined;
+}
+
+/**
+ * Move the count of `sub` to the state after `changes`. It moves by the
+ * entries each change added to the plan's ranges less those it removed. A
+ * write records an entry only when it changed it, and a key-only entry is its
+ * key, so the entries it records are the difference of the counts. Throws
+ * when the catalog moved under a change.
+ */
+function patch(sub: Subscription, r: Result, changes: readonly DocChange<JsonDoc>[]): void {
+  const plan = sub.q.plan as Extract<Compiled["plan"], { kind: "ranges" }>;
+  const index = plan.index!.name as never;
+  let delta = 0;
+  for (const change of changes) {
+    const { added, removed } = change.written(index);
+    for (const e of added) if (entryInRanges(plan, e.values)) delta++;
+    for (const e of removed) if (entryInRanges(plan, e.values)) delta--;
+  }
+  r.value = (r.value as number) + delta;
+}
+
 type Change = Exclude<CollectionChange<JsonDoc>, { kind: "closed" }>;
 
 /** The feed of each collection's subscriptions, while it has any. */
@@ -221,6 +259,8 @@ class Failure {
 class Feed {
   private readonly subs = new Set<Subscription>();
   private readonly dirty = new Set<Subscription>();
+  /** Subscriptions a patch moved on: they hear of it in the next flush, once. */
+  private readonly patched = new Set<Subscription>();
   private held: Change[] | undefined;
   private scheduled = false;
   private readonly off: () => void;
@@ -241,6 +281,7 @@ class Feed {
 
   remove(sub: Subscription): void {
     this.dirty.delete(sub);
+    this.patched.delete(sub);
     if (!this.subs.delete(sub) || this.subs.size > 0) return;
     this.off();
     if (feeds.get(this.table) === this) feeds.delete(this.table);
@@ -259,20 +300,24 @@ class Feed {
     for (const sub of this.subs) {
       const r = sub.result;
       if (!r || this.dirty.has(sub)) continue;
-      let hit: boolean;
-      try {
-        hit = event.kind === "gap" || (event.seq > r.seq && event.changes.some((change) => dirties(sub.q, r, change)));
-      } catch {
-        // A change that cannot be read, such as a document that is no JSON object: a read says, and ends the subscription if it fails too.
-        hit = true;
+      if (event.kind === "gap") this.dirty.add(sub);
+      else if (event.seq > r.seq) {
+        try {
+          if (!sub.patch) {
+            if (event.changes.some((change) => dirties(sub.q, r, change))) this.dirty.add(sub);
+          } else if (follows(sub, r, event)) this.patched.add(sub);
+          else this.dirty.add(sub);
+        } catch {
+          // A change that cannot be read, such as a document that is no JSON object: a read says, and ends the subscription if it fails too.
+          this.dirty.add(sub);
+        }
       }
-      if (hit) this.dirty.add(sub);
     }
     this.schedule();
   }
 
   private schedule(): void {
-    if (this.scheduled || this.held || this.dirty.size === 0) return;
+    if (this.scheduled || this.held || (this.dirty.size === 0 && this.patched.size === 0)) return;
     this.scheduled = true;
     queueMicrotask(() => void this.flush());
   }
@@ -280,6 +325,9 @@ class Feed {
   private async flush(): Promise<void> {
     this.scheduled = false;
     const batch = [...this.dirty];
+    // A dirty subscription hears of its patches in the result of its read.
+    for (const sub of this.patched) if (!this.dirty.has(sub)) tell(sub, sub.result!.value);
+    this.patched.clear();
     this.dirty.clear();
     if (batch.length === 0) return;
     this.held = [];
@@ -303,7 +351,27 @@ class Feed {
   }
 }
 
+/** Patch `r` with the changes of `event`: true when it holds them all now. */
+function follows(sub: Subscription, r: Result, event: Extract<Change, { kind: "append" }>): boolean {
+  try {
+    patch(sub, r, event.changes);
+  } catch {
+    // The catalog moved under a change: a read says.
+    return false;
+  }
+  r.seq = event.seq;
+  return true;
+}
+
+/** Hand `value` to the subscriber, unless it holds it. */
+function tell(sub: Subscription, value: unknown): void {
+  if (value === sub.told) return;
+  sub.told = value;
+  call(() => sub.next(value));
+}
+
 const NO_ROWS: ReadonlyMap<string, unknown> = new Map();
+const UNSENT = Symbol("unsent");
 
 /**
  * Keep a run's result on `sub`, and call `next` if the value changed.
@@ -339,7 +407,7 @@ function settle(sub: Subscription, found: Found): void {
   const end = found.docs.length === limit ? found.docs.at(-1) : undefined;
   const last = end && orderFields(end, q.order);
   sub.result = { seq: found.seq, rows, last, value };
-  if (!prev || value !== prev.value) call(() => sub.next(value));
+  tell(sub, value);
 }
 
 /** The fields of `doc` that `order` reads, copied: the subscriber holds `doc` itself, and may change it. */

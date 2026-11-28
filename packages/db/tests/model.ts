@@ -144,7 +144,12 @@ const offsetSpec: fc.Arbitrary<Spec> = fc
   .tuple(indexedSpec, fc.integer({ min: 1, max: 3 }), fc.integer({ min: 1, max: 4 }), fc.constantFrom<Spec["shape"]>("rows", "rows", "select"))
   .map(([spec, offset, limit, shape]) => ({ ...spec, offset, limit, shape }));
 
-export const specArb: fc.Arbitrary<Spec> = fc.oneof(anySpec, indexedSpec, offsetSpec, offsetSpec);
+/** A query with no offset and no limit, which a subscription follows without a read when the plan allows: counts and lists. */
+const unlimitedSpec: fc.Arbitrary<Spec> = fc
+  .tuple(fc.oneof(anySpec, indexedSpec, indexedSpec), fc.constantFrom<Spec["shape"]>("rows", "rows", "count", "select", "pick"))
+  .map(([spec, shape]) => ({ ...spec, offset: undefined, limit: undefined, shape }));
+
+export const specArb: fc.Arbitrary<Spec> = fc.oneof(anySpec, indexedSpec, offsetSpec, offsetSpec, unlimitedSpec, unlimitedSpec);
 
 type Rows = Ref<Row>;
 const ref = (i: Rows, field: Field) => (field === "n.m" ? i.n.m : i[field]) as Ref<number>;
