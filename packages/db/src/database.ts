@@ -3,10 +3,10 @@
  * every write goes through `prepare`, then docstore, and every rejection
  * through `wrap`.
  */
-import { openDocStore, type Collection as DocCollection } from "@opfs-lsm/docstore";
+import { isDocId, openDocStore, type Collection as DocCollection } from "@opfs-lsm/docstore";
 import { destroyDb, openDb, type Db } from "@opfs-lsm/kv";
 import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap } from "./errors.js";
-import { docstoreSchema, isId, prepare, writeRules, type Collections, type DocOf, type InputOf, type JsonDoc, type WriteRules } from "./schema.js";
+import { docstoreSchema, prepare, writeRules, type Collections, type DocOf, type InputOf, type JsonDoc, type WriteRules } from "./schema.js";
 
 export type OpenOptions<C extends Collections> = {
   /** One name is one database, shared by every tab of the origin. */
@@ -92,7 +92,7 @@ class Handle<T extends JsonDoc, In> implements Collection<T, In> {
   }
 
   get(id: string): Promise<T | undefined> {
-    return this.run(async (docs) => (isId(id) ? ((await docs.get(id)) as T | undefined) : undefined));
+    return this.run(async (docs) => (isDocId(id) ? ((await docs.get(id)) as T | undefined) : undefined));
   }
 
   insert(input: In | readonly In[]): Promise<void> {
@@ -123,7 +123,7 @@ class Handle<T extends JsonDoc, In> implements Collection<T, In> {
         if (next.id !== id) throw new ValidationError("id", `"${this.name}": update changed the id of "${id}"`, this.name, id);
         return next;
       };
-      const stored = isId(id) ? await docs.modify(id, change) : undefined;
+      const stored = isDocId(id) ? await docs.modify(id, change) : undefined;
       if (!stored) throw new NotFoundError(this.name, id);
       return stored as T;
     });
@@ -131,7 +131,7 @@ class Handle<T extends JsonDoc, In> implements Collection<T, In> {
 
   delete(ids: string | readonly string[]): Promise<void> {
     return this.run(async (docs) => {
-      await docs.deleteMany(list(ids).filter(isId));
+      await docs.deleteMany(list(ids).filter(isDocId));
     });
   }
 }

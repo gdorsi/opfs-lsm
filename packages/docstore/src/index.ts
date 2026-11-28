@@ -5,3 +5,4 @@ export type { Collection } from "./collection.js";
 export type { CollectionSnapshot } from "./snapshot.js";
 export type { CollectionChange, DocChange } from "./changes.js";
 export { DocStoreError, type DocStoreErrorCode } from "./errors.js";
+export { foldText, isDocId, MAX_ID_BYTES, MAX_RANGES, wordsOf } from "./keys.js";

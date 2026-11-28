@@ -808,3 +808,15 @@ const big = Array.from({ length: 9000 }, (_, i) => ({
 }));
 await todos.putMany(big); // throws ConstraintError
 ```
+
+A layer above the store, such as a filter that must agree with an index, can share these rules instead of copying them.
+
+```ts
+import { foldText, isDocId, MAX_ID_BYTES, MAX_RANGES, wordsOf } from "@opfs-lsm/docstore";
+
+isDocId("\uD800"); // => false, the check every id passes
+MAX_ID_BYTES; // => 1024
+wordsOf("Fix the LOGIN-page"); // => ["fix", "the", "login", "page"]
+foldText("ΟΔΟΣ"); // => "οδοσ", the form of those words
+MAX_RANGES; // => 64, the combinations of listed values in eq
+```

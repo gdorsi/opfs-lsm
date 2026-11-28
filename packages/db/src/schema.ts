@@ -2,7 +2,7 @@
  * Declaring a collection, and `prepare`, the one function every write
  * passes through. The validator stays here: docstore is opened without one.
  */
-import { collection as docstoreCollection, type IndexInfo, type Schema } from "@opfs-lsm/docstore";
+import { collection as docstoreCollection, isDocId, MAX_ID_BYTES, type IndexInfo, type Schema } from "@opfs-lsm/docstore";
 import { SchemaError, ValidationError } from "./errors.js";
 import { fieldAt, isScalar, type Scalar } from "./expr.js";
 
@@ -143,13 +143,6 @@ export function writeRules(name: string, def: unknown, indexes: Iterable<IndexIn
   return { name, validator: (def as Def).validator, scalarPaths: split(scalar), textPaths: split(text) };
 }
 
-const MAX_ID_BYTES = 1024;
-
-/** An id a document can have: not empty, no lone surrogate, at most 1,024 UTF-8 bytes. The storage refuses any other. */
-export function isId(id: unknown): id is string {
-  return typeof id === "string" && id !== "" && id.isWellFormed() && (id.length * 3 <= MAX_ID_BYTES || new TextEncoder().encode(id).length <= MAX_ID_BYTES);
-}
-
 const isText = (v: unknown) => v === null || typeof v === "string";
 
 /**
@@ -177,7 +170,7 @@ export function prepare(rules: WriteRules, input: unknown): JsonDoc {
     doc = result.value;
   }
   const id = fieldAt(doc, ["id"]);
-  if (!isId(id)) throw new ValidationError("id", `"${name}": a document needs an id that is a non-empty string of at most ${MAX_ID_BYTES} bytes`, name);
+  if (!isDocId(id)) throw new ValidationError("id", `"${name}": a document needs an id that is a non-empty string of at most ${MAX_ID_BYTES} bytes`, name);
   const need = (paths: readonly (readonly string[])[], holds: (v: unknown) => boolean, what: string) => {
     for (const path of paths) {
       if (holds(fieldAt(doc, path))) continue;

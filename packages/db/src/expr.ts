@@ -5,6 +5,7 @@
  * sorts with them, and the live rule compares with them, so the three cannot
  * disagree.
  */
+import { foldText } from "@opfs-lsm/docstore";
 import { QueryError } from "./errors.js";
 
 /** What a comparison and an index component hold. A missing field reads as null. */
@@ -202,8 +203,6 @@ const COMPARE: Partial<Record<FnName, (a: unknown, b: unknown) => boolean>> = {
 
 /** The text `like` compares. A text index stores the same form, lowercased, so its words stand for the words of a pattern. */
 export const normalized = (text: string): string => text.normalize("NFC");
-/** The text `ilike` compares: docstore's form of the words of a text index, with a final sigma as any other. */
-const folded = (text: string): string => normalized(text).toLowerCase().replaceAll("ς", "σ");
 
 const literal = (ch: string): string => ch.replace(/[\\^$.*+?()[\]{}|]/, "\\$&");
 
@@ -286,7 +285,7 @@ export function compile(conjuncts: readonly Node[], alias: string): Predicate {
       case "like":
       case "ilike": {
         const left = value(args[0]);
-        const matches = likeTest(value(args[1])(undefined), name === "like" ? normalized : folded);
+        const matches = likeTest(value(args[1])(undefined), name === "like" ? normalized : foldText);
         return (doc) => matches(left(doc));
       }
       default: {
