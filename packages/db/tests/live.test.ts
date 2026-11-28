@@ -914,3 +914,56 @@ describe("a list that names its ids", () => {
     expect(views.views()).toBe(base);
   });
 });
+
+describe("a patch that cannot apply", () => {
+  const byModified = (issues: Issues) => query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified));
+
+  it("is a read, when the subscriber has reordered the list it was given", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([1, 2, 3, 4, 5].map((n) => issue(n)));
+    const open = byModified(issues);
+    const seen: (string[] | undefined)[] = [];
+    open.subscribe((rows) => {
+      seen.push(ids(rows));
+      (rows as Issue[]).reverse();
+    });
+    await until(() => seen.length === 1);
+    const base = views.views();
+
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => seen.length === 2);
+    expect(seen[1]).toEqual(["i1", "i3", "i4", "i5"]);
+    expect(views.views()).toBe(base + 1);
+    expect(ids(await open.run())).toEqual(seen[1]);
+  });
+
+  it("is a read, when the entries of a count cannot be read", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    faultChanges(issues, "written");
+    const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    await until(() => seen.values.length === 1);
+    const base = views.views();
+
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(seen.values).toEqual([2, 3]);
+    expect(views.views()).toBe(base + 1);
+  });
+
+  it("is a read, when a document of a list cannot be read from its change", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    faultChanges(issues, "doc");
+    const open = byModified(issues);
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const base = views.views();
+
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i2", "i3"]);
+    expect(views.views()).toBe(base + 1);
+    expect(seen.errors).toEqual([]);
+  });
+});
