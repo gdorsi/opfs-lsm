@@ -1,9 +1,9 @@
 import { DocStoreError } from "@opfs-lsm/docstore";
-import { CorruptDatabaseError } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type ChangeOp } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOn, tableOf } from "../src/database.js";
-import { ClosedError, collection, eq, gt, ilike, inArray, like, query, QueryError, type Collections, type Database } from "../src/index.js";
+import { and, ClosedError, collection, eq, gt, ilike, inArray, like, lte, query, QueryError, type Collections, type Database } from "../src/index.js";
 import { freshName, holdViews, openKv, until, watch } from "./harness.js";
 
 type Issue = { id: string; title: string; status: number; modified: number; note?: string };
@@ -1024,5 +1024,71 @@ describe("changes applied together after a read", () => {
     await until(() => count.values.length === 2 && list.values.length === 2);
     expect(count.values).toEqual([3, 1]);
     expect(list.values.map(ids)).toEqual([["i1", "i2", "i3"], ["i5"]]);
+  });
+});
+
+describe("the entries of a count", () => {
+  it("do not move it for a document that moves between two ranges of one inArray, or that was never in them", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 }), issue(4, { status: 3 })]);
+    const some = watch(query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.status, [1, 3])).count()));
+    await until(() => some.values.length === 1);
+
+    await issues.update("i1", (draft) => void (draft.status = 3));
+    await issues.update("i4", (draft) => void (draft.status = 1));
+    await issues.delete("i3");
+    await issues.insert(issue(5, { status: 7 }));
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => some.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(some.values).toEqual([3, 2]);
+  });
+
+  it("count a document once when one record writes it twice", async () => {
+    const source = await openDb();
+    const ops: ChangeOp[] = [];
+    source.views.db.changes((e) => e.kind === "append" && ops.push(...e.ops));
+    await source.issues.insert(issue(1));
+    await source.issues.update("i1", (draft) => void (draft.modified = 5));
+    await source.issues.insert(issue(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const { issues, views } = await openDb();
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await views.db.batch((tx) => {
+      for (const op of ops) {
+        if (op.type === "put") tx.put(op.key, op.value);
+        else if (op.type === "del") tx.delete(op.key);
+      }
+    });
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([0, 2]);
+    expect(list.values.map((rows) => rows.map((r) => `${r.id}:${r.modified}`))).toEqual([[], ["i2:2", "i1:5"]]);
+  });
+});
+
+describe("the entries of a count over a range", () => {
+  it("move it when an entry crosses a bound, the open one excluded and the closed one included", async () => {
+    const { issues } = await openDb();
+    await issues.insert([1, 2, 3, 4, 5, 6, 7].map((n) => issue(n)));
+    const between = query((q) => q.from({ i: issues }).where(({ i }) => and(eq(i.status, 1), gt(i.modified, 2), lte(i.modified, 5))).count());
+    expect(between.explain()).toMatchObject({ kind: "index", index: "byStatus", exact: true });
+    const seen = watch(between);
+    await until(() => seen.values.length === 1);
+    const set = async (id: string, modified: number) => {
+      const n = seen.values.length;
+      await issues.update(id, (draft) => void (draft.modified = modified));
+      await until(() => seen.values.length === n + 1);
+    };
+    await set("i3", 2);
+    await set("i6", 5);
+    await set("i1", 3);
+    await set("i5", 6);
+    await set("i7", 4);
+    expect(seen.values).toEqual([3, 2, 3, 4, 3, 4]);
+    expect(await between.run()).toBe(4);
   });
 });
