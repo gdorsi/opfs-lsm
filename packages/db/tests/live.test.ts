@@ -238,6 +238,48 @@ describe("a subscription", () => {
     expect(ids(page.values[1])).toEqual(["i1", "i3"]);
   });
 
+  it("tells a patched count only once the page beside it is read again", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const { docs } = tableOf(issues);
+    let gate: Promise<void> | undefined;
+    let open!: () => void;
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) => {
+        const held = gate;
+        const slow = new Proxy(snap, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target) as unknown;
+            if (typeof value !== "function") return value;
+            return async (...args: unknown[]) => {
+              await held;
+              return value.apply(target, args) as unknown;
+            };
+          },
+        });
+        return body(slow);
+      }),
+    );
+    const log: string[] = [];
+    const page = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified).limit(10));
+    const total = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count());
+    expect(total.explain()).toMatchObject({ index: "byStatus", exact: true });
+    const stops = [page.subscribe((rows) => log.push(`page ${ids(rows)!.join(",")}`)), total.subscribe((n) => log.push(`total ${n}`))];
+    try {
+      await until(() => log.length === 2);
+      gate = new Promise((resolve) => (open = resolve));
+      await issues.insert(issue(3));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(log).toHaveLength(2);
+      open();
+      await until(() => log.length === 4);
+      expect(log.slice(2)).toEqual(["page i1,i2,i3", "total 3"]);
+    } finally {
+      for (const stop of stops) stop();
+    }
+  });
+
   it("stops at once when unsubscribed, a read in flight included", async () => {
     const { issues, views } = await openDb();
     await issues.insert(issue(1));

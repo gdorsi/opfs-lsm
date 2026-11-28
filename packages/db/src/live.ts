@@ -395,10 +395,18 @@ class Feed {
   private async flush(): Promise<void> {
     this.scheduled = false;
     const batch = [...this.dirty];
+    const isCount = (sub: Subscription) => sub.q.ir.shape === "count";
     // A dirty subscription hears of its patches in the result of its read.
-    for (const sub of this.patched) if (!this.dirty.has(sub)) release(sub);
+    const patched = [...this.patched].filter((sub) => !this.dirty.has(sub));
     this.patched.clear();
     this.dirty.clear();
+    for (const sub of patched) if (!isCount(sub)) release(sub);
+    // A patched count waits for the rows being read, so that it never runs ahead of them.
+    const counts = patched.filter(isCount);
+    const tellCounts = () => {
+      for (const sub of counts.splice(0)) if (this.subs.has(sub)) release(sub);
+    };
+    if (!batch.some((sub) => !isCount(sub))) tellCounts();
     if (batch.length === 0) return;
     this.held = [];
     const pending = new Set(batch);
@@ -412,14 +420,16 @@ class Feed {
       Promise.all(subs.map((sub) => execute(snap, sub.q).then((found) => done(sub, found), (err: unknown) => done(sub, new Failure(err)))));
     try {
       // Each result is handed over as soon as it is read, all from one snapshot. A count reads every match, so
-      // the rows are read first and never wait for one.
+      // the rows are read first and never wait for one. The patched counts are told once the rows are.
       await this.table.docs.view(async (snap) => {
-        await read(snap, batch.filter((sub) => sub.q.ir.shape !== "count"));
-        await read(snap, batch.filter((sub) => sub.q.ir.shape === "count"));
+        await read(snap, batch.filter((sub) => !isCount(sub)));
+        tellCounts();
+        await read(snap, batch.filter(isCount));
       });
     } catch (err) {
       for (const sub of [...pending]) done(sub, new Failure(err));
     }
+    tellCounts();
     const held = this.held;
     this.held = undefined;
     for (const event of held) this.apply(event);
