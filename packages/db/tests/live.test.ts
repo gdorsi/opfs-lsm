@@ -1113,3 +1113,61 @@ describe("the rows of a list", () => {
     expect(desc.values[2]!.map((r) => r.key)).toEqual(["d", "b", "a", "e", "c"]);
   });
 });
+
+describe("the reads of one batch", () => {
+  const withSlowCount = (issues: Issues, failQuery: () => boolean = () => false) => {
+    const { docs } = tableOf(issues);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) =>
+        body(
+          new Proxy(snap, {
+            get(target, key) {
+              const value = Reflect.get(target, key, target) as unknown;
+              if (typeof value !== "function") return value;
+              if (key === "query" && failQuery()) return () => Promise.reject(new CorruptDatabaseError("a block failed its checksum"));
+              if (key === "count") return async (...args: unknown[]) => (await gate, value.apply(target, args) as unknown);
+              return value.bind(target);
+            },
+          }),
+        ),
+      ),
+    );
+    return release;
+  };
+
+  it("hands a count its result when the read of a list in the same snapshot fails", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    let failing = false;
+    withSlowCount(issues, () => failing)();
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
+    await until(() => page.values.length === 1 && total.values.length === 1);
+    failing = true;
+    await issues.insert(issue(3));
+    await until(() => page.errors.length === 1 && total.values.length === 2);
+    expect(page.errors[0]).toMatchObject({ _tag: "StorageError", code: "corrupt" });
+    expect(total.values).toEqual([2, 3]);
+    expect(total.errors).toEqual([]);
+  });
+
+  it("does not call a count that was unsubscribed while its read was in flight, after the list was handed over", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1)]);
+    const release = withSlowCount(issues);
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
+    await until(() => page.values.length === 1);
+    expect(total.values).toEqual([]);
+    total.stop();
+    release();
+    await issues.insert(issue(2));
+    await until(() => page.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([]);
+    expect(total.errors).toEqual([]);
+  });
+});
