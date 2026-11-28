@@ -1092,3 +1092,24 @@ describe("the entries of a count over a range", () => {
     expect(await between.run()).toBe(4);
   });
 });
+
+describe("the rows of a list", () => {
+  it("break a tie on the sort field by id, in either direction, in the names a select gives", async () => {
+    const { issues } = await openDb();
+    const at = (id: string, modified: number) => issue(0, { id, modified });
+    await issues.insert([at("b", 5), at("d", 5)]);
+    const rows = (dir: "asc" | "desc") =>
+      watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified, dir).select(({ i }) => ({ key: i.id, when: i.modified }))));
+    const asc = rows("asc");
+    const desc = rows("desc");
+    await until(() => asc.values.length === 1 && desc.values.length === 1);
+    await issues.insert([at("a", 5), at("c", 5), at("e", 4)]);
+    await until(() => asc.values.length === 2 && desc.values.length === 2);
+    expect(asc.values[1]!.map((r) => r.key)).toEqual(["e", "a", "b", "c", "d"]);
+    expect(desc.values[1]!.map((r) => r.key)).toEqual(["d", "c", "b", "a", "e"]);
+    await issues.update("c", (draft) => void (draft.modified = 4));
+    await until(() => asc.values.length === 3 && desc.values.length === 3);
+    expect(asc.values[2]!.map((r) => r.key)).toEqual(["c", "e", "a", "b", "d"]);
+    expect(desc.values[2]!.map((r) => r.key)).toEqual(["d", "b", "a", "e", "c"]);
+  });
+});
