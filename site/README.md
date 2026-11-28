@@ -63,7 +63,7 @@ The `docs` workflow ([`.github/workflows/docs.yml`](../.github/workflows/docs.ym
 | `exception` | Both | `errors()`, Vue's `errorHandler` on the site, `failed()` in the demo | `exception.type`, `exception.message`, `exception.stacktrace` |
 | `linearlite.open` | Demo | The `opened` message | `linearlite.duration_ms`, `linearlite.first_page_rows` (0 for an empty database, 50 at most) |
 | `linearlite.first_rows` | Demo | The `first-rows` message | `linearlite.duration_ms` |
-| `linearlite.filter` | Demo | The `filter` message | `linearlite.duration_ms` for the first page, `linearlite.total_duration_ms` for the count, `linearlite.total`, `linearlite.read_path` (`index`, `ranges`, `scan` or `search`) |
+| `linearlite.filter` | Demo | The `filter` message | `linearlite.duration_ms` for the first page, `linearlite.total_duration_ms` for the count, `linearlite.total`, `linearlite.read_path` (the index the first page read through, or `scan`), `linearlite.read_exact` (whether the index alone decided the rows) |
 | `linearlite.write` | Demo | The `generated` message | `linearlite.duration_ms`, `linearlite.generate_duration_ms`, `linearlite.count` |
 
 The demo's README defines each timing, in [Timings](../examples/linearlite-docstore/README.md#timings). Every record of the demo also carries `linearlite.framed`, `linearlite.navigation` (the frame's navigation type, such as `navigate` or `reload`), `linearlite.device.cores` and `linearlite.device.memory_gb`. The SDK adds these to every record of both services: the session id, the page URL, the referrer, the landing URL with its UTM parameters and the user agent. The demo in the frame has no referrer.

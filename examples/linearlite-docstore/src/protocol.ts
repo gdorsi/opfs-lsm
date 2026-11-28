@@ -1,4 +1,4 @@
-import type { ReadPath } from "./store.ts";
+import type { PlanSummary } from "@opfs-lsm/db";
 import { record, report, type Kpi } from "./telemetry.ts";
 
 /**
@@ -13,7 +13,7 @@ export type FromDemo =
   | { readonly type: "first-rows"; readonly ms: number }
   | { readonly type: "progress"; readonly written: number; readonly total: number }
   | { readonly type: "generated"; readonly count: number; readonly generateMs: number; readonly writeMs: number }
-  | { readonly type: "filter"; readonly label: string; readonly path: ReadPath; readonly rowsMs: number; readonly total: number | undefined; readonly totalMs: number | undefined }
+  | { readonly type: "filter"; readonly label: string; readonly plan: PlanSummary; readonly rowsMs: number; readonly total: number; readonly totalMs: number }
   | { readonly type: "deleted" }
   | { readonly type: "failed"; readonly message: string };
 
@@ -25,7 +25,12 @@ const KPIS: { readonly [T in FromDemo["type"]]: ((message: Extract<FromDemo, { t
   filter: (m) => ({
     name: "linearlite.filter",
     ms: m.rowsMs,
-    attributes: { "linearlite.read_path": m.path, "linearlite.total": m.total, "linearlite.total_duration_ms": m.totalMs },
+    attributes: {
+      "linearlite.read_path": m.plan.kind === "index" ? m.plan.index : m.plan.kind,
+      "linearlite.read_exact": "exact" in m.plan && m.plan.exact,
+      "linearlite.total": m.total,
+      "linearlite.total_duration_ms": m.totalMs,
+    },
   }),
   generated: (m) => ({
     name: "linearlite.write",

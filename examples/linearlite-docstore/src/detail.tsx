@@ -1,13 +1,23 @@
-import { createSignal, For, onSettled, Show } from "solid-js";
+import { useLiveQuery } from "@opfs-lsm/db/solid";
+import { createMemo, createSignal, For, Loading, onSettled, Show } from "solid-js";
 import type { App } from "./app.ts";
 import { shortDate, shortId } from "./issues.tsx";
+import { issueOf } from "./list.ts";
 import { CodeLabel, codeItems, MenuButton } from "./menu.tsx";
 import type { Detail as Details, Issue } from "./model.ts";
+import { detailOf } from "./store.ts";
 
 const full = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" });
 
-/** The issue page. Its title, status and priority are each saved as one write, and it shows what the change feed sends back. */
-export function Detail(props: { app: App; issue: Issue; detail: Details | undefined }) {
+/** The page of the issue `id`, which follows every write to it. An issue deleted meanwhile has no page. */
+export function IssuePage(props: { app: App; id: string }) {
+  const issue = useLiveQuery(() => issueOf(props.app.store.issues, props.id));
+  const detail = createMemo(() => detailOf(props.app.store, props.id));
+  return <Show when={issue()}>{(issue) => <Detail app={props.app} issue={issue()} detail={detail()} />}</Show>;
+}
+
+/** Its title, status and priority are each saved as one write. The description and the comments come once they are read. */
+function Detail(props: { app: App; issue: Issue; detail: Details | undefined }) {
   let title: HTMLInputElement | undefined;
   // A write from elsewhere shows at once, unless the title is being edited.
   const [draft, setDraft] = createSignal<string>((editing) => (editing !== undefined && document.activeElement === title ? editing : props.issue.title));
@@ -49,26 +59,28 @@ export function Detail(props: { app: App; issue: Issue; detail: Details | undefi
               if (e.key === "Enter") e.currentTarget.blur();
             }}
           />
-          <p class="field-desc">{props.detail?.description}</p>
-          <Show when={props.detail && props.detail.comments.length > 0}>
-            <h3 class="section-h">Comments</h3>
-          </Show>
-          <div id="comments">
-            <For each={props.detail?.comments}>
-              {(c) => (
-                <div class="comment">
-                  <span class="avatar">{c.username.slice(0, 1)}</span>
-                  <div class="comment-body">
-                    <div class="comment-meta">
-                      <b>{c.username}</b>
-                      <span>{shortDate(c.created)}</span>
+          <Loading>
+            <p class="field-desc">{props.detail?.description}</p>
+            <Show when={props.detail && props.detail.comments.length > 0}>
+              <h3 class="section-h">Comments</h3>
+            </Show>
+            <div id="comments">
+              <For each={props.detail?.comments}>
+                {(c) => (
+                  <div class="comment">
+                    <span class="avatar">{c.username.slice(0, 1)}</span>
+                    <div class="comment-body">
+                      <div class="comment-meta">
+                        <b>{c.username}</b>
+                        <span>{shortDate(c.created)}</span>
+                      </div>
+                      <div class="comment-text">{c.body}</div>
                     </div>
-                    <div class="comment-text">{c.body}</div>
                   </div>
-                </div>
-              )}
-            </For>
-          </div>
+                )}
+              </For>
+            </div>
+          </Loading>
         </div>
         <aside class="props">
           <div class="prop">
