@@ -1,6 +1,6 @@
 # @opfs-lsm/db
 
-A database for web apps, stored in OPFS through [`@opfs-lsm/docstore`](../docstore/README.md). You declare collections and their indexes, write documents, and run live queries written in TanStack DB's query syntax. Every query reads through an index you declared. The library keeps no index of its own, and no copy of your rows beyond the last result each subscriber holds.
+A database for web apps, stored in OPFS through [`@opfs-lsm/docstore`](../docstore/README.md). You declare collections and their indexes, write documents, and run live queries written in TanStack DB's query syntax. A query reads through the index you declared that fits it best, or the whole collection when none does. The library keeps no index of its own, and no copy of your rows beyond the last result each subscriber holds.
 
 ```sh
 pnpm add @opfs-lsm/db
@@ -185,6 +185,7 @@ There is one order for everything, the one the indexes keep: `null`, then `false
 - `eq(i.assignee, null)` is true for a missing or null assignee.
 - `gt`, `gte`, `lt` and `lte` compare two values of one type. `lt(i.due, 5)` is false for a `null` due date and for a string.
 - `like` matches `%` as any run of characters and `_` as one character, on the whole string. `ilike` does the same in lower case. Both compare text in Unicode NFC, so a pattern typed with `é` matches a text stored as `e` and a combining accent.
+- A `\` makes the `%`, `_` or `\` after it literal: `like(i.title, "100\\%")` in JavaScript source matches the title `100%`. Escape text a user types before it goes into a pattern, as in `q.replace(/[\\%_]/g, "\\$&")`.
 
 ### Plans
 
@@ -218,9 +219,9 @@ An index serves an order when the `orderBy` fields are the index's fields after 
 
 `subscribe(next, error)` calls `next` with the result after the first read, then each time the result changes. It never calls it synchronously, and never twice in a row with an equal result. It returns a function that stops every call.
 
-A row whose content did not change is the same object as in the previous result. A keyed list, such as Solid's `createProjection` or a React list with `key`, then redraws only the rows that changed.
+A row whose content did not change is the same object as in the previous result. A keyed list, such as Solid's `createProjection` or a React list with `key`, then redraws only the rows that changed. Rows are shared by every subscriber of the query and by later results: read them, and write changes to the collection, never to a row.
 
-A write reruns only the queries it may affect. The queries of one collection that need a rerun read together, from one snapshot, once per microtask batch, and never more than one read at a time per collection. Writes that arrive during a read become one more read. So a page and its count always show one state of the collection.
+A write reruns only the queries it may affect. The queries of one collection that need a rerun read together, from one snapshot, once per microtask batch, and a collection's subscriptions wait for one read at a time. Writes that arrive during a read become one more read. So a page and its count are read from one state of the collection, and handed over one after the other in the same task.
 
 Writes from other tabs rerun queries the same way.
 
