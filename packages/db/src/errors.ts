@@ -124,7 +124,7 @@ export function wrap(err: unknown, collection = ""): unknown {
   switch (err.code) {
     case "unique":
       return new ConflictError("unique", err.message, collection, err.ids ?? []);
-    // The ids are checked before docstore sees them, so what is left is a value an index cannot hold.
+    // db checks each id with docstore's own isDocId, and repeated or changed ids, before docstore sees them. What is left is a value an index cannot hold.
     case "document":
       return new ValidationError("indexed-field", err.message, collection);
     case "version":

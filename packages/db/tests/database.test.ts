@@ -129,7 +129,19 @@ describe("the write gate", () => {
   it("reports a value the storage cannot index", async () => {
     const { users } = (await openDb(collections)).collections;
     expect(await failure(users.insert({ id: "u1", email: "lone \uD800", name: "Ada" }))).toBe("ValidationError indexed-field");
+    expect(await failure(users.upsert({ id: "u1", email: "x".repeat(9000), name: "Ada" }))).toBe("ValidationError indexed-field");
     expect(await users.get("u1")).toBeUndefined();
+  });
+
+  it("checks every id the storage would refuse itself, so a refused document is an indexed field", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    const bad = ["", "\uD800", "x".repeat(1025)];
+    for (const id of bad) {
+      expect(await issues.get(id)).toBeUndefined();
+      expect(await failure(issues.update(id, () => {}))).toBe("NotFoundError missing");
+      expect(await failure(issues.upsert({ ...issue("a"), id }))).toBe("ValidationError id");
+    }
+    await expect(issues.delete(bad)).resolves.toBeUndefined();
   });
 
   it("checks what update made of the document, and stores nothing it refuses", async () => {
