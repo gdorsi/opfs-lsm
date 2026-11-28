@@ -967,3 +967,62 @@ describe("a patch that cannot apply", () => {
     expect(seen.errors).toEqual([]);
   });
 });
+
+describe("changes applied together after a read", () => {
+  /** A subscription whose read is in flight holds every change until `release`. */
+  async function held() {
+    const ctx = await openDb();
+    const { issues, views } = ctx;
+    await issues.insert([issue(1), issue(2), issue(3)]);
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    const count = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    const trigger = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 9)).limit(10).count()));
+    await until(() => [list, count, trigger].every((w) => w.values.length === 1));
+    views.hold();
+    const reads = views.views();
+    await issues.insert(issue(9, { status: 9 }));
+    await until(() => views.views() > reads);
+    const apply = async (writes: () => Promise<unknown>) => {
+      await writes();
+      views.release();
+      await until(() => trigger.values.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    return { ...ctx, list, count, apply };
+  }
+
+  it("hand over the same list for a document that left and came back equal", async () => {
+    const { issues, views, list, count, apply } = await held();
+    const first = list.values[0] as Issue[];
+    await apply(async () => {
+      await issues.delete("i2");
+      await issues.upsert(issue(2));
+      await issues.update("i3", (draft) => void (draft.status = 2));
+      await issues.update("i3", (draft) => void (draft.status = 1));
+    });
+    expect(list.values).toHaveLength(1);
+    expect(count.values).toEqual([3]);
+
+    // The rows it holds are the ones it handed over, so a later change to one of them still applies without a read.
+    const reads = views.views();
+    await issues.update("i2", (draft) => void (draft.title = "Renamed"));
+    await until(() => list.values.length === 2);
+    const second = list.values[1] as Issue[];
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toEqual(issue(2, { title: "Renamed" }));
+    expect(second[2]).toBe(first[2]);
+    expect(views.views()).toBe(reads);
+  });
+
+  it("read again for a gap among the changes, and count none of those it held", async () => {
+    const { issues, list, count, apply } = await held();
+    await apply(async () => {
+      await issues.insert(issue(4));
+      await tableOf(issues).docs.clear();
+      await issues.insert(issue(5));
+    });
+    await until(() => count.values.length === 2 && list.values.length === 2);
+    expect(count.values).toEqual([3, 1]);
+    expect(list.values.map(ids)).toEqual([["i1", "i2", "i3"], ["i5"]]);
+  });
+});
