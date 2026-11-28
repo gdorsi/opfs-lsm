@@ -31,6 +31,10 @@ describe("wrap", () => {
     expect(conflict.collection).toBe("users");
   });
 
+  it("gives a unique conflict no ids when the storage names none", () => {
+    expect((wrap(new DocStoreError("unique", "taken"), "users") as ConflictError).ids).toEqual([]);
+  });
+
   it("passes through a DbError, an error of the app, and a docstore error only a bug of this library can cause", () => {
     const own = new NotFoundError("issues", "i1");
     const app = new TypeError("from a callback");

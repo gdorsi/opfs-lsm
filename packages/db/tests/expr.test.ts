@@ -166,4 +166,26 @@ describe("conditions", () => {
     expect(code(() => compile([{ kind: "val", value: true }], "i"))).toBe("operand");
     expect(code(() => conditionOf(true as unknown as Expression<boolean>))).toBe("operand");
   });
+
+  it("refuses an operator given a condition, a like given no string, and an inArray given no list", () => {
+    const code = (condition: Condition) => {
+      try {
+        compile([conditionOf(condition)], "i");
+      } catch (err) {
+        return err instanceof QueryError ? `${err.code}: ${err.message}` : "another error";
+      }
+      return "no error";
+    };
+    expect(code(eq(and(eq(i.n, 1), eq(i.n, 2)) as never, true))).toBe("operand: an operator takes fields and values");
+    expect(code(like(i.s, 5 as never))).toBe("operand: like takes a string pattern");
+    expect(code(ilike(i.s, null as never))).toBe("operand: like takes a string pattern");
+    expect(code(inArray(i.n, 5 as never))).toBe("operand: inArray takes a list of values");
+    expect(code(inArray(i.n, i.tags as never))).toBe("operand: inArray takes a list of values");
+  });
+
+  it("gives a field reference no property but its names", () => {
+    expect((i as unknown as Record<symbol, unknown>)[Symbol.iterator]).toBeUndefined();
+    expect((i as unknown as Record<symbol, unknown>)[Symbol.toPrimitive]).toBeUndefined();
+    expect(Object.keys(i)).toEqual([]);
+  });
 });
