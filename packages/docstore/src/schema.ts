@@ -1,5 +1,3 @@
-import type { InferInput, InferOutput, StandardSchemaV1 } from "./standard-schema.js";
-
 export type Json =
   | null
   | boolean
@@ -58,34 +56,26 @@ type Include<T> = readonly [keyof T & string, ...(keyof T & string)[]];
 type Free<Ix, N extends string> = N extends keyof Ix ? "an index of this name is already declared" : N;
 
 declare const docType: unique symbol;
-declare const inputType: unique symbol;
-
-/** A Standard Schema whose output is a document. */
-type Validator = StandardSchemaV1<unknown, JsonDoc>;
 
 /**
- * A collection's document type `T`, its indexes `Ix` and what a write takes,
- * `In`, made by `collection` and grown by one method per kind of index. Each
- * method returns a new declaration and leaves this one as it is, so a base
- * can be shared.
+ * A collection's document type `T` and its indexes `Ix`, made by
+ * `collection` and grown by one method per kind of index. Each method returns
+ * a new declaration and leaves this one as it is, so a base can be shared.
  *
  * An index is ordered by the values at `by`, then the id. `by` is a field or
  * a list of fields. An array field is written with a `[]` suffix and only the
  * first may be one: the index then has one entry per distinct element, each
  * followed by the rest of `by`.
  */
-export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
+export interface CollectionDecl<T extends JsonDoc, Ix = {}> {
   /** The indexes declared so far, by name, as the stored catalog reads them. */
   readonly indexes: Ix;
-  /** The validator `collection` took. It is not stored: a change to it needs no new `version`. */
-  readonly validator?: Validator | undefined;
   readonly [docType]?: T;
-  readonly [inputType]?: In;
   /** A sorted index. */
   index<const N extends string, const B extends By<T>>(
     name: Free<Ix, N>,
     by: B,
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }, In>;
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B } }>;
   /**
    * A sorted index whose entries also hold the top-level fields `include` of
    * their document, which `queryEntries` returns without reading it.
@@ -94,12 +84,12 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
     name: Free<Ix, N>,
     by: B,
     options: { readonly include: F },
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly include: F } }, In>;
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly include: F } }>;
   /** A sorted index in which no two documents share the values at `by`. */
   unique<const N extends string, const B extends By<T>>(
     name: Free<Ix, N>,
     by: B,
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly unique: true } }, In>;
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly unique: true } }>;
   /**
    * A sorted index whose entries also carry the words of the string field
    * `text`, for `query({ match })`. `by` has no array field.
@@ -108,16 +98,13 @@ export interface CollectionDecl<T extends JsonDoc, Ix = {}, In = T> {
     name: Free<Ix, N>,
     by: B,
     text: X,
-  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly text: X } }, In>;
+  ): CollectionDecl<T, Ix & { readonly [K in N]: { readonly by: B; readonly text: X } }>;
 }
 
 class Declaration {
-  constructor(
-    readonly indexes: object = {},
-    readonly validator?: Validator,
-  ) {}
+  constructor(readonly indexes: object = {}) {}
   index(name: string, by: unknown, option?: object): never {
-    return new Declaration({ ...this.indexes, [name]: { by, ...option } }, this.validator) as never;
+    return new Declaration({ ...this.indexes, [name]: { by, ...option } }) as never;
   }
   unique(name: string, by: unknown): never {
     return this.index(name, by, { unique: true });
@@ -128,18 +115,12 @@ class Declaration {
 }
 
 /**
- * Start the declaration of a collection, with a validator or with the type
- * of its documents. A validator is any Standard Schema (zod, valibot,
- * arktype...). The documents are then its outputs, and a write takes its
- * input and stores what it returns.
+ * Start the declaration of a collection with the type of its documents.
  *
- *     collection(Todo).index("byCreated", "createdAt").text("search", "createdAt", "title")
- *     collection<Todo>().index("byCreated", "createdAt")
+ *     collection<Todo>().index("byCreated", "createdAt").text("search", "createdAt", "title")
  */
-export function collection<V extends Validator>(validator: V): CollectionDecl<InferOutput<V>, {}, InferInput<V>>;
-export function collection<T extends JsonDoc>(): CollectionDecl<T>;
-export function collection(validator?: Validator): never {
-  return new Declaration({}, validator) as never;
+export function collection<T extends JsonDoc>(): CollectionDecl<T> {
+  return new Declaration() as never;
 }
 
 /** What `openDocStore` takes. Each collection is what `collection` made. */
@@ -163,14 +144,9 @@ export function defineSchema<S extends Schema>(schema: S): S {
 type DocsOf<S extends Schema> = {
   readonly [C in keyof S["collections"]]: S["collections"][C] extends { readonly [docType]?: infer T extends JsonDoc } ? T : never;
 };
-type InputsOf<S extends Schema> = {
-  readonly [C in keyof S["collections"]]: S["collections"][C] extends { readonly [inputType]?: infer In } ? In : never;
-};
 
 export type CollectionName<S extends Schema> = keyof S["collections"] & string;
 export type DocOf<S extends Schema, C extends CollectionName<S>> = DocsOf<S>[C];
-/** What a write of collection `C` takes. */
-export type InputOf<S extends Schema, C extends CollectionName<S>> = InputsOf<S>[C];
 export type IndexesOf<S extends Schema, C extends CollectionName<S>> = S["collections"][C]["indexes"];
 
 /** What a declared index is, for layers that plan queries. */

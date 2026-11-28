@@ -70,9 +70,9 @@ describe("reconcile", () => {
   it("refuses another schema at the stored version", () => {
     const c = open(undefined, 1, v1);
     const changed = { ...v1, todos: { byA: { by: "a" }, byB: { by: "x" } } };
-    expect(codeOf(() => reconcile(c, declare(1, changed)))).toBe("schema");
-    expect(codeOf(() => reconcile(c, declare(1, { ...v1, more: {} })))).toBe("schema");
-    expect(codeOf(() => reconcile(c, declare(1, { ...v1, todos: { byA: { by: "a" } } })))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, changed)))).toBe("version");
+    expect(codeOf(() => reconcile(c, declare(1, { ...v1, more: {} })))).toBe("version");
+    expect(codeOf(() => reconcile(c, declare(1, { ...v1, todos: { byA: { by: "a" } } })))).toBe("version");
   });
 
   it("at a higher version keeps unchanged indexes, builds new and redefined ones under new ids, and drops the old ones", () => {
@@ -119,7 +119,7 @@ describe("reconcile", () => {
 
   it("refuses a drop at the stored version while the collection is stored", () => {
     const c = open(undefined, 1, v1);
-    expect(codeOf(() => reconcile(c, declare(1, { todos: v1["todos"]! }, ["notes"])))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(1, { todos: v1["todos"]! }, ["notes"])))).toBe("version");
   });
 
   it("makes a collection new at a higher version ready at once", () => {
@@ -146,7 +146,7 @@ describe("reconcile", () => {
       expect(idOf(next, "c", "x") === was).toBe(include?.join() === steps[i]?.join());
       c = next;
     });
-    expect(codeOf(() => reconcile(c, declare(6, { c: { x: { by: "a", include: ["t"] } } })))).toBe("schema");
+    expect(codeOf(() => reconcile(c, declare(6, { c: { x: { by: "a", include: ["t"] } } })))).toBe("version");
     const including = open(c, 7, { c: { x: { by: "a", include: ["t"] } } });
     expect(parseCatalog(encodeCatalog(including))).toEqual(including);
   });

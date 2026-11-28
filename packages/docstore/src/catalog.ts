@@ -249,11 +249,11 @@ export function reconcile(stored: StoredCatalog | undefined, declared: DeclaredS
       Object.keys(indexes).length === specs.size &&
       [...specs].every(([index, spec]) => indexes[index] !== undefined && sameSpec(indexes[index].spec, spec));
     if (!same) {
-      badSchema(`version ${declared.version} is stored with a different "${name}"; bump the version to change it`);
+      throw new DocStoreError("version", `version ${declared.version} is stored with a different "${name}"; bump the version to change it`);
     }
   }
   for (const name of declared.drop) {
-    if (Object.hasOwn(stored.collections, name)) badSchema(`version ${declared.version} is stored with "${name}"; bump the version to drop it`);
+    if (Object.hasOwn(stored.collections, name)) throw new DocStoreError("version", `version ${declared.version} is stored with "${name}"; bump the version to drop it`);
   }
   return undefined;
 }

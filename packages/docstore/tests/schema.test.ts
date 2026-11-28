@@ -81,7 +81,7 @@ describe("opening a schema", () => {
     await store.collection("todos").putMany(rows(10));
     const before = await docstoreKeys(kv);
     const other = defineSchema({ version: 1, collections: { todos: byCreated.index("byTitle", "slug") } });
-    expect(await codeOf(openDocStore(kv, other))).toBe("schema");
+    expect(await codeOf(openDocStore(kv, other))).toBe("version");
     expect(await docstoreKeys(kv)).toEqual(before);
   });
 

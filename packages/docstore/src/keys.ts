@@ -25,7 +25,7 @@ export const CATALOG_KEY: Uint8Array = Uint8Array.of(ROOT, 0x00, 0x00);
 const ROWS = 0x00;
 /** kv's key limit. */
 export const MAX_KEY_BYTES = 8 * 1024;
-const MAX_ID_BYTES = 1024;
+export const MAX_ID_BYTES = 1024;
 
 /** 1..65535, allocated from the catalog, never reused. */
 export type CollectionId = number & { readonly __brand: "CollectionId" };
@@ -37,17 +37,19 @@ export type DocId = string & { readonly __brand: "DocId" };
 export const utf8 = new TextEncoder();
 export const fromUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 
-/** Every string in a key must be well formed: TextEncoder writes each lone surrogate as U+FFFD, so two strings holding one could share a key. */
+/** Why `id` is no document id, or undefined. Every string in a key must be well formed: TextEncoder writes each lone surrogate as U+FFFD, so two strings holding one could share a key. */
+function idProblem(id: unknown): string | undefined {
+  if (typeof id !== "string" || id === "") return "a document id must be a non-empty string";
+  if (!id.isWellFormed()) return "a document id must not hold a lone surrogate";
+  if (id.length * 3 > MAX_ID_BYTES && utf8.encode(id).length > MAX_ID_BYTES) return `a document id must be at most ${MAX_ID_BYTES} UTF-8 bytes`;
+  return undefined;
+}
+
+export const isDocId = (id: unknown): id is string => idProblem(id) === undefined;
+
 export function parseId(id: unknown): DocId {
-  if (typeof id !== "string" || id === "") {
-    throw new DocStoreError("document", "a document id must be a non-empty string");
-  }
-  if (!id.isWellFormed()) {
-    throw new DocStoreError("document", "a document id must not hold a lone surrogate");
-  }
-  if (id.length * 3 > MAX_ID_BYTES && utf8.encode(id).length > MAX_ID_BYTES) {
-    throw new DocStoreError("document", `a document id must be at most ${MAX_ID_BYTES} UTF-8 bytes`);
-  }
+  const problem = idProblem(id);
+  if (problem !== undefined) throw new DocStoreError("document", problem);
   return id as DocId;
 }
 
@@ -180,17 +182,13 @@ function checkQueryValue(value: unknown): Scalar {
   return badQuery(`${String(value)} is not an index value: use null, a boolean, a finite number or a well-formed string`);
 }
 
+/** The form the words of a text index take. A capital sigma lowercases to the final form at the end of a word, so a typed prefix would miss the longer word. */
+export const foldText = (text: string): string => text.normalize("NFC").toLowerCase().replaceAll("ς", "σ");
+
 const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
 
-function wordsOf(text: string): string[] {
-  return text
-    .normalize("NFC")
-    .toLowerCase()
-    // A capital sigma lowercases to the final form at the end of a word, so a typed prefix would miss the longer word.
-    .replaceAll("ς", "σ")
-    .split(NON_WORD)
-    .filter((w) => w !== "");
-}
+/** The words a text index holds of `text`: a word ends at every character that is not a letter, a combining mark or a digit. */
+export const wordsOf = (text: string): string[] => foldText(text).split(NON_WORD).filter((w) => w !== "");
 
 /** A text entry's value. Words hold no space, so a typed word occurs in it iff it occurs inside one word. */
 export function textValue(text: string): Uint8Array {
@@ -212,7 +210,7 @@ export type IndexTarget = IndexInfo & { readonly prefix: Uint8Array; readonly ro
 export type ScanTarget = { readonly kind: "rows"; readonly prefix: Uint8Array } | IndexTarget;
 
 /** The most combinations of listed values one query reads. */
-const MAX_RANGES = 64;
+export const MAX_RANGES = 64;
 
 export type ScanPlan = {
   /** One range per combination of the values `eq` lists, in the order of their prefixes. `skip` is the length of the range's `eq` prefix. */

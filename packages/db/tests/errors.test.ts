@@ -16,8 +16,8 @@ describe("wrap", () => {
       [new ConstraintError("too large"), "StorageError limit"],
       [new DocStoreError("unique", "taken", ["b", "a"]), "ConflictError unique"],
       [new DocStoreError("document", "an index cannot hold the value"), "ValidationError indexed-field"],
-      [new DocStoreError("schema", 'version 2 is stored with a different "issues"; bump the version to change it'), "SchemaError version"],
-      [new DocStoreError("schema", 'the stored catalog has no collection "issues"'), "SchemaError catalog"],
+      [new DocStoreError("version", "stored with other indexes"), "SchemaError version"],
+      [new DocStoreError("schema", "the stored catalog has no collection"), "SchemaError catalog"],
       [new DocStoreError("index-failed", "cannot hold the stored data", ["a"]), "StorageError index-failed"],
     ];
     for (const [err, expected] of cases) expect(tagAndCode(wrap(err, "issues"))).toBe(expected);

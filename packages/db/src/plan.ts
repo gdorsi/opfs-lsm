@@ -9,10 +9,9 @@
  * - `exact`: the plan reaches only documents the `where` accepts.
  * - `ordered`: the plan yields documents in the query's order.
  */
-import type { IndexInfo } from "@opfs-lsm/docstore";
+import { isDocId, MAX_RANGES, wordsOf, type IndexInfo } from "@opfs-lsm/docstore";
 import type { PlanSummary } from "./live.js";
 import { compareValues, extentOf, isScalar, normalized, type Bound, type Node, type OrderKey, type Scalar } from "./expr.js";
-import { isId } from "./schema.js";
 
 /** One docstore query, less its page fields. A slot of `eq` holds a list when the field may have several values. */
 export type DocQuery = {
@@ -47,8 +46,6 @@ export type Plan =
       readonly exact: boolean;
     };
 
-/** docstore reads at most this many combinations of listed values in one query. Past it, an index pins fewer fields. */
-const MAX_RANGES = 64;
 /** docstore refuses a query whose key passes 8 KiB. A string this short stays under it on an index of 8 fields. */
 const MAX_STRING_UNITS = 256;
 
@@ -184,8 +181,6 @@ function boundsOf({ type, lower, upper }: Band): Pick<DocQuery, "gt" | "gte" | "
   return { [from.inclusive ? "gte" : "gt"]: from.value, ...(to && { [to.inclusive ? "lte" : "lt"]: to.value }) };
 }
 
-const HAS_WORD = /[\p{L}\p{M}\p{N}]/u;
-
 type Candidate = Extract<Plan, { kind: "ranges" }> & { readonly score: readonly number[] };
 
 /**
@@ -213,7 +208,7 @@ function candidate(index: Index | undefined, facts: Facts, order: OrderKey, want
   const pinned = by.slice(0, k);
   const bound = k < by.length ? bands.get(by[k]!) : undefined;
   const words = info?.text === undefined ? undefined : facts.words.get(info.text);
-  const match = words !== undefined && HAS_WORD.test(words) ? words : undefined;
+  const match = words !== undefined && wordsOf(words).length > 0 ? words : undefined;
 
   const constant = (field: string) => pins.get(field)?.values.length === 1;
   // `id` ends every order, and nothing after an `id` in the index orders anything.
@@ -273,7 +268,7 @@ export function planQuery(query: Planned, order: OrderKey, indexes: ReadonlyMap<
   const facts = factsOf(query.where, query.from.alias);
   if (facts.empty || query.limit === 0) return { kind: "none" };
   const ids = facts.pins.get("id");
-  if (ids) return { kind: "ids", ids: ids.values.filter(isId) };
+  if (ids) return { kind: "ids", ids: ids.values.filter(isDocId) };
   const count = query.shape === "count";
   const wantsFirst = query.limit !== undefined && !count;
   let best = candidate(undefined, facts, order, wantsFirst, count)!;

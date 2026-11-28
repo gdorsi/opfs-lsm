@@ -222,6 +222,13 @@ describe("the choice of a plan", () => {
     expect(explain(from().where(({ i }) => like(i.title, "%")))).toEqual({ kind: "scan", ordered: true, exact: false });
   });
 
+  it("pins both fields at 64 ranges, the most docstore reads", () => {
+    const eight = Array.from({ length: 8 }, (_, n) => n);
+    const q = from().where(({ i }) => and(inArray(i.status, eight), inArray(i.priority, eight)));
+    expect(ranges(q)).toEqual([{ index: "byStatus", eq: [eight, eight] }]);
+    expect(explain(q)).toMatchObject({ exact: true });
+  });
+
   it("pins fewer fields once the values would pass 64 ranges", () => {
     const many = Array.from({ length: 9 }, (_, n) => n);
     const q = from().where(({ i }) => and(inArray(i.status, many), inArray(i.priority, many)));

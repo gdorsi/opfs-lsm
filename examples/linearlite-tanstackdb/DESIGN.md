@@ -76,11 +76,12 @@ const SyncState = v.strictObject({
 });
 ```
 
-Each docstore collection is declared with its schema (`collection(StoredIssue)`, see Indexes), so docstore validates
-every row this tab writes and a row of another shape fails with `"invalid"` and stores nothing. The objects are
-strict, because docstore stores what a schema returns: a key a schema does not list is an error, where a plain
-`v.object` would drop it without a word. The schemas check the shape only. Length limits are the server's, so a row
-the server accepts is always writable.
+Each docstore collection is declared with its row type (`collection<StoredIssue>()`, see Indexes). Docstore stores
+what it is given, and the adapter takes no TanStack `schema`, which checks only `insert` and `update`: this app never
+calls them. `backend.transact` is the one write path, so it parses each row it is about to write with the valibot schema
+of its store, and a row of another shape throws a `ValiError` and stores nothing. The objects are strict, so a key a
+schema does not list is an error, where a plain `v.object` would drop it without a word. The schemas check the shape
+only. Length limits are the server's, so a row the server accepts is always writable.
 
 Server (`node:sqlite`, `data/linearlite.db`): tables `issue`, `body`, `comment` with the same fields as above plus
 `version INTEGER NOT NULL` (indexed); table `meta(k, v)` holds `head` (the global version counter) and `epoch` (a
@@ -215,16 +216,16 @@ reloads every loaded query.
 
 ```ts
 // src/backends/kv.ts, schema.collections
-issues: collection(StoredIssue)
+issues: collection<StoredIssue>()
   .index("byCreated", ["deleted", "created"])
   .index("byTitle", ["deleted", "title"])
   .index("byPriority", ["deleted", "priority", "priorityOrder"])
   .text("byStatus", ["deleted", "status", "statusOrder"], "title")
   .text("search", ["deleted", "modified"], "title")
   .index("pending", "pending"),
-bodies:   collection(Body).index("pending", "pending"),
-comments: collection(Comment).index("byIssue", "issue_id").index("pending", "pending"),
-sync:     collection(SyncState),
+bodies:   collection<Body>().index("pending", "pending"),
+comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
+sync:     collection<SyncState>(),
 ```
 
 Every list read pins `deleted = false`, so every ordered index leads with `deleted`: the adapter reads an ordered

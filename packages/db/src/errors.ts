@@ -124,14 +124,15 @@ export function wrap(err: unknown, collection = ""): unknown {
   switch (err.code) {
     case "unique":
       return new ConflictError("unique", err.message, collection, err.ids ?? []);
-    // The ids are checked before docstore sees them, so what is left is a value an index cannot hold.
+    // db checks each id with docstore's own isDocId, and repeated or changed ids, before docstore sees them. What is left is a value an index cannot hold.
     case "document":
       return new ValidationError("indexed-field", err.message, collection);
+    case "version":
     case "schema":
-      return new SchemaError(/^version \d+ is stored with/.test(err.message) ? "version" : "catalog", err.message, { cause: err });
+      return new SchemaError(err.code === "version" ? "version" : "catalog", err.message, { cause: err });
     case "index-failed":
       return new StorageError("index-failed", err.message, { cause: err });
-    // "query" and "cursor" would be a bug of the planner, and no docstore validator is declared.
+    // "query" and "cursor" would be a bug of the planner.
     default:
       return err;
   }

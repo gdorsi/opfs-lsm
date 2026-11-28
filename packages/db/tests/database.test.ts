@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Db } from "@opfs-lsm/kv";
 import { CommitError } from "@opfs-lsm/kv";
 import { openOn } from "../src/database.js";
-import { collection, DbError, deleteDatabase, eq, openDatabase, query, QueryError, ValidationError, type Collection, type Database, type Collections } from "../src/index.js";
+import { and, collection, DbError, deleteDatabase, eq, inArray, openDatabase, query, QueryError, ValidationError, type Collection, type Database, type Collections } from "../src/index.js";
 import type { Fields, TextField } from "../src/schema.js";
 import { freshName, openKv } from "./harness.js";
 
@@ -129,7 +129,19 @@ describe("the write gate", () => {
   it("reports a value the storage cannot index", async () => {
     const { users } = (await openDb(collections)).collections;
     expect(await failure(users.insert({ id: "u1", email: "lone \uD800", name: "Ada" }))).toBe("ValidationError indexed-field");
+    expect(await failure(users.upsert({ id: "u1", email: "x".repeat(9000), name: "Ada" }))).toBe("ValidationError indexed-field");
     expect(await users.get("u1")).toBeUndefined();
+  });
+
+  it("checks every id the storage would refuse itself, so a refused document is an indexed field", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    const bad = ["", "\uD800", "x".repeat(1025)];
+    for (const id of bad) {
+      expect(await issues.get(id)).toBeUndefined();
+      expect(await failure(issues.update(id, () => {}))).toBe("NotFoundError missing");
+      expect(await failure(issues.upsert({ ...issue("a"), id }))).toBe("ValidationError id");
+    }
+    await expect(issues.delete(bad)).resolves.toBeUndefined();
   });
 
   it("checks what update made of the document, and stores nothing it refuses", async () => {
@@ -240,6 +252,27 @@ describe("a query source", () => {
       await expect(run()).rejects.toBeInstanceOf(QueryError);
       await expect(run()).rejects.toMatchObject({ code: "source" });
     }
+  });
+});
+
+describe("a filter that lists values", () => {
+  it("reads the same documents on both sides of the most ranges docstore reads at once", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    // d matches neither list, so a split that drops the filter shows it.
+    await issues.insert([
+      issue("a", { status: 3, meta: { due: 5 } }),
+      issue("b", { status: 3, meta: { due: 8 } }),
+      issue("c", { status: 8, meta: { due: 5 } }),
+      issue("d", { status: 9, meta: { due: 100 } }),
+    ]);
+    const listed = (n: number) => {
+      const values = Array.from({ length: n }, (_, k) => k);
+      return query((q) => q.from({ i: issues }).where(({ i }) => and(inArray(i.status, values), inArray(i.meta.due, values))).orderBy(({ i }) => i.id));
+    };
+    // 8 x 8 values are 64 ranges, one query of docstore. 9 x 9 are 81, which db splits.
+    expect(listed(8).explain()).toMatchObject({ kind: "index", index: "byStatus", ranges: 1, exact: true });
+    expect((await listed(8).run()).map((d) => d.id)).toEqual(["a"]);
+    expect((await listed(9).run()).map((d) => d.id)).toEqual(["a", "b", "c"]);
   });
 });
 

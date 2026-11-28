@@ -1,5 +1,3 @@
-import * as v from "valibot";
-import { z } from "zod";
 import { collection, defineSchema, type DocStore, type IndexInfo, type Query } from "../src/index.js";
 
 type Todo = {
@@ -267,57 +265,43 @@ defineSchema({ version: 1, collections: { notes: collection<Note>().index("u", [
 // @ts-expect-error an empty list of fields
 defineSchema({ version: 1, collections: { notes: collection<Note>().index("u", []) } });
 
-const Task = v.object({
-  id: v.string(),
-  title: v.pipe(v.string(), v.minLength(1)),
-  done: v.optional(v.boolean(), false),
-  createdAt: v.number(),
-  tags: v.optional(v.array(v.string()), []),
-});
+type Task = { id: string; title: string; done: boolean; createdAt: number; tags: string[] };
+type Person = { id: string; email?: string; joined: number };
 
-const Person = z.object({
-  id: z.string(),
-  email: z.email().optional(),
-  joined: z.date().transform((d) => d.getTime()),
-});
-
-export const validated = defineSchema({
+export const indexed = defineSchema({
   version: 1,
   collections: {
-    tasks: collection(Task)
+    tasks: collection<Task>()
       .index("byCreated", "createdAt")
       .index("byTag", ["tags[]", "createdAt"])
       .text("search", "createdAt", "title"),
-    people: collection(Person).unique("byEmail", "email").index("byJoined", "joined"),
+    people: collection<Person>().unique("byEmail", "email").index("byJoined", "joined"),
     notes: collection<Note>().index("byOwner", ["owner", "updatedAt"]),
-    drafts: collection(Task),
+    drafts: collection<Task>(),
   },
 });
 
-export async function validatedWrites(store: DocStore<typeof validated>): Promise<unknown[]> {
+export async function indexedWrites(store: DocStore<typeof indexed>): Promise<unknown[]> {
   const tasks = store.collection("tasks");
   const people = store.collection("people");
-  await tasks.put({ id: "t1", title: "Buy milk", createdAt: 1 });
+  await tasks.put({ id: "t1", title: "Buy milk", done: false, createdAt: 1, tags: [] });
   const task = await tasks.get("t1");
   const done: boolean | undefined = task?.done;
   const tags: string[] | undefined = task?.tags;
-  // @ts-expect-error createdAt has no default
-  await tasks.put({ id: "t2", title: "x" });
+  // @ts-expect-error createdAt is required
+  await tasks.put({ id: "t2", title: "x", done: false, tags: [] });
   // @ts-expect-error done is a boolean
-  await tasks.put({ id: "t2", title: "x", createdAt: 1, done: "yes" });
+  await tasks.put({ id: "t2", title: "x", createdAt: 1, done: "yes", tags: [] });
   await tasks.modify("t1", (t) => ({ ...t, done: !t.done }));
   await tasks.modifyMany(["t1"], ([t]) => [t && { ...t, tags: [...t.tags, "home"] }]);
 
-  await people.put({ id: "p1", joined: new Date() });
-  // @ts-expect-error a write takes the input of joined, a Date
   await people.put({ id: "p1", joined: 0 });
+  // @ts-expect-error joined is a number
+  await people.put({ id: "p1", joined: new Date() });
   const joined: number | undefined = (await people.get("p1"))?.joined;
-  // @ts-expect-error the stored form holds joined as a number, which the input does not accept
-  await people.modify("p1", (p) => ({ ...p, email: "a@b.c" }));
-  await people.modify("p1", (p) => ({ ...p, joined: new Date(p.joined) }));
 
   const recent = await people.query({ index: "byJoined", gte: 0 });
-  // @ts-expect-error joined is stored as a number
+  // @ts-expect-error joined is a number
   await people.query({ index: "byJoined", gte: new Date() });
   // @ts-expect-error not an index of tasks
   await tasks.query({ index: "byJoined" });
@@ -329,31 +313,16 @@ export async function validatedWrites(store: DocStore<typeof validated>): Promis
   const notes = store.collection("notes");
   await notes.put({ id: "n1", owner: "ann", slug: "s", tags: [], updatedAt: 1, body: "" });
   await notes.query({ index: "byOwner", eq: ["ann"], gte: 0 });
-  // @ts-expect-error a collection with no validator takes its document type
-  await notes.put({ id: "n2" });
   // @ts-expect-error drafts has no index
   await store.collection("drafts").query({ index: "byCreated" });
   return [done, tags, joined, recent];
 }
 
-// @ts-expect-error joined is a number in the stored form, and so is not a string field
-collection(Person).text("s", "id", "joined");
-// @ts-expect-error not a field of the validator's output
-collection(Task).index("x", "titel");
-// @ts-expect-error a Date does not survive JSON
-collection(v.object({ id: v.string(), at: v.date() }));
+// @ts-expect-error joined is a number, and so is not a string field
+collection<Person>().text("s", "id", "joined");
+// @ts-expect-error not a field of Task
+collection<Task>().index("x", "titel");
 // @ts-expect-error a document needs a string id
-collection(z.object({ id: z.number() }));
-// @ts-expect-error an index name is declared once, with a validator too
-collection(Task).index("x", "createdAt").index("x", "title");
-
-const Visit = v.object({ id: v.string(), at: v.pipe(v.date(), v.transform((d) => d.getTime())) });
-const visitSchema = defineSchema({ version: 1, collections: { visits: collection(Visit).index("byAt", "at") } });
-
-export async function transformedWrites(store: DocStore<typeof visitSchema>): Promise<void> {
-  const visits = store.collection("visits");
-  await visits.put({ id: "v1", at: new Date() });
-  await visits.modify("v1", (x) => ({ ...x, at: new Date(x.at) }));
-  // @ts-expect-error at is a number in the stored form, and the input takes a Date
-  await visits.modify("v1", (x) => ({ ...x }));
-}
+collection<{ id: number }>();
+// @ts-expect-error an index name is declared once
+collection<Task>().index("x", "createdAt").index("x", "title");
