@@ -4,7 +4,7 @@
  */
 import { collection as docstoreCollection, type CollectionDecl, type IndexInfo, type Schema } from "@opfs-lsm/docstore";
 import { SchemaError, ValidationError } from "./errors.js";
-import { fieldAt } from "./expr.js";
+import { fieldAt, isScalar } from "./expr.js";
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json | undefined };
 
@@ -136,8 +136,6 @@ export function isId(id: unknown): id is string {
   return typeof id === "string" && id !== "" && id.isWellFormed() && (id.length * 3 <= MAX_ID_BYTES || new TextEncoder().encode(id).length <= MAX_ID_BYTES);
 }
 
-/** A number that is not finite is stored as null, so the index would order the document by a value it does not hold. */
-const isScalar = (v: unknown) => v === null || typeof v === "boolean" || typeof v === "string" || Number.isFinite(v);
 const isText = (v: unknown) => v === null || typeof v === "string";
 
 /**

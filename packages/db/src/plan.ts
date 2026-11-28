@@ -10,7 +10,7 @@
  * - `ordered`: the plan yields documents in the query's order.
  */
 import type { IndexInfo } from "@opfs-lsm/docstore";
-import { compareValues, extentOf, normalized, type Bound, type Node, type OrderKey, type Scalar } from "./expr.js";
+import { compareValues, extentOf, isScalar, normalized, type Bound, type Node, type OrderKey, type Scalar } from "./expr.js";
 import { isId } from "./schema.js";
 
 /** One docstore query, less its page fields. A slot of `eq` holds a list when the field may have several values. */
@@ -76,12 +76,8 @@ type Facts = {
 
 const same = (a: unknown, b: unknown): boolean => compareValues(a, b) === 0;
 
-/** A value an index key can hold, and a query can name. */
-function indexable(v: unknown): v is Scalar {
-  if (v === null || typeof v === "boolean") return true;
-  if (typeof v === "number") return Number.isFinite(v);
-  return typeof v === "string" && v.length <= MAX_STRING_UNITS && v.isWellFormed();
-}
+/** A value a query can name in an index range: one an index holds, and a string the query key has room for. */
+const queryable = (v: unknown): v is Scalar => isScalar(v) && (typeof v !== "string" || (v.length <= MAX_STRING_UNITS && v.isWellFormed()));
 
 /** The dot path of a field of `alias`, as an index names it. A segment that holds a dot has none. */
 export function dotPath(path: readonly string[]): string | undefined {
@@ -104,7 +100,7 @@ function pinOf(node: Node, alias: string): { readonly path: string; readonly val
   const pin = (ref: Node | undefined, values: unknown) => {
     const path = pathOf(ref, alias);
     if (path === undefined || !Array.isArray(values)) return undefined;
-    const ok = path === "id" ? values.every((v) => v === null || ["boolean", "number", "string"].includes(typeof v)) : values.every(indexable);
+    const ok = path === "id" ? values.every((v) => v === null || ["boolean", "number", "string"].includes(typeof v)) : values.every(queryable);
     return ok ? { path, values: distinct(values as Scalar[]) } : undefined;
   };
   switch (node.name) {
@@ -169,7 +165,7 @@ function factsOf(where: readonly Node[], alias: string): Facts {
     const value = right.value;
     // A comparison with null holds for nothing.
     if (value === null || value === undefined) empty = true;
-    if (value === null || !indexable(value)) return;
+    if (value === null || !queryable(value)) return;
     const type = typeof value as Type;
     const had = bands.get(path) ?? { type, from: [] };
     // Two types on one field, or an id that is no string, hold for nothing.

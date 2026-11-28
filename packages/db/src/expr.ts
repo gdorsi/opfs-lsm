@@ -10,6 +10,9 @@ import { QueryError } from "./errors.js";
 /** What a comparison and an index component hold. A missing field reads as null. */
 export type Scalar = null | boolean | number | string;
 
+/** A value an index holds. A number that is not finite is stored as null, so an index would order its document by a value it does not hold. */
+export const isScalar = (v: unknown): v is Scalar => v === null || typeof v === "boolean" || typeof v === "string" || Number.isFinite(v);
+
 /** A field of one source. `alias` names the source, `i` in `from({ i: issues })`. */
 export type RefNode = { readonly kind: "ref"; readonly alias: string; readonly path: readonly string[] };
 export type ValNode = { readonly kind: "val"; readonly value: unknown };
