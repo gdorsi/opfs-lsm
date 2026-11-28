@@ -1,5 +1,26 @@
 # @opfs-lsm/kv
 
+## 0.5.0
+
+### Minor Changes
+
+- 63a1f5a: `openDb` now opens in Safari and iOS 16 to 25, which have no `createWritable()`, in Samsung Internet and Android WebView, which have no SharedWorker, and inside a dedicated WebWorker in every browser, where it used to reject. Where the page has no SharedWorker, each handle starts the host in a dedicated Worker. A host writes SST files only in a SharedWorker whose OPFS files have `createWritable()`. Any other host still repairs and empties the database, but nothing flushes or compacts: every write stays in the IndexedDB WAL and in each tab's memory, each open replays the whole WAL, a delete frees no space until `dangerousDestroy`, `destroyDb` or an open whose host writes, and `onStorageFull` is never called. `openDb` still rejects with `StorageUnavailableError` where OPFS or a worker is missing, as in Node.
+- 71f146f: A run's block index is stored once, in the manifest. Each run file also held a copy of it that only compaction read. A run file is now its data blocks, its Bloom filter and a 24-byte footer, and a compaction step takes the block layout of its inputs from the manifest. A run of 2,000 entries with 27-byte keys and 100-byte values is 0.18% smaller, the read that loads a run's Bloom filter no longer carries the index, and `openDb` loads 0.7 kB less in all before compression, 0.1 kB less with brotli.
+  
+  The SST format is now version 3. A database written by an earlier version still opens and reads, without its Bloom filters, and every compaction throws `CorruptDatabaseError`, so writes stop once L0 fills. Call `destroyDb` and open it again.
+- 082a174: The body of `update` can read more keys: `tx.read(keys)` returns their values in the same state as the update's own. Use it for a key the body learns only from what it read, such as the target of a pointer. A value held in memory comes back at once, so the update still costs what a `put` costs. For any other, `read` ends that run of the body, kv loads the value and runs the body again. The `tx` of `update` has the new type `UpdateTx`. The main-thread JavaScript grows by 0.1 kB gzip, to 19.5 kB.
+- f5a1d19: The SharedWorker host now flushes and compacts in a browser with no `createWritable()`, as Safari and iOS 16 to 25, when it can write files another way. It stages each file as `<name>.crswap` through a sync access handle, flushes it, and renames it into place. The OPFS spec gives that handle to dedicated Workers only, so the worker first writes one scratch file in `opfs-lsm/` and stages its files only when the byte reads back. Where the scratch file fails, the host writes no file, as before. This ran in Safari 18.6 on macOS, from its SharedWorker, and in desktop Chrome inside a dedicated Worker. Safari 16 and 17 and iOS are untested. The host of a dedicated Worker, where the page has no SharedWorker, still writes no file. A page that imports `destroyDb` no longer bundles the file writer.
+
+### Patch Changes
+
+- c443397: A scan reads the memtable's rows in place instead of copying every row in its bounds first, so `range({ limit })` and a paged scan over a full memtable cost what they read. A range delete rewrites only the memtable chunks it touches instead of the whole table.
+- 147387f: `openDb` no longer waits for IndexedDB before it reads the manifest and opens the runs. While the WAL database opens, it reads the newest manifest in the folder and opens its runs, so a cold tab whose IndexedDB opens slowly resolves `openDb` sooner: a fresh-tab open of 100,000 entries went from 10.3 to 8.97 ms on an Apple M2 Pro. The main-thread bundle grows by about 150 gzip bytes, to 19.4 kB.
+- 901139c: An `update` now reads every write its handle issued before it. An update called right after a `put` of the same handle could run before that put when the put waited for the next group commit, or when the browser refused the put's group for lack of space: its `body` read the older value, and the put then replaced what the update wrote.
+  
+  A `changes()` listener that calls `close()` no longer takes the event being delivered away from the listeners after it. Every listener gets the append, then `closed`.
+- 219bc51: A `get` or `getMany` of a view keeps its run files until it settles, as the view's scans do. A write that commits while its handle closes reaches the other tabs.
+- 79b6b33: The SharedWorker an app loads no longer counts IO, flushes, compactions or wasm memory, and the tab no longer counts its WAL appends. Only `@opfs-lsm/kv/testing` keeps those counters for `readStats`: a database it opens in a browser uses a second SharedWorker entry with a meter. `readStats` now rejects with `StorageUnavailableError` for a database opened with plain `openDb`: open it with `openDbWith` or `openHarnessDb` of `@opfs-lsm/kv/testing`. An app downloads about 0.5 kB less brotli after `openDb` and 0.1 kB less gzip at import.
+
 ## 0.4.0
 
 ### Minor Changes
