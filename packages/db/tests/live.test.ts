@@ -890,3 +890,27 @@ describe("a subscription that ends", () => {
     }
   });
 });
+
+describe("a list that names its ids", () => {
+  it("follows the documents it names by their changes alone, and ignores the others", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3)]);
+    const named = query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.id, ["i1", "i2", "i4"])).where(({ i }) => eq(i.status, 1)));
+    expect(named.explain()).toEqual({ kind: "ids" });
+    const seen = watch(named);
+    await until(() => seen.values.length === 1);
+    expect(ids(seen.values[0])).toEqual(["i1", "i2"]);
+    const base = views.views();
+
+    await issues.update("i3", (draft) => void (draft.title = "Not named"));
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => seen.values.length === 2);
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 3);
+    await issues.update("i2", (draft) => void (draft.status = 1));
+    await until(() => seen.values.length === 4);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values.map(ids)).toEqual([["i1", "i2"], ["i1"], ["i1", "i4"], ["i1", "i2", "i4"]]);
+    expect(views.views()).toBe(base);
+  });
+});
