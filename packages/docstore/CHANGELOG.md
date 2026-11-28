@@ -1,5 +1,34 @@
 # @opfs-lsm/docstore
 
+## 0.5.0
+
+### Minor Changes
+
+- ad9a8e3: Each change of `changes()` has `before(index)`: the entries the document had in that index before the write, as `queryEntries` gives them, or none when it did not exist or was not in the index. It comes from the index entries the write removed and added, which the kv record already holds, and from the document for an index the write left alone, so nothing is read and nothing more is stored. It works across tabs. It takes a sorted or multi index that is not unique and includes no field. `DocChange` and `CollectionChange` take the collection's indexes as a second type parameter.
+- dabe760: `clear` deletes the collection's documents and index entries with one kv range delete, in the transaction that updates the catalog, and keeps the collection's id. Removing an index, dropping a collection and a failed backfill delete their keys the same way, in the write that changes the catalog, so no background sweep is left to run and `whenIdle` waits only for backfills. A clear no longer uses up a collection id, so clearing often cannot run out of them. A backfill of a cleared collection stops at its next chunk, since the clear marks its index ready. A cursor made before a `clear` now stays valid and resumes after its position, instead of throwing `"cursor"`; documents written since that sort at or before it are skipped. Like any kv range delete, a clear makes every tab rebuild its memtable once.
+  
+  The stored catalog format is now 3. A database written by an earlier version fails to open with `DocStoreError` `"schema"`, so open a new database name after you upgrade.
+- 6e2c4c5: A `match` with no words, such as `""` or `" - "`, keeps every entry, as a query without `match` does. Before, it threw `DocStoreError` `"query"`, so a search box had to drop the option until the user typed a word.
+- 62b9b05: The stored catalog keeps each index as `indexes` describes it, with `kind` (`"sorted"`, `"multi"` or `"text"`), `by` as declared, `unique`, `text` and `include`. The declaration API and `IndexInfo` do not change.
+  
+  The stored catalog format is now 4. A database written by an earlier version fails to open with `DocStoreError` `"schema"`, so open a new database name after you upgrade.
+- 32d17bf: A query whose `index` is a union, such as a sort the user picks, type-checks when it suits every index in the union, with no cast. `queryEntries` on such a union returns a union of pages, so `fields` is typed only when every index in it declares `include`. Types only: nothing changes at runtime.
+
+### Patch Changes
+
+- 761d8cb: Every write of rows runs one plan inside kv's `update`. `modify` and `modifyMany` on a collection with a unique index read each row once, in the transaction that writes it, as they already did without one. They read a unique key only for a value that `fn`'s document did not hold before, with `tx.read`. While a unique index builds, a write to a document whose old value another document holds no longer throws `"unique"` unless it takes that value anew.
+- 09bdfbe: A text index matches a Greek word whatever the case of its sigma. Text entries written before this release keep the final sigma, so write those documents again.
+- Updated dependencies [63a1f5a]
+- Updated dependencies [c443397]
+- Updated dependencies [147387f]
+- Updated dependencies [71f146f]
+- Updated dependencies [901139c]
+- Updated dependencies [082a174]
+- Updated dependencies [219bc51]
+- Updated dependencies [79b6b33]
+- Updated dependencies [f5a1d19]
+  - @opfs-lsm/kv@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes

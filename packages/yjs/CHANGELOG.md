@@ -1,5 +1,21 @@
 # @opfs-lsm/yjs
 
+## 0.5.0
+
+### Patch Changes
+
+- 901139c: After a write fails, `flush()` and `destroy()` put the failed updates again, one entry each, instead of the whole doc state. A doc whose state is over the 8 MiB batch limit could never store that repair, so the update was lost at the next load although the disk worked again.
+- Updated dependencies [63a1f5a]
+- Updated dependencies [c443397]
+- Updated dependencies [147387f]
+- Updated dependencies [71f146f]
+- Updated dependencies [901139c]
+- Updated dependencies [082a174]
+- Updated dependencies [219bc51]
+- Updated dependencies [79b6b33]
+- Updated dependencies [f5a1d19]
+  - @opfs-lsm/kv@0.5.0
+
 ## 0.4.0
 
 ### Patch Changes

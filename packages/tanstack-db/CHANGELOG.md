@@ -1,5 +1,29 @@
 # @opfs-lsm/tanstack-db
 
+## 0.5.0
+
+### Patch Changes
+
+- 1a74290: An on-demand query no longer fails when its `where` compares against an empty id or a string longer than 256 UTF-16 units. The filter checks such a value instead of an index range.
+- Updated dependencies [ad9a8e3]
+- Updated dependencies [dabe760]
+- Updated dependencies [6e2c4c5]
+- Updated dependencies [62b9b05]
+- Updated dependencies [761d8cb]
+- Updated dependencies [32d17bf]
+- Updated dependencies [09bdfbe]
+- Updated dependencies [63a1f5a]
+- Updated dependencies [c443397]
+- Updated dependencies [147387f]
+- Updated dependencies [71f146f]
+- Updated dependencies [901139c]
+- Updated dependencies [082a174]
+- Updated dependencies [219bc51]
+- Updated dependencies [79b6b33]
+- Updated dependencies [f5a1d19]
+  - @opfs-lsm/docstore@0.5.0
+  - @opfs-lsm/kv@0.5.0
+
 ## 0.4.0
 
 ### Patch Changes

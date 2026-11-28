@@ -1,6 +1,6 @@
 {
   "name": "@opfs-lsm/docstore",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A document store with declared indexes, paged queries, snapshot reads and a change feed, on @opfs-lsm/kv",
   "keywords": [
     "opfs",
