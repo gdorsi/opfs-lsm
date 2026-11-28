@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { IR, root, type Buildable, type QueryBuilder } from "../src/builder.js";
 import type { Collection } from "../src/database.js";
 import { and, eq, gt, gte, ilike, inArray, like, lt, lte, not, or, orderKeyOf, refProxy, type Ref } from "../src/expr.js";
-import { planQuery, summarize, type Plan } from "../src/plan.js";
+import { entryInRanges, planQuery, summarize, type Plan } from "../src/plan.js";
 
 type Issue = {
   id: string;
@@ -262,5 +262,36 @@ describe("what the planner leaves to the filter", () => {
     expect(one((i) => and(lt(i.created, 5), lte(i.created, 5)))).toEqual([{ index: "byCreated", gt: true, lt: 5 }]);
     expect(one((i) => and(gt(i.created, 5), gt(i.created, 9)))).toEqual([{ index: "byCreated", gt: 9, lt: "" }]);
     expect(one((i) => and(gt(i.created, 9), gt(i.created, 5)))).toEqual([{ index: "byCreated", gt: 9, lt: "" }]);
+  });
+});
+
+describe("the entries inside the ranges of a plan", () => {
+  const inside = (query: Buildable<unknown>, ...entries: (readonly unknown[])[]) => {
+    const p = plan(query);
+    if (p.kind !== "ranges") throw new Error("not ranges");
+    return entries.map((values) => entryInRanges(p, values as never));
+  };
+
+  it("matches a slot that pins a value, or lists several", () => {
+    expect(inside(from().where(({ i }) => eq(i.status, 1)), [1, 7, 9], [2, 7, 9], [0, 7, 9])).toEqual([true, false, false]);
+    expect(inside(from().where(({ i }) => inArray(i.status, [3, 1])), [1, 0, 0], [3, 0, 0], [2, 0, 0])).toEqual([true, true, false]);
+  });
+
+  it("matches in any of the ranges of a plan", () => {
+    const q = from().where(({ i }) => inArray(i.status, [1, 3])).orderBy(({ i }) => i.status).orderBy(({ i }) => i.priority).orderBy(({ i }) => i.modified);
+    expect(plan(q)).toMatchObject({ ranges: [{ eq: [1] }, { eq: [3] }] });
+    expect(inside(q, [1, 0, 0], [3, 0, 0], [2, 0, 0])).toEqual([true, true, false]);
+  });
+
+  it("excludes the entry at an open bound and includes the one at a closed bound, after the pinned slots", () => {
+    const open = from().where(({ i }) => and(eq(i.status, 1), gt(i.priority, 2), lt(i.priority, 5)));
+    expect(inside(open, [1, 2, 0], [1, 3, 0], [1, 4, 0], [1, 5, 0], [2, 3, 0])).toEqual([false, true, true, false, false]);
+    const closed = from().where(({ i }) => and(eq(i.status, 1), gte(i.priority, 2), lte(i.priority, 5)));
+    expect(inside(closed, [1, 1, 0], [1, 2, 0], [1, 5, 0], [1, 6, 0])).toEqual([false, true, true, false]);
+  });
+
+  it("keeps a bound inside the type of its value", () => {
+    expect(inside(from().where(({ i }) => gt(i.created, 5)), [6], [5], ["x"], [true], [null])).toEqual([true, false, false, false, false]);
+    expect(inside(from().where(({ i }) => lte(i.created, 5)), [5], [-1], [6], ["x"], [false])).toEqual([true, true, false, false, false]);
   });
 });
