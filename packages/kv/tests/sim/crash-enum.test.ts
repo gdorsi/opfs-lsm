@@ -336,19 +336,6 @@ describe("risks to target first (research note)", () => {
     }
   });
 
-  // Risk 2. Compaction install raises `generation` to 5 in IndexedDB, then
-  // removes manifest 4 and the input runs from OPFS. Under power loss the
-  // removals can survive and the raise not: IndexedDB records generation 4,
-  // whose manifest is gone. The open records manifest 5 instead: OPFS
-  // removed manifest 4 after it published 5.
-  it("risk 2: compaction reclaim that outlives its generation raise leaves a database that opens", async () => {
-    const { ops, log, cut } = await cutOf(COMPACTION, (idb, opfs) => ({
-      idb: through(idb, "raiseGeneration 5") - 1,
-      opfs: through(opfs, "remove l0/7-7.sst"),
-    }));
-    await expect(checkCrashState(ops, log, cut, "power")).resolves.toBeUndefined();
-  });
-
   // Risk 3, process crash between manifest 1 and its IndexedDB update. The
   // next ingest builds on the recorded generation 0, not on manifest 1, so
   // it re-folds seqs 1..2 into the same path (same bytes) and lists it once

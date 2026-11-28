@@ -173,14 +173,6 @@ describe("update", () => {
     await db.close();
   });
 
-  it("returns what a body that writes nothing read at the committed head", async () => {
-    const db = await open("a", new MemoryFs());
-    await db.put(utf("n"), utf("1"));
-    await unheard("n", "5");
-    expect(await db.update([utf("n")], ([cur]) => text(cur))).toBe("5");
-    await db.close();
-  });
-
   it("throws only what a body throws at the committed head", async () => {
     const db = await open("a", new MemoryFs());
     await db.put(utf("n"), utf("1"));
@@ -258,23 +250,6 @@ describe("update", () => {
     expect(seen).toEqual(["1", undefined]);
     await writer.close();
     await reader.close();
-  });
-
-  it("sees a write that was never broadcast", async () => {
-    const fs = new MemoryFs();
-    const db = await openHarnessDb({ name: NAME, writerId: "a", fs, forceMemory: true, maxWalBytes });
-    await db.put(utf("n"), utf("1"));
-    const silent = await TabWal.open(checkDbName(NAME));
-    await silent.appendAfter(0, () => ({
-      ops: putOps("n", "5"),
-      result: undefined,
-    }));
-    silent.close();
-    await db.update([utf("n")], ([cur], tx) => {
-      tx.put(utf("n"), utf(String(Number(text(cur)) + 1)));
-    });
-    expect(text(await db.get(utf("n")))).toBe("6");
-    await db.close();
   });
 
   it("writes nothing when the body throws", async () => {

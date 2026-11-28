@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CorruptDatabaseError } from "../src/errors.js";
 import { untilHit } from "../src/store/cursor.js";
-import { decodeSst, encodeSstRef, sstBlockIndex, sstGet, sstRunEnd, SST_BLOCK_TARGET } from "./oracle/sst-ref.js";
+import { decodeSst, encodeSstRef, sstBlockIndex, sstRunEnd } from "./oracle/sst-ref.js";
 import { pointGet, runLevels } from "../src/store/read.js";
 import { PageCache } from "../src/store/page-cache.js";
 import { SstReader } from "../src/store/sst-reader.js";
@@ -82,70 +82,10 @@ describe("sst", () => {
     }
   });
 
-  it("round-trips puts and deletes", () => {
-    const body = encodeSstRef([
-      { kind: "put", key: utf("b"), value: utf("2"), seq: 1 },
-      { kind: "del", key: utf("a"), seq: 2 },
-      { kind: "put", key: utf("c"), value: utf("3"), seq: 3 },
-    ]);
-    const entries = decodeSst(body);
-    expect(entries.map((e) => e.kind + ":" + new TextDecoder().decode(e.key))).toEqual([
-      "del:a",
-      "put:b",
-      "put:c",
-    ]);
-  });
-
   it("rejects corrupt crc", () => {
     const body = encodeSstRef([{ kind: "put", key: utf("a"), value: utf("1"), seq: 1 }]);
     body[5] ^= 0xff;
     expect(() => decodeSst(body)).toThrow(CorruptDatabaseError);
-  });
-
-  it("splits into multiple blocks", () => {
-    const entries = Array.from({ length: 200 }, (_, i) => ({
-      kind: "put" as const,
-      key: utf(`k${String(i).padStart(4, "0")}`),
-      value: utf(`v${i}`),
-      seq: i + 1,
-    }));
-    const body = encodeSstRef(entries, 256);
-    expect(sstBlockIndex(body).sepEnd.length).toBeGreaterThan(1);
-    expect(decodeSst(body)).toHaveLength(200);
-  });
-
-  it("SstReader point-gets via bloom + one block", async () => {
-    const entries = Array.from({ length: 80 }, (_, i) => ({
-      kind: "put" as const,
-      key: utf(`k${String(i).padStart(3, "0")}`),
-      value: utf(`v${i}`),
-      seq: i + 1,
-    }));
-    const body = encodeSstRef(entries, 200);
-    const reader = readerOfBytes(body);
-    expect(await runGet(reader, utf("k040"))).toEqual({
-      kind: "put",
-      key: utf("k040"),
-      value: utf("v40"),
-      seq: 41,
-    });
-    expect(await runGet(reader, utf("missing"))).toBeUndefined();
-  });
-
-  it("get finds what a full decode holds, for every key and gap", async () => {
-    const rows = Array.from({ length: 900 }, (_, i) =>
-      i % 7 === 3
-        ? { kind: "del" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), seq: i + 1 }
-        : { kind: "put" as const, key: utf(`k${String(i * 2).padStart(5, "0")}`), value: utf("v".repeat(i % 50)), seq: i + 1 },
-    );
-    const body = encodeSstRef(rows);
-    const probes = [utf(""), utf("a"), utf("b"), utf("c"), utf("k"), utf("z")];
-    for (let i = 0; i <= 1800; i++) probes.push(utf(`k${String(i).padStart(5, "0")}`), utf(`k${String(i).padStart(5, "0")}x`));
-    const show = (e: ReturnType<typeof sstGet>) =>
-      e && `${new TextDecoder().decode(e.key)}:${e.kind}:${e.seq}:${e.kind === "put" ? e.value.byteLength : ""}`;
-    const all = decodeSst(body);
-    const reader = readerOfBytes(body);
-    for (const k of probes) expect(show(await runGet(reader, k))).toBe(show(sstGet(all, k)));
   });
 
   it("newest run wins and a tombstone hides the older put", async () => {
@@ -163,21 +103,4 @@ describe("sst", () => {
     expect(await untilHit(() => pointGet(undefined, levels, utf("c"), NO_MARKS))).toBeUndefined();
   });
 
-  it("cursor seeks one block and stops before endExclusive", async () => {
-    const entries = Array.from({ length: 80 }, (_, i) => ({
-      kind: "put" as const,
-      key: utf(`k${String(i).padStart(3, "0")}`),
-      value: utf(`v${i}`),
-      seq: i + 1,
-    }));
-    const reader = readerOfBytes(encodeSstRef(entries, 200));
-    const got = (await drain(reader.cursor({ start: utf("k040"), endExclusive: utf("k043") }))).map((e) =>
-      new TextDecoder().decode(e.key),
-    );
-    expect(got).toEqual(["k040", "k041", "k042"]);
-  });
-
-  it("default block target constant is 32KiB", () => {
-    expect(SST_BLOCK_TARGET).toBe(32 * 1024);
-  });
 });

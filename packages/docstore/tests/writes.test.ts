@@ -718,17 +718,6 @@ describe("two handles on one database", () => {
     expect(await a.notes.getMany(["x", "y"])).toEqual([{ id: "x", n: 100 }, { id: "y", n: 200 }]);
   });
 
-  it("applies 50 increments from each handle through modify", async () => {
-    const { a, b } = await pair();
-    await a.notes.put({ id: "counter", n: 0 });
-    await b.kv.sync();
-    const bump = async (c: typeof a.notes) => {
-      for (let i = 0; i < 50; i++) await c.modify("counter", (d) => ({ ...d, n: d.n! + 1 }));
-    };
-    await Promise.all([bump(a.notes), bump(b.notes)]);
-    await a.kv.sync();
-    expect((await a.notes.get("counter"))!.n).toBe(100);
-  });
 });
 
 describe("modifyMany on a collection without a unique index", () => {

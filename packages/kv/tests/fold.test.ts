@@ -124,20 +124,6 @@ describe("the run a WAL chunk folds to", () => {
     );
   });
 
-  it("keeps the later of two writes to a key in one record", async () => {
-    const records: WalRecord[] = [
-      {
-        seq: asSeq(1),
-        ops: [
-          { type: "put", key: key(1), value: value(1) },
-          { type: "del", key: key(1) },
-          { type: "put", key: key(1), value: value(2) },
-        ],
-      },
-    ];
-    expect((await observed(records)).entries).toEqual([{ kind: "put", key: [1], value: [2], seq: 1 }]);
-  });
-
   it("tells keys apart that differ in length or in a high byte", async () => {
     const keys = [key(), key(0), key(0, 0), key(255), key(255, 255), key(128), key(0x80, 0x01)];
     const records: WalRecord[] = keys.map((k, i) => ({

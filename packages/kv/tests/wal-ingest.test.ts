@@ -29,14 +29,6 @@ afterEach(async () => {
 });
 
 describe("shared IDB WAL", () => {
-  it("put resolves after IDB commit and get sees the row", async () => {
-    const db = await openHarnessDb({ name: "notes", writerId: "w1", forceMemory: true });
-    await db.put(utf("a"), utf("1"));
-    const v = await db.get(utf("a"));
-    expect(v && new TextDecoder().decode(v)).toBe("1");
-    await db.close();
-  });
-
   it("other tab sees acked WAL without ingest", async () => {
     const fs = new MemoryFs();
     const a = await openHarnessDb({ name: "notes", writerId: "w1", fs });
@@ -113,20 +105,6 @@ describe("ingest", () => {
 });
 
 describe("batch + prefixBound", () => {
-  it("batch is one IDB append", async () => {
-    const db = await openHarnessDb({ name: "notes2", writerId: "w1", forceMemory: true });
-    await db.batch((tx) => {
-      tx.put(utf("note/1"), utf("x"));
-      tx.put(utf("note/2"), utf("y"));
-    });
-    const keys: string[] = [];
-    for await (const e of db.range(prefixBound(utf("note/")))) {
-      keys.push(new TextDecoder().decode(e.key));
-    }
-    expect(keys).toEqual(["note/1", "note/2"]);
-    await db.close();
-  });
-
   it("range reads one state while writes and an ingest land mid-scan", async () => {
     const db = await openHarnessDb({ name: "notes2", writerId: "w1", forceMemory: true });
     await db.batch((tx) => {

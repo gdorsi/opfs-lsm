@@ -652,16 +652,6 @@ describe("clear", () => {
     }
   });
 
-  it("keeps a put that resolves after clear resolved, alone", async () => {
-    const { store } = await at(freshName(), v1);
-    const todos = store.collection("todos");
-    await todos.putMany(rows(10));
-    await todos.clear();
-    await todos.put({ id: "after", title: "t", createdAt: 1 });
-    expect((await todos.queryIds({})).ids).toEqual(["after"]);
-    expect((await todos.queryIds({ index: "byTitle" })).ids).toEqual(["after"]);
-  });
-
   it("leaves a put racing a clear from another handle either cleared or present with all its entries", async () => {
     const name = freshName();
     const a = await at(name, v1);

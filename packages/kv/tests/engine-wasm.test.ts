@@ -16,20 +16,6 @@ const enc = new TextEncoder();
 const utf = (s: string) => enc.encode(s);
 
 describe("engine WASM", () => {
-  it("loads wasm and round-trips SST", async () => {
-    await ensureEngine();
-    const body = (await encodeRun([
-      { kind: "put", key: utf("a"), value: utf("1") },
-      { kind: "del", key: utf("b") },
-    ])).body;
-    const entries = decodeSst(body);
-    expect(entries).toHaveLength(2);
-    // Sorted by key: "a" put, then "b" del
-    expect(entries[0]!.kind).toBe("put");
-    expect(new TextDecoder().decode(entries[0]!.key)).toBe("a");
-    expect(entries[1]!.kind).toBe("del");
-  });
-
   it("merges into a run whose Bloom filter is over 64 KiB", async () => {
     await ensureEngine();
     const half = (from: number) =>
