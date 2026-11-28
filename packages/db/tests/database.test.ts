@@ -1,8 +1,10 @@
 import type { CollectionDecl } from "@opfs-lsm/docstore";
 import * as v from "valibot";
 import { afterEach, describe, expect, it } from "vitest";
+import type { Db } from "@opfs-lsm/kv";
+import { CommitError } from "@opfs-lsm/kv";
 import { openOn } from "../src/database.js";
-import { collection, DbError, ValidationError, type Collection, type Database, type Collections } from "../src/index.js";
+import { collection, DbError, deleteDatabase, eq, openDatabase, query, QueryError, ValidationError, type Collection, type Database, type Collections } from "../src/index.js";
 import type { Fields, TextField } from "../src/schema.js";
 import { freshName, openKv } from "./harness.js";
 
@@ -214,11 +216,47 @@ describe("a validator", () => {
     expect(done).toEqual({ id: "t1", title: "Buy milk", done: true, created: 1 });
   });
 
+  it("names the id of a document it refuses only when the id is a string", async () => {
+    const { tasks } = (await openDb(tasksDef)).collections;
+    const refused = (doc: unknown) => tasks.insert(doc as never).catch((err: unknown) => err as ValidationError);
+    expect(await refused({ id: "t1", title: "", created: 1 })).toMatchObject({ code: "invalid", id: "t1" });
+    const noId = await refused({ id: 7, title: "x", created: 1 });
+    expect(noId).toMatchObject({ code: "invalid", id: undefined });
+  });
+
   it("must be synchronous", async () => {
     const Later = { ...Task, "~standard": { ...Task["~standard"], validate: async (value: unknown) => Task["~standard"].validate(value) } } as typeof Task;
     const { tasks } = (await openDb({ tasks: collection(Later) })).collections;
     expect(await failure(tasks.insert({ id: "t1", title: "x", created: 1 }))).toBe("ValidationError async");
     expect(await tasks.get("t1")).toBeUndefined();
+  });
+});
+
+describe("a query source", () => {
+  it("is a collection of an open database, and nothing else", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    for (const source of [null, 5, "issues", { name: "issues" }, () => issues]) {
+      const run = () => query((q) => q.from({ i: source as never })).run();
+      await expect(run()).rejects.toBeInstanceOf(QueryError);
+      await expect(run()).rejects.toMatchObject({ code: "source" });
+    }
+  });
+});
+
+describe("a filtered read in order", () => {
+  it("goes on to the next page while a page holds too few matches, and stops at the limit", async () => {
+    const { issues } = (await openDb(collections)).collections;
+    const many = Array.from({ length: 200 }, (_, n) => issue(`i${String(n).padStart(3, "0")}`, { status: 1, assignee: n === 3 || n === 150 || n === 190 ? "ada" : null }));
+    await issues.insert(many);
+    const ada = (limit?: number) =>
+      query((q) => {
+        const all = q.from({ i: issues }).where(({ i }) => eq(i.assignee, "ada")).orderBy(({ i }) => i.id);
+        return limit === undefined ? all : all.limit(limit);
+      });
+    expect((await ada(2).run()).map((d) => d.id)).toEqual(["i003", "i150"]);
+    expect((await ada(3).run()).map((d) => d.id)).toEqual(["i003", "i150", "i190"]);
+    expect((await ada(9).run()).map((d) => d.id)).toEqual(["i003", "i150", "i190"]);
+    expect((await ada().run()).map((d) => d.id)).toEqual(["i003", "i150", "i190"]);
   });
 });
 
@@ -241,6 +279,25 @@ describe("open and close", () => {
     await closed;
     const calls = [issues.get("a"), issues.insert(issue("b")), issues.upsert(issue("b")), issues.update("a", () => {}), issues.delete("a")];
     for (const call of calls) expect(await failure(call)).toBe("ClosedError closed");
+  });
+
+  it("reports a close the storage refuses, and the same failure to every caller", async () => {
+    const kv = await openKv();
+    const failing = new Proxy(kv, {
+      get: (target, prop) => (prop === "close" ? () => Promise.reject(new CommitError("lost")) : (Reflect.get(target, prop, target) as unknown)),
+    }) as Db;
+    const db = await openOn(failing, { version: 1, collections });
+    const closing = db.close();
+    expect(db.close()).toBe(closing);
+    await expect(closing).rejects.toMatchObject({ _tag: "StorageError", code: "commit" });
+    await expect(db.collections.issues.get("a")).rejects.toMatchObject({ _tag: "ClosedError" });
+    await kv.close();
+  });
+
+  // Node has no OPFS, so the real storage is not there.
+  it("reports storage the platform lacks as StorageError unavailable, from open and from delete", async () => {
+    expect(await failure(openDatabase({ name: freshName(), version: 1, collections }))).toBe("StorageError unavailable");
+    expect(await failure(deleteDatabase(freshName()))).toBe("StorageError unavailable");
   });
 
   it("refuses a version stored with other indexes, and a schema docstore cannot take", async () => {

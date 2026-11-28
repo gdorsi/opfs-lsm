@@ -54,7 +54,7 @@ const TABLE: unique symbol = Symbol("table");
 
 /** The table behind a collection handle. A handle names its database, so a query needs no other way to find it. @internal */
 export function tableOf(collection: unknown): Table {
-  const table = typeof collection === "object" && collection !== null ? (collection as { [TABLE]?: Table })[TABLE] : undefined;
+  const table = (collection as { [TABLE]?: Table } | null | undefined)?.[TABLE];
   if (!table) throw new QueryError("source", "from takes a collection of an open database");
   return table;
 }
