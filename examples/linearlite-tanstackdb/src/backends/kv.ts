@@ -10,26 +10,27 @@ import type { IssueFilter, SortField } from "../model/filter.ts";
 import { ORDER } from "../model/query.ts";
 import { recount, type Pause } from "./recount.ts";
 
+/** Docstore stores what it is given, so `transact` checks each row against its schema first: it is the one write path. */
+const ROW_SCHEMAS = { issues: StoredIssue, bodies: Body, comments: Comment, sync: SyncState } satisfies { readonly [S in StoreName]: v.GenericSchema<unknown, CollectionRows[S]> };
+type Row<S extends StoreName> = v.InferOutput<(typeof ROW_SCHEMAS)[S]>;
+
 /** The reads each issue index serves are in DESIGN.md, "Indexes". */
 export const schema = defineSchema({
   version: 5,
   collections: {
-    issues: collection<StoredIssue>()
+    issues: collection<Row<"issues">>()
       .index("byCreated", ["deleted", "created"])
       .index("byTitle", ["deleted", "title"])
       .index("byPriority", ["deleted", "priority", "priorityOrder"])
       .text("byStatus", ["deleted", "status", "statusOrder"], "title")
       .text("search", ["deleted", "modified"], "title")
       .index("pending", "pending"),
-    bodies: collection<Body>().index("pending", "pending"),
-    comments: collection<Comment>().index("byIssue", "issue_id").index("pending", "pending"),
-    sync: collection<SyncState>(),
+    bodies: collection<Row<"bodies">>().index("pending", "pending"),
+    comments: collection<Row<"comments">>().index("byIssue", "issue_id").index("pending", "pending"),
+    sync: collection<Row<"sync">>(),
   },
   drop: ["outbox"],
 });
-
-/** Docstore stores what it is given, so `transact` checks each row against its schema first: it is the one write path. */
-const ROW_SCHEMAS: Record<StoreName, v.GenericSchema<object>> = { issues: StoredIssue, bodies: Body, comments: Comment, sync: SyncState };
 
 export type Docs = DocStore<typeof schema>;
 const issueDocs = (docs: Docs) => docs.collection("issues");
