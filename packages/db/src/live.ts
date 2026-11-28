@@ -7,7 +7,7 @@ import { IR, root, type Buildable, type QueryRoot } from "./builder.js";
 import { tableOf, type Table } from "./database.js";
 import { ClosedError, wrap, type AnyDbError } from "./errors.js";
 import { execute, type Compiled, type Found } from "./execute.js";
-import { compareRows, compile, orderKeyOf, valueAt, type Scalar } from "./expr.js";
+import { compareRows, compile, orderKeyOf, valueAt, type OrderKey, type Scalar } from "./expr.js";
 import { dotPath, entryInRanges, keyOnly, planQuery, summarize } from "./plan.js";
 import type { JsonDoc } from "./schema.js";
 
@@ -98,7 +98,7 @@ type Result = {
   readonly seq: number;
   /** The rows handed out, by document id, in order. A count has none. */
   readonly rows: ReadonlyMap<string, unknown>;
-  /** The stored document of the last row, when the result holds `limit` rows: every match after it is outside the result. */
+  /** The order fields of the last row, copied from its stored document, when the result holds `limit` rows: every match after it is outside the result. */
   readonly last: JsonDoc | undefined;
   readonly value: unknown;
 };
@@ -259,7 +259,14 @@ class Feed {
     for (const sub of this.subs) {
       const r = sub.result;
       if (!r || this.dirty.has(sub)) continue;
-      if (event.kind === "gap" || (event.seq > r.seq && event.changes.some((change) => dirties(sub.q, r, change)))) this.dirty.add(sub);
+      let hit: boolean;
+      try {
+        hit = event.kind === "gap" || (event.seq > r.seq && event.changes.some((change) => dirties(sub.q, r, change)));
+      } catch {
+        // A change that cannot be read, such as a document that is no JSON object: a read says, and ends the subscription if it fails too.
+        hit = true;
+      }
+      if (hit) this.dirty.add(sub);
     }
     this.schedule();
   }
@@ -329,9 +336,21 @@ function settle(sub: Subscription, found: Found): void {
     rows = next;
     value = shape === "one" ? next.values().next().value : same ? prev!.value : [...next.values()];
   }
-  const last = found.docs.length === limit ? found.docs.at(-1) : undefined;
+  const end = found.docs.length === limit ? found.docs.at(-1) : undefined;
+  const last = end && orderFields(end, q.order);
   sub.result = { seq: found.seq, rows, last, value };
   if (!prev || value !== prev.value) call(() => sub.next(value));
+}
+
+/** The fields of `doc` that `order` reads, copied: the subscriber holds `doc` itself, and may change it. */
+function orderFields(doc: JsonDoc, order: OrderKey): JsonDoc {
+  const out: Record<string, unknown> = Object.create(null);
+  for (const path of order.paths) {
+    let at = out;
+    for (const key of path.slice(0, -1)) at = (at[key] ??= Object.create(null)) as Record<string, unknown>;
+    at[path.at(-1)!] = valueAt(doc, path);
+  }
+  return out as JsonDoc;
 }
 
 /** Whether two JSON values are equal, whatever the order of their keys. */

@@ -538,6 +538,45 @@ describe("a change that cannot say where its document was", () => {
   });
 });
 
+describe("a change whose document cannot be read", () => {
+  it("is read again, so the subscription follows it and gets no error", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const docs = tableOf(issues).docs;
+    const real = docs.changes.bind(docs);
+    const unreadable = (change: object) =>
+      new Proxy(change, {
+        get(target, prop) {
+          if (prop === "doc") throw new CorruptDatabaseError("not a JSON object");
+          const value = Reflect.get(target, prop, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    vi.spyOn(docs, "changes").mockImplementation((listener) =>
+      real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => unreadable(c) as typeof c) } : event)),
+    );
+    const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => seen.values.length === 1);
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i2", "i3"]);
+    expect(seen.errors).toEqual([]);
+  });
+});
+
+describe("a row the subscriber changes", () => {
+  it("does not move where a limited result ends", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(5)]);
+    const seen = watch(query((q) => q.from({ i: issues }).orderBy(({ i }) => i.modified).limit(2)));
+    await until(() => seen.values.length === 1);
+    (seen.values[0]![1] as Issue).modified = 0;
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i3"]);
+  });
+});
+
 describe("a subscription that ends", () => {
   it("is logged when it has no error callback, unless the database closed", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
