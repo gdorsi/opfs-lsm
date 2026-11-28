@@ -43,7 +43,7 @@ export interface Collection<T extends JsonDoc, In = T> {
   delete(ids: string | readonly string[]): Promise<void>;
 }
 
-/** What a query needs of the collection it reads. */
+/** What a query needs of the collection it reads. @internal */
 export type Table = {
   readonly name: string;
   readonly docs: DocCollection<JsonDoc, any, unknown>;
@@ -52,7 +52,7 @@ export type Table = {
 
 const TABLE: unique symbol = Symbol("table");
 
-/** The table behind a collection handle. A handle names its database, so a query needs no other way to find it. */
+/** The table behind a collection handle. A handle names its database, so a query needs no other way to find it. @internal */
 export function tableOf(collection: unknown): Table {
   const table = typeof collection === "object" && collection !== null ? (collection as { [TABLE]?: Table })[TABLE] : undefined;
   if (!table) throw new QueryError("source", "from takes a collection of an open database");
@@ -146,7 +146,7 @@ export async function openDatabase<C extends Collections>(options: OpenOptions<C
   return openOn(kv, options);
 }
 
-/** Open on a kv handle, which this function now owns and closes. */
+/** Open on a kv handle, which this function now owns and closes. @internal */
 export async function openOn<C extends Collections>(kv: Db, { version, collections }: Omit<OpenOptions<C>, "name">): Promise<Database<C>> {
   const owner = { closed: false };
   const handles: Record<string, Handle<JsonDoc, unknown>> = {};

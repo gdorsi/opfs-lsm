@@ -8,8 +8,14 @@ import { tableOf, type Table } from "./database.js";
 import { ClosedError, wrap, type AnyDbError } from "./errors.js";
 import { execute, type Compiled, type Found } from "./execute.js";
 import { compareRows, compile, orderKeyOf, valueAt, type Scalar } from "./expr.js";
-import { dotPath, entryInRanges, keyOnly, planQuery, summarize, type PlanSummary } from "./plan.js";
+import { dotPath, entryInRanges, keyOnly, planQuery, summarize } from "./plan.js";
 import type { JsonDoc } from "./schema.js";
+
+/** How a query reads, as `explain()` shows it. */
+export type PlanSummary =
+  | { readonly kind: "none" | "ids" }
+  | { readonly kind: "index"; readonly index: string; readonly ranges: number; readonly ordered: boolean; readonly exact: boolean }
+  | { readonly kind: "scan"; readonly ordered: boolean; readonly exact: boolean };
 
 /** A query bound to its database. Building one reads nothing. */
 export interface LiveQuery<V> {

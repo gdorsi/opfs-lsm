@@ -1,7 +1,9 @@
+import type { CollectionDecl } from "@opfs-lsm/docstore";
 import * as v from "valibot";
 import { afterEach, describe, expect, it } from "vitest";
 import { openOn } from "../src/database.js";
 import { collection, DbError, ValidationError, type Collection, type Database, type Collections } from "../src/index.js";
+import type { Fields, TextField } from "../src/schema.js";
 import { freshName, openKv } from "./harness.js";
 
 type Issue = { id: string; title: string; status: number; assignee?: string | null; tags?: string[]; meta?: { due: number | null } };
@@ -284,3 +286,8 @@ export function types(db: Database<typeof collections>, tasks: Collection<{ id: 
   // @ts-expect-error an interface-like type without a string id is no document
   collection<{ title: string }>();
 }
+
+/** db states its own field paths, so its public types name no docstore type. They must stay the paths docstore accepts. */
+type Sample = { id: string; n: number; s: string | null; b?: boolean; tags: string[]; o: { x: number; y?: { z: string | null } }; deep: { a: { b: { c: { d: number } } } } };
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+export const pathsAgree: [Same<Fields<Sample>, Parameters<CollectionDecl<Sample>["text"]>[1]>, Same<TextField<Sample>, Parameters<CollectionDecl<Sample>["text"]>[2]>] = [true, true];

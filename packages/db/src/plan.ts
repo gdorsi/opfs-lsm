@@ -10,6 +10,7 @@
  * - `ordered`: the plan yields documents in the query's order.
  */
 import type { IndexInfo } from "@opfs-lsm/docstore";
+import type { PlanSummary } from "./live.js";
 import { compareValues, extentOf, isScalar, normalized, type Bound, type Node, type OrderKey, type Scalar } from "./expr.js";
 import { isId } from "./schema.js";
 
@@ -44,12 +45,6 @@ export type Plan =
       readonly ordered: boolean;
       readonly exact: boolean;
     };
-
-/** How a query reads, as `explain()` shows it. */
-export type PlanSummary =
-  | { readonly kind: "none" | "ids" }
-  | { readonly kind: "index"; readonly index: string; readonly ranges: number; readonly ordered: boolean; readonly exact: boolean }
-  | { readonly kind: "scan"; readonly ordered: boolean; readonly exact: boolean };
 
 /** docstore reads at most this many combinations of listed values in one query. Past it, an index pins fewer fields. */
 const MAX_RANGES = 64;

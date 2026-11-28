@@ -2,9 +2,9 @@
  * Declaring a collection, and `prepare`, the one function every write
  * passes through. The validator stays here: docstore is opened without one.
  */
-import { collection as docstoreCollection, type CollectionDecl, type IndexInfo, type Schema } from "@opfs-lsm/docstore";
+import { collection as docstoreCollection, type IndexInfo, type Schema } from "@opfs-lsm/docstore";
 import { SchemaError, ValidationError } from "./errors.js";
-import { fieldAt, isScalar } from "./expr.js";
+import { fieldAt, isScalar, type Scalar } from "./expr.js";
 
 export type Json = null | boolean | number | string | readonly Json[] | { readonly [key: string]: Json | undefined };
 
@@ -29,8 +29,24 @@ type Validator = StandardSchemaV1<unknown, JsonDoc>;
 type InferInput<V extends Validator> = NonNullable<V["~standard"]["types"]>["input"];
 type InferOutput<V extends Validator> = NonNullable<V["~standard"]["types"]>["output"];
 
-type TextArgs<T extends JsonDoc> = Parameters<CollectionDecl<T>["text"]>;
-type Fields<T extends JsonDoc> = TextArgs<T>[1];
+type Budget = [never, 0, 1, 2];
+type Defined<V> = Exclude<V, undefined>;
+/** Dot paths of `T` whose value, less undefined, extends `Leaf`, three levels deep. No path enters an array. */
+type PathTo<T, Leaf, D extends number = 3> = [D] extends [never]
+  ? never
+  : {
+      [K in keyof T & string]-?: Defined<T[K]> extends Leaf
+        ? K
+        : Defined<T[K]> extends readonly unknown[]
+          ? never
+          : Defined<T[K]> extends object
+            ? `${K}.${PathTo<Defined<T[K]>, Leaf, Budget[D]>}`
+            : never;
+    }[keyof T & string];
+/** A field an index orders by, or a list of them. */
+export type Fields<T> = PathTo<T, Scalar> | readonly [PathTo<T, Scalar>, ...PathTo<T, Scalar>[]];
+/** A field whose words a text index holds. */
+export type TextField<T> = PathTo<T, string | null>;
 
 declare const types: unique symbol;
 
@@ -51,7 +67,7 @@ export interface CollectionDef<T extends JsonDoc, In = T, Names extends string =
   /** A sorted index in which no two documents share the values at `by`. */
   unique<const N extends string>(name: Fresh<Names, N>, by: Fields<T>): CollectionDef<T, In, Names | N>;
   /** A sorted index that also holds the words of the string field `text`, which `like` and `ilike` on that field search. */
-  text<const N extends string>(name: Fresh<Names, N>, by: TextArgs<T>[1], text: TextArgs<T>[2]): CollectionDef<T, In, Names | N>;
+  text<const N extends string>(name: Fresh<Names, N>, by: Fields<T>, text: TextField<T>): CollectionDef<T, In, Names | N>;
 }
 
 type Decl = {
@@ -95,7 +111,7 @@ export type Collections = { readonly [name: string]: { readonly [types]: unknown
 export type DocOf<D> = D extends { readonly [types]: { readonly doc: infer T extends JsonDoc } } ? T : never;
 export type InputOf<D> = D extends { readonly [types]: { readonly input: infer In } } ? In : never;
 
-/** The docstore schema of `collections`: their indexes, and no validator. */
+/** The docstore schema of `collections`: their indexes, and no validator. @internal */
 export function docstoreSchema(version: number, collections: Collections): Schema {
   const decls: Record<string, unknown> = {};
   for (const [name, def] of Object.entries(collections)) {
@@ -115,7 +131,7 @@ export type WriteRules = {
   readonly textPaths: readonly (readonly string[])[];
 };
 
-/** `def` is a declaration `docstoreSchema` accepted, and `indexes` are its indexes as the opened collection lists them. */
+/** `def` is a declaration `docstoreSchema` accepted, and `indexes` are its indexes as the opened collection lists them. @internal */
 export function writeRules(name: string, def: unknown, indexes: Iterable<IndexInfo>): WriteRules {
   const scalar = new Set<string>();
   const text = new Set<string>();

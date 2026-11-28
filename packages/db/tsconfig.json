@@ -3,7 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "useDefineForClassFields": false
+    "useDefineForClassFields": false,
+    "stripInternal": true
   },
   "include": ["src/**/*.ts"]
 }
