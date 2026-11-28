@@ -1,5 +1,5 @@
 import { ingest } from "@opfs-lsm/kv/testing";
-import { ClosedError, type Db } from "@opfs-lsm/kv";
+import { ClosedError, type ChangeOp, type Db } from "@opfs-lsm/kv";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { collection, defineSchema, openDocStore, type CollectionChange, type DocStoreError } from "../src/index.js";
 import { encodeCatalog } from "../src/catalog.js";
@@ -503,6 +503,130 @@ describe("before", () => {
     await kvA.sync();
     await settled(() => expect(thrown).toHaveLength(1));
     expect(thrown[0]).toMatchObject({ name: "DocStoreError", code: "schema" });
+  });
+});
+
+describe("written", () => {
+  /** What each change of each write added to and removed from `index`, as the listener reads it. */
+  function track(c: Docs, index: "one" | "two" | "tags" = "two") {
+    const seen: { id: string; added: unknown[]; removed: unknown[] }[] = [];
+    c.changes((e) => {
+      if (e.kind === "append") for (const ch of e.changes) seen.push({ id: ch.id, ...ch.written(index) });
+    });
+    return seen;
+  }
+  const entry = (id: string, ...values: unknown[]) => ({ id, values });
+
+  it("gives the entries an insert, a move, an update that leaves the index alone and a delete wrote", async () => {
+    const { c } = await handle();
+    const seen = track(c);
+    await c.put({ id: "x", a: 1, b: "p" });
+    await c.modify("x", (d) => ({ ...d, a: 2 }));
+    await c.modify("x", (d) => ({ ...d, t: "words", u: 7 }));
+    await c.delete("x");
+    await settled(() => expect(seen).toHaveLength(4));
+    expect(seen).toEqual([
+      { id: "x", added: [entry("x", 1, "p")], removed: [] },
+      { id: "x", added: [entry("x", 2, "p")], removed: [entry("x", 1, "p")] },
+      { id: "x", added: [], removed: [] },
+      { id: "x", added: [], removed: [entry("x", 2, "p")] },
+    ]);
+  });
+
+  it("gives the entries of a multi index in index order, and only those the write changed", async () => {
+    const { c } = await handle();
+    const seen = track(c, "tags");
+    await c.put({ id: "x", b: "p", tags: ["k", "j", "k"] });
+    await c.modify("x", (d) => ({ ...d, tags: ["j", "m", "a"] }));
+    await settled(() => expect(seen).toHaveLength(2));
+    expect(seen).toEqual([
+      { id: "x", added: [entry("x", "j", "p"), entry("x", "k", "p")], removed: [] },
+      { id: "x", added: [entry("x", "a", "p"), entry("x", "m", "p")], removed: [entry("x", "k", "p")] },
+    ]);
+  });
+
+  it("gives the entries of each document of one write", async () => {
+    const { c } = await handle();
+    await c.putMany([{ id: "x", a: 1 }, { id: "y", a: 2 }]);
+    const seen = track(c, "one");
+    await c.modifyMany(["x", "y"], () => [{ id: "x", a: 5 }, null]);
+    await settled(() => expect(seen).toHaveLength(2));
+    expect(seen).toEqual([
+      { id: "x", added: [entry("x", 5)], removed: [entry("x", 1)] },
+      { id: "y", added: [], removed: [entry("y", 2)] },
+    ]);
+  });
+
+  it("gives both writes to the last change of a document that one record writes twice", async () => {
+    const source = await handle();
+    const ops: ChangeOp[] = [];
+    source.kv.changes((e) => e.kind === "append" && ops.push(...e.ops));
+    await source.c.put({ id: "x", a: 1, b: "p" });
+    await source.c.modify("x", (d) => ({ ...d, a: 2 }));
+    await source.c.put({ id: "y", a: 9, b: "q" });
+    await settled(() => expect(ops.length).toBeGreaterThanOrEqual(6));
+
+    const { kv, c } = await handle();
+    const seen = track(c);
+    const rows: unknown[] = [];
+    c.changes((e) => e.kind === "append" && rows.push(...e.changes.map((ch) => `${ch.id}${ch.deleted ? "-" : "+"}`)));
+    await kv.batch((tx) => {
+      for (const op of ops) if (op.type === "put") tx.put(op.key, op.value); else if (op.type === "del") tx.delete(op.key);
+    });
+    await settled(() => expect(seen).toHaveLength(3));
+    expect(rows).toEqual(["x+", "x+", "y+"]);
+    expect(seen).toEqual([
+      { id: "x", added: [], removed: [] },
+      { id: "x", added: [entry("x", 1, "p"), entry("x", 2, "p")], removed: [entry("x", 1, "p")] },
+      { id: "y", added: [entry("y", 9, "q")], removed: [] },
+    ]);
+  });
+
+  it("decodes no document: a change whose stored document cannot be parsed still gives its entries", async () => {
+    const source = await handle();
+    const ops: ChangeOp[] = [];
+    source.kv.changes((e) => e.kind === "append" && ops.push(...e.ops));
+    await source.c.put({ id: "x", a: 1, b: "p" });
+    await settled(() => expect(ops.length).toBeGreaterThan(1));
+
+    const { kv, c } = await handle();
+    const thrown: unknown[] = [];
+    const seen: unknown[] = [];
+    c.changes((e) => {
+      if (e.kind !== "append") return;
+      for (const ch of e.changes) {
+        seen.push(ch.written("two"));
+        try {
+          void ch.doc;
+        } catch (err) {
+          thrown.push(err);
+        }
+      }
+    });
+    await kv.batch((tx) => {
+      for (const op of ops) if (op.type === "put") tx.put(op.key, op.value.length > 0 ? utf8.encode("{not json") : op.value);
+    });
+    await settled(() => expect(seen).toHaveLength(1));
+    expect(seen).toEqual([{ added: [entry("x", 1, "p")], removed: [] }]);
+    expect(thrown[0]).toBeInstanceOf(SyntaxError);
+  });
+
+  it("throws for an index whose entries hold a value, as before does", async () => {
+    const { c } = await handle();
+    const errors: string[] = [];
+    c.changes((e) => {
+      if (e.kind !== "append") return;
+      for (const index of ["uniq", "search", "covered"]) {
+        try {
+          // @ts-expect-error: only a sorted index that is not unique and includes no field
+          e.changes[0]!.written(index);
+        } catch (err) {
+          errors.push(`${index} ${(err as DocStoreError).code}`);
+        }
+      }
+    });
+    await c.put({ id: "x", a: 1 });
+    await settled(() => expect(errors).toEqual(["uniq query", "search query", "covered query"]));
   });
 });
 
