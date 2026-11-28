@@ -58,7 +58,8 @@ export function query<V>(build: (q: QueryRoot) => Buildable<V>): LiveQuery<V> {
       try {
         const q = open();
         const sub: Subscription = { q, next: next as (value: unknown) => void, error, result: undefined };
-        const feed = ((q.table.feed as Feed | undefined) ??= new Feed(q.table));
+        let feed = feeds.get(q.table);
+        if (!feed) feeds.set(q.table, (feed = new Feed(q.table)));
         feed.add(sub);
         return () => feed.remove(sub);
       } catch (err) {
@@ -190,6 +191,11 @@ function dirties({ ir, plan, where, order }: Compiled, r: Result, change: DocCha
   return was.some((e) => !placed || compareRows(entryRow(info!.by, e), last, order) <= 0);
 }
 
+type Change = Exclude<CollectionChange<JsonDoc>, { kind: "closed" }>;
+
+/** The feed of each collection's subscriptions, while it has any. */
+const feeds = new WeakMap<Table, Feed>();
+
 class Failure {
   constructor(readonly error: unknown) {}
 }
@@ -203,17 +209,22 @@ class Failure {
  * against it. Dirty subscriptions read together in one snapshot, once per
  * microtask batch. While a read is in flight, changes are held, then tested
  * against the new results: writes faster than reads become one more read,
- * not a queue of them.
+ * not a queue of them. A `closed` event is never held: it ends every
+ * subscription at once, with the reason the storage gives.
  */
 class Feed {
   private readonly subs = new Set<Subscription>();
   private readonly dirty = new Set<Subscription>();
-  private held: CollectionChange<JsonDoc>[] | undefined;
+  private held: Change[] | undefined;
   private scheduled = false;
   private readonly off: () => void;
 
   constructor(private readonly table: Table) {
-    this.off = table.docs.changes((event) => (this.held ? this.held.push(event) : this.apply(event)));
+    this.off = table.docs.changes((event) => {
+      if (event.kind === "closed") this.end(new ClosedError(event.reason === "destroyed" ? "destroyed" : "closed"));
+      else if (this.held) this.held.push(event);
+      else this.apply(event);
+    });
   }
 
   add(sub: Subscription): void {
@@ -226,10 +237,10 @@ class Feed {
     this.dirty.delete(sub);
     if (!this.subs.delete(sub) || this.subs.size > 0) return;
     this.off();
-    if (this.table.feed === this) this.table.feed = undefined;
+    if (feeds.get(this.table) === this) feeds.delete(this.table);
   }
 
-  end(error: AnyDbError): void {
+  private end(error: AnyDbError): void {
     for (const sub of [...this.subs]) this.fail(sub, error);
   }
 
@@ -238,8 +249,7 @@ class Feed {
     report(sub.error, error);
   }
 
-  private apply(event: CollectionChange<JsonDoc>): void {
-    if (event.kind === "closed") return this.end(new ClosedError(event.reason === "destroyed" ? "destroyed" : "closed"));
+  private apply(event: Change): void {
     for (const sub of this.subs) {
       const r = sub.result;
       if (!r || this.dirty.has(sub)) continue;

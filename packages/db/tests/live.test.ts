@@ -315,6 +315,21 @@ describe("the end of a subscription", () => {
     expect(seen.errors[0]).toMatchObject({ _tag: "ClosedError", code: "destroyed" });
   });
 
+  it("is a ClosedError destroyed when the database is deleted while a read is in flight", async () => {
+    const name = freshName();
+    const { issues, views } = await openDb(name);
+    const seen = watch(query((q) => q.from({ i: issues })));
+    await until(() => seen.values.length === 1);
+    const reads = views.views();
+    views.hold();
+    await issues.insert(issue(1));
+    await until(() => views.views() > reads);
+    await destroyHarnessDb({ name, forceMemory: true });
+    await until(() => seen.errors.length === 1);
+    expect(seen.errors[0]).toMatchObject({ _tag: "ClosedError", code: "destroyed" });
+    views.release();
+  });
+
   it("is the storage's failure when a read fails, and later writes call nothing", async () => {
     const { issues, views } = await openDb();
     const all = query((q) => q.from({ i: issues }));

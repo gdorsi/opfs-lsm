@@ -5,7 +5,7 @@
  */
 import { openDocStore, type Collection as DocCollection } from "@opfs-lsm/docstore";
 import { openDb, type Db } from "@opfs-lsm/kv";
-import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap, type AnyDbError } from "./errors.js";
+import { ClosedError, ConflictError, NotFoundError, QueryError, ValidationError, wrap } from "./errors.js";
 import { docstoreSchema, isId, prepare, writeRules, type Collections, type DocOf, type InputOf, type JsonDoc, type WriteRules } from "./schema.js";
 
 export type OpenOptions<C extends Collections> = {
@@ -18,7 +18,7 @@ export type OpenOptions<C extends Collections> = {
 
 export interface Database<C extends Collections> {
   readonly collections: { readonly [K in keyof C & string]: Collection<DocOf<C[K]>, InputOf<C[K]>> };
-  /** Ends every subscription with ClosedError `closed`, then closes the storage. A second call returns the first one's promise. */
+  /** Closes the storage, which ends every subscription with ClosedError `closed`. A second call returns the first one's promise. */
   close(): Promise<void>;
 }
 
@@ -48,8 +48,6 @@ export type Table = {
   readonly name: string;
   readonly docs: DocCollection<JsonDoc, any, unknown>;
   readonly owner: { closed: boolean };
-  /** The feed of the collection's subscriptions, while it has any. */
-  feed: { end(error: AnyDbError): void } | undefined;
 };
 
 const TABLE: unique symbol = Symbol("table");
@@ -151,15 +149,12 @@ export async function openDatabase<C extends Collections>(options: OpenOptions<C
 /** Open on a kv handle, which this function now owns and closes. */
 export async function openOn<C extends Collections>(kv: Db, { version, collections }: Omit<OpenOptions<C>, "name">): Promise<Database<C>> {
   const owner = { closed: false };
-  const tables: Table[] = [];
   const handles: Record<string, Handle<JsonDoc, unknown>> = {};
   try {
     const store = await openDocStore(kv, docstoreSchema(version, collections));
     for (const [name, def] of Object.entries(collections)) {
       const docs = store.collection(name) as Table["docs"];
-      const table: Table = { name, docs, owner, feed: undefined };
-      tables.push(table);
-      handles[name] = new Handle(table, writeRules(name, def, docs.indexes.values()));
+      handles[name] = new Handle({ name, docs, owner }, writeRules(name, def, docs.indexes.values()));
     }
   } catch (err) {
     await kv.close().catch(() => {});
@@ -168,7 +163,6 @@ export async function openOn<C extends Collections>(kv: Db, { version, collectio
   let closing: Promise<void> | undefined;
   const close = async () => {
     owner.closed = true;
-    for (const table of tables) table.feed?.end(new ClosedError("closed"));
     try {
       await kv.close();
     } catch (err) {
