@@ -457,6 +457,30 @@ describe("a window that starts past rows", () => {
   });
 });
 
+describe("a window past rows ordered by a nested field", () => {
+  it("places a document by the value its index holds at that field", async () => {
+    type Task = { id: string; meta: { due: number } };
+    const views = holdViews(await openKv());
+    const db = await openOn(views.db, { version: 1, collections: { tasks: collection<Task>().index("byDue", "meta.due") } });
+    open.push(db);
+    const { tasks } = db.collections;
+    await tasks.insert([1, 2, 3, 4, 5, 6].map((n) => ({ id: `t${n}`, meta: { due: n } })));
+    const window = query((q) => q.from({ t: tasks }).orderBy(({ t }) => t.meta.due).offset(2).limit(2));
+    expect(window.explain()).toMatchObject({ kind: "index", index: "byDue" });
+    const seen = watch(window);
+    await until(() => seen.values.length === 1);
+    expect(ids(seen.values[0])).toEqual(["t3", "t4"]);
+
+    const reads = views.views();
+    await tasks.delete("t6");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(views.views()).toBe(reads);
+    await tasks.delete("t1");
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["t4", "t5"]);
+  });
+});
+
 describe("a change that cannot say where its document was", () => {
   const unreadable = (change: object) =>
     new Proxy(change, {
