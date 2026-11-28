@@ -10,7 +10,8 @@ function matching(q: QueryRoot, issues: Issues, filter: Filter) {
   let list = q.from({ i: issues });
   if (filter.status.length > 0) list = list.where(({ i }) => inArray(i.status, filter.status));
   if (filter.priority.length > 0) list = list.where(({ i }) => inArray(i.priority, filter.priority));
-  if (filter.q !== "") list = list.where(({ i }) => ilike(i.title, `%${filter.q}%`));
+  // The search is text: a % or _ in it is itself, not a wildcard.
+  if (filter.q !== "") list = list.where(({ i }) => ilike(i.title, `%${filter.q.replace(/[\\%_]/g, "\\$&")}%`));
   return list;
 }
 

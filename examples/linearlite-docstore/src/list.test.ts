@@ -1,7 +1,7 @@
 import "fake-indexeddb/auto";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import type { Database } from "@opfs-lsm/db";
+import { query, type Database } from "@opfs-lsm/db";
 import { openMemoryDatabase } from "@opfs-lsm/db/testing";
 import { anyIssue, issueOf, PAGE, pageOf, totalOf } from "./list.ts";
 import { DEFAULT_FILTER, schema, SORTS, type Filter, type Issue, type Store } from "./model.ts";
@@ -16,7 +16,11 @@ before(async () => {
   const name = `linearlite-docstore-${process.pid}`;
   dbs = [await openMemoryDatabase({ name, ...schema }), await openMemoryDatabase({ name, ...schema })];
   [here, there] = dbs.map((db) => db.collections) as [Store, Store];
-  await here.issues.upsert([...generate(400, 3)]);
+  // Two titles hold the characters a pattern reads as wildcards.
+  const issues = [...generate(400, 3)];
+  issues[0] = { ...issues[0]!, title: "Cut 5% off the build" };
+  issues[1] = { ...issues[1]!, title: "Rename snake_case fields" };
+  await here.issues.upsert(issues);
 });
 after(() => Promise.all(dbs.map((db) => db.close())));
 
@@ -36,14 +40,8 @@ async function expected(filter: Filter, store: Store): Promise<Issue[]> {
     });
 }
 
-const everyIssue = async ({ issues }: Store): Promise<Issue[]> => {
-  const all: Issue[] = [];
-  for (let page = 0; ; page++) {
-    const rows = await pageOf(issues, DEFAULT_FILTER, page).run();
-    all.push(...rows);
-    if (rows.length < PAGE) return all;
-  }
-};
+/** Every issue, read apart from the queries under test. */
+const everyIssue = async ({ issues }: Store): Promise<Issue[]> => [...(await query((q) => q.from({ i: issues })).run())];
 
 /** The last value of a subscription, once it equals `want`. Fails after two seconds. */
 async function settles<V>(query: { subscribe(next: (value: V) => void, error: (error: Error) => void): () => void }, want: () => Promise<V>, t: { after(fn: () => void): void }) {
@@ -72,6 +70,8 @@ const filters: [string, Filter][] = [
   ["under both filters", { ...DEFAULT_FILTER, status: [0, 1, 2], priority: [1, 3] }],
   ["under a title search", { ...DEFAULT_FILTER, q: "lorem" }],
   ["under a filter and a search", { ...DEFAULT_FILTER, priority: [0, 4], q: "ipsum" }],
+  ["under a search for %, which is text", { ...DEFAULT_FILTER, q: "5%" }],
+  ["under a search for _, which is text", { ...DEFAULT_FILTER, q: "e_c" }],
 ];
 
 describe("the list's queries", () => {
@@ -102,7 +102,7 @@ describe("the list's queries", () => {
     }
   });
 
-  for (const [label, base] of filters) {
+  filters.forEach(([label, base], n) => {
     it(`follow another tab's edits, creates and deletes, ${label}`, async (t) => {
       const filter: Filter = { ...base, sort: "priority", dir: "asc" };
       const pages = [0, 2].map((page) => ({ page, live: pageOf(here.issues, filter, page) }));
@@ -113,7 +113,8 @@ describe("the list's queries", () => {
       for (const follows of followed) await follows();
 
       const ids = (await everyIssue(there)).map((i) => i.id);
-      const fresh = [...generate(5, 7 + label.length)];
+      // A seed of its own, so no two tests create one issue.
+      const fresh = [...generate(5, 100 + n)];
       for (let i = 0; i < 40; i++) {
         const id = ids[(i * 37) % ids.length]!;
         if (i % 8 === 0) await there.issues.insert(fresh[i / 8]!);
@@ -123,7 +124,7 @@ describe("the list's queries", () => {
       }
       for (const follows of followed) await follows();
     });
-  }
+  });
 });
 
 describe("the writes", () => {
