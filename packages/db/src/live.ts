@@ -401,19 +401,25 @@ class Feed {
     this.dirty.clear();
     if (batch.length === 0) return;
     this.held = [];
-    let found: (Found | Failure)[];
-    try {
-      // One failed read ends its own subscription only.
-      found = await this.table.docs.view((snap) => Promise.all(batch.map((sub) => execute(snap, sub.q).catch((err: unknown) => new Failure(err)))));
-    } catch (err) {
-      found = batch.map(() => new Failure(err));
-    }
-    batch.forEach((sub, i) => {
-      if (!this.subs.has(sub)) return;
-      const result = found[i]!;
+    const pending = new Set(batch);
+    // One failed read ends its own subscription only.
+    const done = (sub: Subscription, result: Found | Failure) => {
+      if (!pending.delete(sub) || !this.subs.has(sub)) return;
       if (result instanceof Failure) this.fail(sub, wrap(result.error) as AnyDbError);
       else settle(sub, result);
-    });
+    };
+    const read = (snap: Parameters<typeof execute>[0], subs: Subscription[]) =>
+      Promise.all(subs.map((sub) => execute(snap, sub.q).then((found) => done(sub, found), (err: unknown) => done(sub, new Failure(err)))));
+    try {
+      // Each result is handed over as soon as it is read, all from one snapshot. A count reads every match, so
+      // the rows are read first and never wait for one.
+      await this.table.docs.view(async (snap) => {
+        await read(snap, batch.filter((sub) => sub.q.ir.shape !== "count"));
+        await read(snap, batch.filter((sub) => sub.q.ir.shape === "count"));
+      });
+    } catch (err) {
+      for (const sub of [...pending]) done(sub, new Failure(err));
+    }
     const held = this.held;
     this.held = undefined;
     for (const event of held) this.apply(event);

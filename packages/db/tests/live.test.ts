@@ -178,6 +178,42 @@ describe("a subscription", () => {
     expect(one.values[1]).toBeUndefined();
   });
 
+  it("hands over a page before a count read in the same snapshot, and the count then agrees with it", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2, { status: 2 })]);
+    const { docs } = tableOf(issues);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) => {
+        const slow = new Proxy(snap, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target) as unknown;
+            if (key !== "count" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+            return async (...args: unknown[]) => {
+              await gate;
+              return value.apply(target, args) as unknown;
+            };
+          },
+        });
+        return body(slow);
+      }),
+    );
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    await until(() => page.values.length === 1);
+    expect(ids(page.values[0])).toEqual(["i1"]);
+    expect(total.values).toEqual([]);
+    // Written after the snapshot: the count must not see it.
+    await issues.insert(issue(3));
+    release();
+    await until(() => total.values.length === 2);
+    expect(total.values).toEqual([1, 2]);
+    await until(() => page.values.length === 2);
+    expect(ids(page.values[1])).toEqual(["i1", "i3"]);
+  });
+
   it("stops at once when unsubscribed, a read in flight included", async () => {
     const { issues, views } = await openDb();
     await issues.insert(issue(1));
