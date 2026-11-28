@@ -4,7 +4,6 @@ import type { BoundCollection, IndexPlan, Path } from "./catalog.js";
 import { DocStoreError } from "./errors.js";
 import { MAX_KEY_BYTES, bytesEqual, fromUtf8, keyString, parseId, textValue, utf8, type DocId } from "./keys.js";
 import type { JsonDoc, Scalar } from "./schema.js";
-import type { StandardSchemaV1 } from "./standard-schema.js";
 
 declare const storedBrand: unique symbol;
 
@@ -26,18 +25,18 @@ export type EncodedDoc = {
 const CHUNK = 64 * 1024;
 
 /**
- * The stored form of each value, `prepare(value)` when given. A chunk of
+ * The stored form of each value. A chunk of
  * texts is parsed as one JSON array and encoded as one buffer, each `bytes` a
  * view of it: for a small document the cost of a call dominates. Parsing the
  * text, not the bytes, skips a decode. The two agree because
  * `JSON.stringify` escapes lone surrogates.
  */
-function encodeDocs(values: readonly unknown[], prepare?: (value: unknown) => unknown): EncodedDoc[] {
+export function encodeDocs(values: readonly unknown[]): EncodedDoc[] {
   const out: EncodedDoc[] = [];
   let texts: string[] = [];
   let length = 0;
   for (const value of values) {
-    const text = JSON.stringify(prepare ? prepare(value) : value) as string | undefined;
+    const text = JSON.stringify(value) as string | undefined;
     // The JSON of an object, and only of an object, starts with "{".
     if (text?.charCodeAt(0) !== 0x7b) throw new DocStoreError("document", "a document must be a JSON object");
     texts.push(text);
@@ -79,24 +78,6 @@ function utf8End(bytes: Uint8Array, at: number, units: number): number {
     units -= b < 0xf0 ? 1 : 2;
   }
   return at;
-}
-
-/** What a write of collection `name` encodes for `values`: the output of `validator` for each, or the values themselves. */
-export function docEncoder(name: string, validator: StandardSchemaV1 | undefined): (values: readonly unknown[]) => EncodedDoc[] {
-  if (!validator) return (values) => encodeDocs(values);
-  const validate = (value: unknown) => {
-    const result = validator["~standard"].validate(value);
-    if (result instanceof Promise) {
-      // The write fails here, so a rejection of the Promise would reach nobody.
-      result.catch(() => {});
-      throw new DocStoreError("invalid", `"${name}": the validator is async`);
-    }
-    if (!result.issues) return result.value;
-    const id = isObject(value) ? value["id"] : undefined;
-    const ids = typeof id === "string" ? [id] : undefined;
-    throw new DocStoreError("invalid", `"${name}": ${result.issues[0]?.message}`, ids, result.issues);
-  };
-  return (values) => encodeDocs(values, validate);
 }
 
 const NOT_AN_OBJECT = "a stored value is not a JSON object";

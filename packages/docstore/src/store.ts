@@ -17,14 +17,14 @@ import {
   type StoredCatalog,
 } from "./catalog.js";
 import { CollectionImpl, type Collection } from "./collection.js";
-import { decodeDoc, docEncoder, indexEntries, uniqueConflict, type Claim, type Unindexable } from "./derive.js";
+import { decodeDoc, indexEntries, uniqueConflict, type Claim, type Unindexable } from "./derive.js";
 import { DocStoreError } from "./errors.js";
 import { CATALOG_KEY, after, bytesEqual, idOf, touches, type CollectionId, type IndexId } from "./keys.js";
-import type { CollectionName, DocOf, IndexesOf, InputOf, Schema } from "./schema.js";
+import type { CollectionName, DocOf, IndexesOf, Schema } from "./schema.js";
 
 export interface DocStore<S extends Schema> {
   /** A typed handle. Operations on a collection the stored catalog lacks throw "schema". */
-  collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>, InputOf<S, C>>;
+  collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>>;
   /** Resolves when this handle's background backfills have finished. */
   whenIdle(): Promise<void>;
 }
@@ -55,7 +55,7 @@ export async function openDocStore<S extends Schema>(kv: Db, schema: S): Promise
       if (!next) return { bytes: stored!, catalog: current! };
       return { bytes: storeEdit(tx, next), catalog: next.catalog };
     }));
-  const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared), schema.collections);
+  const store = new DocStoreImpl<S>(kv, declared, bind(bytes, catalog, declared));
   await store.startBackfills();
   return store;
 }
@@ -136,7 +136,6 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     readonly kv: Db,
     private readonly declared: DeclaredSchema,
     private bound: Bound,
-    private readonly decls: Schema["collections"],
   ) {
     // The store has no close. The listener lets it go once nothing else holds it, and kv drops the listener when it closes.
     const store = new WeakRef(this);
@@ -179,9 +178,8 @@ class DocStoreImpl<S extends Schema> implements DocStore<S>, StoreCore {
     this.move(next ?? this.bound, next ? event.seq : NaN);
   }
 
-  collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>, InputOf<S, C>> {
-    const encode = docEncoder(name, this.decls[name]?.validator);
-    return new CollectionImpl(this, name, this.declared.collections.get(name) ?? new Map(), encode);
+  collection<C extends CollectionName<S>>(name: C): Collection<DocOf<S, C>, IndexesOf<S, C>> {
+    return new CollectionImpl(this, name, this.declared.collections.get(name) ?? new Map());
   }
 
   async whenIdle(): Promise<void> {

@@ -1,5 +1,3 @@
-import type { StandardIssue } from "./standard-schema.js";
-
 /**
  * Every error this package throws on purpose. Callers branch on `code`.
  * kv's own errors (ConstraintError over kv's batch limits, ClosedError,
@@ -16,21 +14,14 @@ export type DocStoreErrorCode =
   /** `after` is not a cursor, is outside the query's range, or was made before its index was redefined. A `clear` leaves a cursor valid. */
   | "cursor"
   /** A bad or repeated id, `modify` changed the id, or a value an index cannot hold. Nothing is stored. */
-  | "document"
-  /**
-   * A validator rejected a document: `issues` says why, and `ids` names it if it had a string id.
-   * Or the validator returned a Promise, and there are no `issues`. Nothing is stored.
-   */
-  | "invalid";
+  | "document";
 
 export class DocStoreError extends Error {
   constructor(
     readonly code: DocStoreErrorCode,
     message: string,
-    /** Set for "unique", "index-failed" and "invalid". */
+    /** Set for "unique" and "index-failed". */
     readonly ids?: readonly string[],
-    /** Set for "invalid", unless the validator returned a Promise: the validator's issues. */
-    readonly issues?: readonly StandardIssue[],
   ) {
     super(message);
     this.name = "DocStoreError";

@@ -131,7 +131,7 @@ export function wrap(err: unknown, collection = ""): unknown {
       return new SchemaError(/^version \d+ is stored with/.test(err.message) ? "version" : "catalog", err.message, { cause: err });
     case "index-failed":
       return new StorageError("index-failed", err.message, { cause: err });
-    // "query" and "cursor" would be a bug of the planner, and no docstore validator is declared.
+    // "query" and "cursor" would be a bug of the planner.
     default:
       return err;
   }

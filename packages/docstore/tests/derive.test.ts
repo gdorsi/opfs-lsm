@@ -2,13 +2,13 @@ import { encodeTuple } from "@opfs-lsm/kv/tuple";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { bind, encodeCatalog, normalizeSchema, reconcile, type BoundCollection } from "../src/catalog.js";
-import { diffEntries, docEncoder, entriesOf } from "../src/derive.js";
+import { diffEntries, encodeDocs, entriesOf } from "../src/derive.js";
 import { DocStoreError } from "../src/errors.js";
 import type { JsonDoc, Scalar } from "../src/schema.js";
 
 const utf8 = new TextEncoder();
 const EMPTY = new Uint8Array(0);
-const encodeDoc = (doc: JsonDoc) => docEncoder("c", undefined)([doc])[0]!;
+const encodeDoc = (doc: JsonDoc) => encodeDocs([doc])[0]!;
 
 function coll(indexes: Record<string, object>): BoundCollection {
   const declared = normalizeSchema({ version: 1, collections: { c: { indexes } } } as never);

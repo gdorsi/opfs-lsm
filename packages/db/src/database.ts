@@ -46,7 +46,7 @@ export interface Collection<T extends JsonDoc, In = T> {
 /** What a query needs of the collection it reads. @internal */
 export type Table = {
   readonly name: string;
-  readonly docs: DocCollection<JsonDoc, any, unknown>;
+  readonly docs: DocCollection<JsonDoc, any>;
   readonly owner: { closed: boolean };
 };
 
