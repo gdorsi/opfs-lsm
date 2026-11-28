@@ -2,14 +2,7 @@ import { DocStoreError } from "@opfs-lsm/docstore";
 import { OpfsLsmError } from "@opfs-lsm/kv";
 import type { StandardIssue } from "./schema.js";
 
-export type DbErrorTag =
-  | "ValidationError"
-  | "ConflictError"
-  | "NotFoundError"
-  | "QueryError"
-  | "SchemaError"
-  | "ClosedError"
-  | "StorageError";
+export type DbErrorTag = AnyDbError["_tag"];
 
 /**
  * Every error the library throws on purpose. `_tag` is fixed per class, so

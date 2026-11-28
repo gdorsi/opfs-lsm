@@ -216,7 +216,7 @@ function likeTest(pattern: unknown, fold: (text: string) => string): (value: unk
 /** The order of a query's rows: its fields, each ascending or descending, with `id` last so that no two rows tie. */
 export type OrderKey = { readonly paths: readonly (readonly string[])[]; readonly desc: readonly boolean[] };
 
-const isId = (path: readonly string[]) => path.length === 1 && path[0] === "id";
+const isIdPath = (path: readonly string[]) => path.length === 1 && path[0] === "id";
 
 /** `id` follows the `orderBy` fields in the direction of the last one. A field after `id`, or named twice, orders nothing. */
 export function orderKeyOf(orderBy: readonly { readonly path: readonly string[]; readonly desc: boolean }[]): OrderKey {
@@ -226,7 +226,7 @@ export function orderKeyOf(orderBy: readonly { readonly path: readonly string[];
     if (paths.some((p) => p.join(".") === path.join("."))) continue;
     paths.push(path);
     desc.push(d);
-    if (isId(path)) return { paths, desc };
+    if (isIdPath(path)) return { paths, desc };
   }
   return { paths: [...paths, ["id"]], desc: [...desc, desc.at(-1) ?? false] };
 }

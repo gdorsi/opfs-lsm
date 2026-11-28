@@ -170,12 +170,12 @@ function dirties({ ir, plan, where, order }: Compiled, r: Result, change: DocCha
   if (plan.kind === "ids") return plan.ids.includes(change.id);
   const after = change.doc;
   const passes = after !== undefined && where(after);
-  const { info } = plan;
+  const { index } = plan;
   /** The entries d had in the plan's ranges, or undefined when the change cannot tell. */
   const before = () => {
-    if (!keyOnly(info)) return undefined;
+    if (!keyOnly(index?.info)) return undefined;
     try {
-      const entries: { id: string; values: Scalar[] }[] = change.before(plan.index as never);
+      const entries: { id: string; values: Scalar[] }[] = change.before(index!.name as never);
       return entries.filter((e) => entryInRanges(plan, e.values));
     } catch {
       // The catalog moved under the change.
@@ -193,8 +193,8 @@ function dirties({ ir, plan, where, order }: Compiled, r: Result, change: DocCha
   if (!was) return true;
   // An entry tells where d was only when it holds every field of the order.
   const { last } = r;
-  const placed = last && order.paths.every((path) => [...info!.by, "id"].includes(dotPath(path)!));
-  return was.some((e) => !placed || compareRows(entryRow(info!.by, e), last, order) <= 0);
+  const placed = last && order.paths.every((path) => [...index!.info.by, "id"].includes(dotPath(path)!));
+  return was.some((e) => !placed || compareRows(entryRow(index!.info.by, e), last, order) <= 0);
 }
 
 type Change = Exclude<CollectionChange<JsonDoc>, { kind: "closed" }>;

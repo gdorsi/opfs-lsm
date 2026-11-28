@@ -26,6 +26,8 @@ export type DocQuery = {
   readonly reverse?: true;
 };
 
+type Index = { readonly name: string; readonly info: IndexInfo };
+
 /**
  * Where a run finds its rows.
  *
@@ -39,8 +41,7 @@ export type Plan =
   | { readonly kind: "ids"; readonly ids: readonly string[] }
   | {
       readonly kind: "ranges";
-      readonly index: string | undefined;
-      readonly info: IndexInfo | undefined;
+      readonly index?: Index;
       readonly ranges: readonly DocQuery[];
       readonly ordered: boolean;
       readonly exact: boolean;
@@ -199,7 +200,8 @@ type Candidate = Extract<Plan, { kind: "ranges" }> & { readonly score: readonly 
  * starts with pinned fields of several values, their values split into one
  * query per combination, read in the order of the combinations.
  */
-function candidate(name: string | undefined, info: IndexInfo | undefined, facts: Facts, order: OrderKey, wantsFirst: boolean): Candidate | undefined {
+function candidate(index: Index | undefined, facts: Facts, order: OrderKey, wantsFirst: boolean): Candidate | undefined {
+  const { name, info } = index ?? {};
   const by = info ? info.by : ["id"];
   const { pins, bands } = facts;
   let k = 0;
@@ -246,7 +248,7 @@ function candidate(name: string | undefined, info: IndexInfo | undefined, facts:
   });
   const n = [k, bound ? 1 : 0, match === undefined ? 0 : 1];
   const score = wantsFirst ? [+ordered, +exact, ...n, -by.length] : [+exact, ...n, +ordered, -by.length];
-  return { kind: "ranges", index: name, info, ranges, ordered, exact, score };
+  return { kind: "ranges", ...(index && { index }), ranges, ordered, exact, score };
 }
 
 /** What the planner reads of a query. */
@@ -269,9 +271,9 @@ export function planQuery(query: Planned, order: OrderKey, indexes: ReadonlyMap<
   const ids = facts.pins.get("id");
   if (ids) return { kind: "ids", ids: ids.values.filter(isId) };
   const wantsFirst = query.limit !== undefined && query.shape !== "count";
-  let best = candidate(undefined, undefined, facts, order, wantsFirst)!;
+  let best = candidate(undefined, facts, order, wantsFirst)!;
   for (const [name, info] of indexes) {
-    const c = candidate(name, info, facts, order, wantsFirst);
+    const c = candidate({ name, info }, facts, order, wantsFirst);
     if (c && higher(c.score, best.score)) best = c;
   }
   const { score: _, ...plan } = best;
@@ -286,7 +288,7 @@ function higher(a: readonly number[], b: readonly number[]): boolean {
 export function summarize(plan: Plan): PlanSummary {
   if (plan.kind !== "ranges") return { kind: plan.kind };
   const { index, ordered, exact } = plan;
-  return index === undefined ? { kind: "scan", ordered, exact } : { kind: "index", index, ranges: plan.ranges.length, ordered, exact };
+  return index === undefined ? { kind: "scan", ordered, exact } : { kind: "index", index: index.name, ranges: plan.ranges.length, ordered, exact };
 }
 
 /**
