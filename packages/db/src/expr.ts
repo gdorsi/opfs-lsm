@@ -97,7 +97,7 @@ export function inArray<V extends Scalar>(value: Expression<V>, list: readonly N
   return fn("in", [nodeOf(value), { kind: "val", value: list }]);
 }
 
-/** SQL LIKE: `%` is any run of characters and `_` is one. Case-sensitive. Both sides are compared in Unicode NFC. */
+/** SQL LIKE: `%` is any run of characters and `_` is one, and a `\` makes the `%`, `_` or `\` after it literal. Case-sensitive. Both sides are compared in Unicode NFC. */
 export function like(value: Expression<string | null>, pattern: string): Expression<boolean> {
   return fn("like", [nodeOf(value), { kind: "val", value: pattern }]);
 }
@@ -205,10 +205,18 @@ export const normalized = (text: string): string => text.normalize("NFC");
 /** The text `ilike` compares: docstore's form of the words of a text index, with a final sigma as any other. */
 const folded = (text: string): string => normalized(text).toLowerCase().replaceAll("ς", "σ");
 
+const literal = (ch: string): string => ch.replace(/[\\^$.*+?()[\]{}|]/, "\\$&");
+
 function likeTest(pattern: unknown, fold: (text: string) => string): (value: unknown) => boolean {
   if (typeof pattern !== "string") throw new QueryError("operand", "like takes a string pattern");
+  const chars = [...fold(pattern)];
   let source = "";
-  for (const ch of fold(pattern)) source += ch === "%" ? "[^]*" : ch === "_" ? "[^]" : ch.replace(/[\\^$.*+?()[\]{}|]/, "\\$&");
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    // A backslash before any other character is itself, as the text holds it.
+    if (ch === "\\" && i + 1 < chars.length && "%_\\".includes(chars[i + 1]!)) source += literal(chars[++i]!);
+    else source += ch === "%" ? "[^]*" : ch === "_" ? "[^]" : literal(ch);
+  }
   const re = new RegExp(`^${source}$`, "u");
   return (value) => typeof value === "string" && re.test(fold(value));
 }

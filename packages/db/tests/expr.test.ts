@@ -145,6 +145,17 @@ describe("conditions", () => {
     expect(holds(like(i.s, "%"), { id: "a" })).toBe(false);
   });
 
+  it("like takes the %, _ or \\ after a backslash as itself, and any other backslash as a backslash", () => {
+    expect(holds(like(i.s, "100\\%"), { id: "a", s: "100%" })).toBe(true);
+    expect(holds(like(i.s, "100\\%"), { id: "a", s: "1000" })).toBe(false);
+    expect(holds(like(i.s, "%\\_%"), { id: "a", s: "snake_case" })).toBe(true);
+    expect(holds(like(i.s, "%\\_%"), { id: "a", s: "camel" })).toBe(false);
+    expect(holds(like(i.s, "a\\\\b"), { id: "a", s: "a\\b" })).toBe(true);
+    expect(holds(like(i.s, "a\\b"), { id: "a", s: "a\\b" })).toBe(true);
+    expect(holds(like(i.s, "end\\"), { id: "a", s: "end\\" })).toBe(true);
+    expect(holds(ilike(i.s, "%\\%%"), { id: "a", s: "UP 5%" })).toBe(true);
+  });
+
   it("ilike ignores case, and both compare text in NFC", () => {
     expect(holds(ilike(i.s, "%LOGIN%"), { id: "a", s: "Fix Login now" })).toBe(true);
     expect(holds(ilike(i.s, "%οδοσ%"), { id: "a", s: "ΟΔΟΣ" })).toBe(true);

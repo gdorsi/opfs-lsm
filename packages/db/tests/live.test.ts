@@ -577,6 +577,17 @@ describe("a row the subscriber changes", () => {
   });
 });
 
+describe("a search for % or _", () => {
+  it("finds the text that holds them when they are escaped, through a text index", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1, { title: "Cut 5% off" }), issue(2, { title: "Cut 50 off" }), issue(3, { title: "snake_case" }), issue(4, { title: "snakecase" })]);
+    const titled = (pattern: string) => query((q) => q.from({ i: issues }).where(({ i }) => ilike(i.title, pattern)).orderBy(({ i }) => i.modified));
+    expect(titled("%5\\%%").explain()).toMatchObject({ kind: "index", index: "byModified" });
+    expect(ids(await titled("%5\\%%").run())).toEqual(["i1"]);
+    expect(ids(await titled("%e\\_c%").run())).toEqual(["i3"]);
+  });
+});
+
 describe("a subscription that ends", () => {
   it("is logged when it has no error callback, unless the database closed", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
