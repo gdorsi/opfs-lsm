@@ -1,9 +1,9 @@
 import { DocStoreError } from "@opfs-lsm/docstore";
-import { CorruptDatabaseError } from "@opfs-lsm/kv";
+import { CorruptDatabaseError, type ChangeOp } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOn, tableOf } from "../src/database.js";
-import { ClosedError, collection, eq, gt, ilike, inArray, like, query, QueryError, type Collections, type Database } from "../src/index.js";
+import { and, ClosedError, collection, eq, gt, ilike, inArray, like, lte, query, QueryError, type Collections, type Database } from "../src/index.js";
 import { freshName, holdViews, openKv, until, watch } from "./harness.js";
 
 type Issue = { id: string; title: string; status: number; modified: number; note?: string };
@@ -25,6 +25,30 @@ afterEach(async () => {
 
 const issue = (n: number, over: Partial<Issue> = {}): Issue => ({ id: `i${n}`, title: `Issue ${n}`, status: 1, modified: n, ...over });
 const ids = (rows: readonly { id: string }[] | undefined) => rows?.map((r) => r.id);
+
+type Issues = Awaited<ReturnType<typeof openDb>>["issues"];
+
+/** Every change `issues` hands to a listener refuses `member`, as when the catalog moved under it or a document cannot be read. */
+function faultChanges(issues: Issues, member: "before" | "written" | "doc") {
+  const refusing = (change: object) =>
+    new Proxy(change, {
+      get(target, prop) {
+        if (prop === member) {
+          const refuse = () => {
+            throw new DocStoreError("schema", "the catalog of the change holds the index otherwise");
+          };
+          return member === "doc" ? refuse() : refuse;
+        }
+        const value = Reflect.get(target, prop, target) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  const docs = tableOf(issues).docs;
+  const real = docs.changes.bind(docs);
+  vi.spyOn(docs, "changes").mockImplementation((listener) =>
+    real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => refusing(c) as typeof c) } : event)),
+  );
+}
 
 describe("a subscription", () => {
   it("is not called again when another document gives an equal result", async () => {
@@ -98,10 +122,10 @@ describe("a subscription", () => {
     expect(seen.values.map(ids)).toEqual([["i3", "i2"], ["i9", "i3"]]);
   });
 
-  it("reads a count of every document again for an insert and a delete, and not for an edit", async () => {
+  it("reads a limited count again for an insert and a delete, and not for an edit", async () => {
     const { issues, views } = await openDb();
     await issues.insert([issue(1), issue(2)]);
-    const seen = watch(query((q) => q.from({ i: issues }).count()));
+    const seen = watch(query((q) => q.from({ i: issues }).limit(10).count()));
     await until(() => seen.values.length === 1);
     const reads = views.views();
 
@@ -178,6 +202,84 @@ describe("a subscription", () => {
     expect(one.values[1]).toBeUndefined();
   });
 
+  it("hands over a page before a count read in the same snapshot, and the count then agrees with it", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2, { status: 2 })]);
+    const { docs } = tableOf(issues);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) => {
+        const slow = new Proxy(snap, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target) as unknown;
+            if (key !== "count" || typeof value !== "function") return typeof value === "function" ? value.bind(target) : value;
+            return async (...args: unknown[]) => {
+              await gate;
+              return value.apply(target, args) as unknown;
+            };
+          },
+        });
+        return body(slow);
+      }),
+    );
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    await until(() => page.values.length === 1);
+    expect(ids(page.values[0])).toEqual(["i1"]);
+    expect(total.values).toEqual([]);
+    // Written after the snapshot: the count must not see it.
+    await issues.insert(issue(3));
+    release();
+    await until(() => total.values.length === 2);
+    expect(total.values).toEqual([1, 2]);
+    await until(() => page.values.length === 2);
+    expect(ids(page.values[1])).toEqual(["i1", "i3"]);
+  });
+
+  it("tells a patched count only once the page beside it is read again", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const { docs } = tableOf(issues);
+    let gate: Promise<void> | undefined;
+    let open!: () => void;
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) => {
+        const held = gate;
+        const slow = new Proxy(snap, {
+          get(target, key) {
+            const value = Reflect.get(target, key, target) as unknown;
+            if (typeof value !== "function") return value;
+            return async (...args: unknown[]) => {
+              await held;
+              return value.apply(target, args) as unknown;
+            };
+          },
+        });
+        return body(slow);
+      }),
+    );
+    const log: string[] = [];
+    const page = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified).limit(10));
+    const total = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count());
+    expect(total.explain()).toMatchObject({ index: "byStatus", exact: true });
+    const stops = [page.subscribe((rows) => log.push(`page ${ids(rows)!.join(",")}`)), total.subscribe((n) => log.push(`total ${n}`))];
+    try {
+      await until(() => log.length === 2);
+      gate = new Promise((resolve) => (open = resolve));
+      await issues.insert(issue(3));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(log).toHaveLength(2);
+      open();
+      await until(() => log.length === 4);
+      expect(log.slice(2)).toEqual(["page i1,i2,i3", "total 3"]);
+    } finally {
+      for (const stop of stops) stop();
+    }
+  });
+
   it("stops at once when unsubscribed, a read in flight included", async () => {
     const { issues, views } = await openDb();
     await issues.insert(issue(1));
@@ -217,6 +319,228 @@ describe("a subscription", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+});
+
+describe("a subscription that follows the changes without a read", () => {
+  /** Counts the reads of the collection from now on. */
+  function reads(issues: Database<typeof collections>["collections"]["issues"]): () => number {
+    const { docs } = tableOf(issues);
+    const spies = (["view", "query", "count", "getMany"] as const).map((method) => vi.spyOn(docs, method));
+    return () => spies.reduce((n, spy) => n + spy.mock.calls.length, 0);
+  }
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("moves an exact count by the entries each write added to its ranges and removed from them", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 })]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count());
+    expect(open.explain()).toMatchObject({ kind: "index", index: "byStatus", exact: true });
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+    const base = views.views();
+
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 2);
+    await issues.update("i1", (draft) => {
+      draft.status = 2;
+    });
+    await until(() => seen.values.length === 3);
+    // The entry moves inside the range: the count stays.
+    await issues.update("i2", (draft) => {
+      draft.modified = 50;
+    });
+    await issues.update("i2", (draft) => {
+      draft.title = "Renamed";
+    });
+    await issues.delete("i4");
+    await until(() => seen.values.length === 4);
+    await issues.update("i3", (draft) => {
+      draft.status = 1;
+    });
+    await until(() => seen.values.length === 5);
+    await issues.insert([issue(5), issue(6), issue(7, { status: 2 })]);
+    await until(() => seen.values.length === 6);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values).toEqual([2, 3, 2, 1, 2, 4]);
+    expect(read()).toBe(0);
+    expect(views.views()).toBe(base);
+    expect(await open.run()).toBe(4);
+  });
+
+  it("follows a count of the whole collection, and the ranges of an inArray", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2, { status: 2 }), issue(3, { status: 3 })]);
+    const all = watch(query((q) => q.from({ i: issues }).count()));
+    const some = watch(query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.status, [1, 3])).count()));
+    await until(() => all.values.length === 1 && some.values.length === 1);
+    const read = reads(issues);
+    await issues.update("i2", (draft) => {
+      draft.status = 3;
+    });
+    await until(() => some.values.length === 2);
+    await issues.delete("i1");
+    await until(() => some.values.length === 3 && all.values.length === 2);
+    await issues.insert(issue(4, { status: 9 }));
+    await until(() => all.values.length === 3);
+    await issues.delete(["i3", "i4"]);
+    await until(() => all.values.length === 4 && some.values.length === 4);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(all.values).toEqual([3, 2, 3, 1]);
+    expect(some.values).toEqual([2, 3, 2, 1]);
+    expect(read()).toBe(0);
+  });
+
+  it("keeps a list with no limit in order for an insert, a delete, a move and an edit, and keeps the rows that did not change", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 }), issue(5)]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified, "desc"));
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+    const base = views.views();
+    const next = async (change: () => Promise<unknown>) => {
+      const n = seen.values.length;
+      await change();
+      await until(() => seen.values.length === n + 1);
+      return seen.values.at(-1) as Issue[];
+    };
+
+    expect(ids(seen.values[0])).toEqual(["i5", "i2", "i1"]);
+    expect(ids(await next(() => issues.insert(issue(4))))).toEqual(["i5", "i4", "i2", "i1"]);
+    const before = seen.values.at(-1) as Issue[];
+    const renamed = await next(() => issues.update("i2", (draft) => void (draft.title = "Renamed")));
+    expect(renamed.map((r) => r.title)).toEqual(["Issue 5", "Issue 4", "Renamed", "Issue 1"]);
+    expect(renamed[0]).toBe(before[0]);
+    expect(renamed[1]).toBe(before[1]);
+    expect(renamed[3]).toBe(before[3]);
+    expect(renamed).not.toBe(before);
+    expect(ids(await next(() => issues.update("i1", (draft) => void (draft.modified = 9))))).toEqual(["i1", "i5", "i4", "i2"]);
+    expect(ids(await next(() => issues.update("i3", (draft) => void (draft.status = 1))))).toEqual(["i1", "i5", "i4", "i3", "i2"]);
+    expect(ids(await next(() => issues.update("i5", (draft) => void (draft.status = 2))))).toEqual(["i1", "i4", "i3", "i2"]);
+    expect(ids(await next(() => issues.delete("i4")))).toEqual(["i1", "i3", "i2"]);
+    expect(ids(await next(() => issues.insert([issue(6), issue(7), issue(8, { status: 2 })])))).toEqual(["i1", "i7", "i6", "i3", "i2"]);
+    // A write that touches no row of the result is no new value.
+    await issues.update("i8", (draft) => void (draft.title = "Elsewhere"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values).toHaveLength(8);
+    expect(read()).toBe(0);
+    expect(views.views()).toBe(base);
+    expect(await open.run()).toEqual(seen.values.at(-1));
+  });
+
+  it("places rows by the fields a select renames", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(3)]);
+    const named = query((q) =>
+      q
+        .from({ i: issues })
+        .where(({ i }) => eq(i.status, 1))
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ key: i.id, at: i.modified, title: i.title })),
+    );
+    const seen = watch(named);
+    await until(() => seen.values.length === 1);
+    const read = reads(issues);
+
+    await issues.insert(issue(2));
+    await until(() => seen.values.length === 2);
+    expect(seen.values[1]).toEqual([
+      { key: "i1", at: 1, title: "Issue 1" },
+      { key: "i2", at: 2, title: "Issue 2" },
+      { key: "i3", at: 3, title: "Issue 3" },
+    ]);
+    expect(seen.values[1]![0]).toBe(seen.values[0]![0]);
+    await issues.update("i2", (draft) => void (draft.status = 5));
+    await issues.update("i3", (draft) => void (draft.title = "Three"));
+    await until(() => seen.values.length === 4);
+    expect(seen.values[3]!.map((r) => r.title)).toEqual(["Issue 1", "Three"]);
+    expect(read()).toBe(0);
+    expect(await named.run()).toEqual(seen.values.at(-1));
+  });
+
+  it("reads again for a select that drops a field of the order, and for a plan on a text index", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(3)]);
+    const dropped = query((q) =>
+      q
+        .from({ i: issues })
+        .where(({ i }) => eq(i.status, 1))
+        .orderBy(({ i }) => i.modified)
+        .select(({ i }) => ({ title: i.title })),
+    );
+    const text = query((q) => q.from({ i: issues }).orderBy(({ i }) => i.modified));
+    expect(text.explain()).toMatchObject({ kind: "index", index: "byModified" });
+    const seen = [watch(dropped), watch(text)] as const;
+    await until(() => seen.every((s) => s.values.length === 1));
+    const read = reads(issues);
+
+    await issues.insert(issue(2));
+    await until(() => seen.every((s) => s.values.length === 2));
+    expect(seen[0].values[1]).toEqual([{ title: "Issue 1" }, { title: "Issue 2" }, { title: "Issue 3" }]);
+    expect(ids(seen[1].values[1] as Issue[])).toEqual(["i1", "i2", "i3"]);
+    expect(read()).toBeGreaterThan(0);
+  });
+
+  it("places a document an index does not hold as a read does: it is not in the result", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const open = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified));
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    // docstore takes a document that has no value at an indexed field, and gives it no entry.
+    await tableOf(issues).docs.put({ id: "i3", title: "No status", modified: 3 } as never);
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i2", "i4"]);
+    expect(await open.run()).toEqual(seen.values[1]);
+  });
+
+  it("reads again for a count with a residual filter and for a limited window", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const counted = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).where(({ i }) => ilike(i.title, "%issue%")).count()));
+    const window = watch(query((q) => q.from({ i: issues }).orderBy(({ i }) => i.modified, "desc").limit(2)));
+    await until(() => counted.values.length === 1 && window.values.length === 1);
+    const read = reads(issues);
+
+    await issues.insert(issue(3));
+    await until(() => counted.values.length === 2 && window.values.length === 2);
+    expect(counted.values).toEqual([2, 3]);
+    expect(ids(window.values[1])).toEqual(["i3", "i2"]);
+    expect(read()).toBeGreaterThan(0);
+  });
+
+  it("hands a burst of writes to the subscriber as one value", async () => {
+    const { issues } = await openDb();
+    const total = watch(query((q) => q.from({ i: issues }).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await issues.insert([1, 2, 3, 4, 5].map((n) => issue(n)));
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([0, 5]);
+    expect(list.values.map((rows) => rows.length)).toEqual([0, 5]);
+  });
+
+  it("reads again after a gap, and goes on patching from the new result", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    const total = watch(query((q) => q.from({ i: issues }).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await tableOf(issues).docs.clear();
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const read = reads(issues);
+    await issues.insert(issue(3));
+    await until(() => total.values.length === 3 && list.values.length === 3);
+    expect(total.values).toEqual([2, 0, 1]);
+    expect(list.values.map(ids)).toEqual([["i1", "i2"], [], ["i3"]]);
+    expect(read()).toBe(0);
   });
 });
 
@@ -339,7 +663,7 @@ describe("the end of a subscription", () => {
   it("is a ClosedError destroyed when the database is deleted while a read is in flight", async () => {
     const name = freshName();
     const { issues, views } = await openDb(name);
-    const seen = watch(query((q) => q.from({ i: issues })));
+    const seen = watch(query((q) => q.from({ i: issues }).limit(10)));
     await until(() => seen.values.length === 1);
     const reads = views.views();
     views.hold();
@@ -353,7 +677,7 @@ describe("the end of a subscription", () => {
 
   it("is the storage's failure when a read fails, and later writes call nothing", async () => {
     const { issues, views } = await openDb();
-    const all = query((q) => q.from({ i: issues }));
+    const all = query((q) => q.from({ i: issues }).limit(10));
     const seen = watch(all);
     await until(() => seen.values.length === 1);
     views.fail(new CorruptDatabaseError("a block failed its checksum"));
@@ -502,31 +826,10 @@ describe("a window past rows ordered by a nested field", () => {
 });
 
 describe("a change that cannot say where its document was", () => {
-  const unreadable = (change: object) =>
-    new Proxy(change, {
-      get(target, prop) {
-        if (prop === "before") {
-          return () => {
-            throw new DocStoreError("schema", "the catalog of the change holds the index otherwise");
-          };
-        }
-        const value = Reflect.get(target, prop, target) as unknown;
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    });
-  /** Every change `issues` hands to a listener refuses `before`, as when the catalog moved under it. */
-  function faultBefore(issues: Awaited<ReturnType<typeof openDb>>["issues"]) {
-    const docs = tableOf(issues).docs;
-    const real = docs.changes.bind(docs);
-    vi.spyOn(docs, "changes").mockImplementation((listener) =>
-      real((event) => listener(event.kind === "append" ? { ...event, changes: event.changes.map((c) => unreadable(c) as typeof c) } : event)),
-    );
-  }
-
   it("is read again by a window with an offset, which then shows the shifted rows", async () => {
     const { issues, views } = await openDb();
     await issues.insert([1, 2, 3, 4, 5, 6].map((n) => issue(n)));
-    faultBefore(issues);
+    faultChanges(issues, "before");
     const window = query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified).offset(2).limit(2));
     const seen = watch(window);
     await until(() => seen.values.length === 1);
@@ -546,7 +849,7 @@ describe("a change that cannot say where its document was", () => {
   it("is read again by a limited count, which is otherwise left alone by an edit", async () => {
     const { issues, views } = await openDb();
     await issues.insert([issue(1), issue(2)]);
-    faultBefore(issues);
+    faultChanges(issues, "before");
     const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
     await until(() => seen.values.length === 1);
     const reads = views.views();
@@ -627,5 +930,286 @@ describe("a subscription that ends", () => {
     } finally {
       logged.mockRestore();
     }
+  });
+});
+
+describe("a list that names its ids", () => {
+  it("follows the documents it names by their changes alone, and ignores the others", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3)]);
+    const named = query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.id, ["i1", "i2", "i4"])).where(({ i }) => eq(i.status, 1)));
+    expect(named.explain()).toEqual({ kind: "ids" });
+    const seen = watch(named);
+    await until(() => seen.values.length === 1);
+    expect(ids(seen.values[0])).toEqual(["i1", "i2"]);
+    const base = views.views();
+
+    await issues.update("i3", (draft) => void (draft.title = "Not named"));
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => seen.values.length === 2);
+    await issues.insert(issue(4));
+    await until(() => seen.values.length === 3);
+    await issues.update("i2", (draft) => void (draft.status = 1));
+    await until(() => seen.values.length === 4);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(seen.values.map(ids)).toEqual([["i1", "i2"], ["i1"], ["i1", "i4"], ["i1", "i2", "i4"]]);
+    expect(views.views()).toBe(base);
+  });
+});
+
+describe("a patch that cannot apply", () => {
+  const byModified = (issues: Issues) => query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified));
+
+  it("is a read, when the subscriber has reordered the list it was given", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([1, 2, 3, 4, 5].map((n) => issue(n)));
+    const open = byModified(issues);
+    const seen: (string[] | undefined)[] = [];
+    open.subscribe((rows) => {
+      seen.push(ids(rows));
+      (rows as Issue[]).reverse();
+    });
+    await until(() => seen.length === 1);
+    const base = views.views();
+
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => seen.length === 2);
+    expect(seen[1]).toEqual(["i1", "i3", "i4", "i5"]);
+    expect(views.views()).toBe(base + 1);
+    expect(ids(await open.run())).toEqual(seen[1]);
+  });
+
+  it("is a read, when the entries of a count cannot be read", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    faultChanges(issues, "written");
+    const seen = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    await until(() => seen.values.length === 1);
+    const base = views.views();
+
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(seen.values).toEqual([2, 3]);
+    expect(views.views()).toBe(base + 1);
+  });
+
+  it("is a read, when a document of a list cannot be read from its change", async () => {
+    const { issues, views } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    faultChanges(issues, "doc");
+    const open = byModified(issues);
+    const seen = watch(open);
+    await until(() => seen.values.length === 1);
+    const base = views.views();
+
+    await issues.insert(issue(3));
+    await until(() => seen.values.length === 2);
+    expect(ids(seen.values[1])).toEqual(["i1", "i2", "i3"]);
+    expect(views.views()).toBe(base + 1);
+    expect(seen.errors).toEqual([]);
+  });
+});
+
+describe("changes applied together after a read", () => {
+  /** A subscription whose read is in flight holds every change until `release`. */
+  async function held() {
+    const ctx = await openDb();
+    const { issues, views } = ctx;
+    await issues.insert([issue(1), issue(2), issue(3)]);
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    const count = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    const trigger = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 9)).limit(10).count()));
+    await until(() => [list, count, trigger].every((w) => w.values.length === 1));
+    views.hold();
+    const reads = views.views();
+    await issues.insert(issue(9, { status: 9 }));
+    await until(() => views.views() > reads);
+    const apply = async (writes: () => Promise<unknown>) => {
+      await writes();
+      views.release();
+      await until(() => trigger.values.length === 2);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    };
+    return { ...ctx, list, count, apply };
+  }
+
+  it("hand over the same list for a document that left and came back equal", async () => {
+    const { issues, views, list, count, apply } = await held();
+    const first = list.values[0] as Issue[];
+    await apply(async () => {
+      await issues.delete("i2");
+      await issues.upsert(issue(2));
+      await issues.update("i3", (draft) => void (draft.status = 2));
+      await issues.update("i3", (draft) => void (draft.status = 1));
+    });
+    expect(list.values).toHaveLength(1);
+    expect(count.values).toEqual([3]);
+
+    // The rows it holds are the ones it handed over, so a later change to one of them still applies without a read.
+    const reads = views.views();
+    await issues.update("i2", (draft) => void (draft.title = "Renamed"));
+    await until(() => list.values.length === 2);
+    const second = list.values[1] as Issue[];
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toEqual(issue(2, { title: "Renamed" }));
+    expect(second[2]).toBe(first[2]);
+    expect(views.views()).toBe(reads);
+  });
+
+  it("read again for a gap among the changes, and count none of those it held", async () => {
+    const { issues, list, count, apply } = await held();
+    await apply(async () => {
+      await issues.insert(issue(4));
+      await tableOf(issues).docs.clear();
+      await issues.insert(issue(5));
+    });
+    await until(() => count.values.length === 2 && list.values.length === 2);
+    expect(count.values).toEqual([3, 1]);
+    expect(list.values.map(ids)).toEqual([["i1", "i2", "i3"], ["i5"]]);
+  });
+});
+
+describe("the entries of a count", () => {
+  it("do not move it for a document that moves between two ranges of one inArray, or that was never in them", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2), issue(3, { status: 2 }), issue(4, { status: 3 })]);
+    const some = watch(query((q) => q.from({ i: issues }).where(({ i }) => inArray(i.status, [1, 3])).count()));
+    await until(() => some.values.length === 1);
+
+    await issues.update("i1", (draft) => void (draft.status = 3));
+    await issues.update("i4", (draft) => void (draft.status = 1));
+    await issues.delete("i3");
+    await issues.insert(issue(5, { status: 7 }));
+    await issues.update("i2", (draft) => void (draft.status = 2));
+    await until(() => some.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(some.values).toEqual([3, 2]);
+  });
+
+  it("count a document once when one record writes it twice", async () => {
+    const source = await openDb();
+    const ops: ChangeOp[] = [];
+    source.views.db.changes((e) => e.kind === "append" && ops.push(...e.ops));
+    await source.issues.insert(issue(1));
+    await source.issues.update("i1", (draft) => void (draft.modified = 5));
+    await source.issues.insert(issue(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const { issues, views } = await openDb();
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).count()));
+    const list = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified)));
+    await until(() => total.values.length === 1 && list.values.length === 1);
+    await views.db.batch((tx) => {
+      for (const op of ops) {
+        if (op.type === "put") tx.put(op.key, op.value);
+        else if (op.type === "del") tx.delete(op.key);
+      }
+    });
+    await until(() => total.values.length === 2 && list.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([0, 2]);
+    expect(list.values.map((rows) => rows.map((r) => `${r.id}:${r.modified}`))).toEqual([[], ["i2:2", "i1:5"]]);
+  });
+});
+
+describe("the entries of a count over a range", () => {
+  it("move it when an entry crosses a bound, the open one excluded and the closed one included", async () => {
+    const { issues } = await openDb();
+    await issues.insert([1, 2, 3, 4, 5, 6, 7].map((n) => issue(n)));
+    const between = query((q) => q.from({ i: issues }).where(({ i }) => and(eq(i.status, 1), gt(i.modified, 2), lte(i.modified, 5))).count());
+    expect(between.explain()).toMatchObject({ kind: "index", index: "byStatus", exact: true });
+    const seen = watch(between);
+    await until(() => seen.values.length === 1);
+    const set = async (id: string, modified: number) => {
+      const n = seen.values.length;
+      await issues.update(id, (draft) => void (draft.modified = modified));
+      await until(() => seen.values.length === n + 1);
+    };
+    await set("i3", 2);
+    await set("i6", 5);
+    await set("i1", 3);
+    await set("i5", 6);
+    await set("i7", 4);
+    expect(seen.values).toEqual([3, 2, 3, 4, 3, 4]);
+    expect(await between.run()).toBe(4);
+  });
+});
+
+describe("the rows of a list", () => {
+  it("break a tie on the sort field by id, in either direction, in the names a select gives", async () => {
+    const { issues } = await openDb();
+    const at = (id: string, modified: number) => issue(0, { id, modified });
+    await issues.insert([at("b", 5), at("d", 5)]);
+    const rows = (dir: "asc" | "desc") =>
+      watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).orderBy(({ i }) => i.modified, dir).select(({ i }) => ({ key: i.id, when: i.modified }))));
+    const asc = rows("asc");
+    const desc = rows("desc");
+    await until(() => asc.values.length === 1 && desc.values.length === 1);
+    await issues.insert([at("a", 5), at("c", 5), at("e", 4)]);
+    await until(() => asc.values.length === 2 && desc.values.length === 2);
+    expect(asc.values[1]!.map((r) => r.key)).toEqual(["e", "a", "b", "c", "d"]);
+    expect(desc.values[1]!.map((r) => r.key)).toEqual(["d", "c", "b", "a", "e"]);
+    await issues.update("c", (draft) => void (draft.modified = 4));
+    await until(() => asc.values.length === 3 && desc.values.length === 3);
+    expect(asc.values[2]!.map((r) => r.key)).toEqual(["c", "e", "a", "b", "d"]);
+    expect(desc.values[2]!.map((r) => r.key)).toEqual(["d", "b", "a", "e", "c"]);
+  });
+});
+
+describe("the reads of one batch", () => {
+  const withSlowCount = (issues: Issues, failQuery: () => boolean = () => false) => {
+    const { docs } = tableOf(issues);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const view = docs.view.bind(docs);
+    vi.spyOn(docs, "view").mockImplementation((body) =>
+      view((snap) =>
+        body(
+          new Proxy(snap, {
+            get(target, key) {
+              const value = Reflect.get(target, key, target) as unknown;
+              if (typeof value !== "function") return value;
+              if (key === "query" && failQuery()) return () => Promise.reject(new CorruptDatabaseError("a block failed its checksum"));
+              if (key === "count") return async (...args: unknown[]) => (await gate, value.apply(target, args) as unknown);
+              return value.bind(target);
+            },
+          }),
+        ),
+      ),
+    );
+    return release;
+  };
+
+  it("hands a count its result when the read of a list in the same snapshot fails", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1), issue(2)]);
+    let failing = false;
+    withSlowCount(issues, () => failing)();
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
+    await until(() => page.values.length === 1 && total.values.length === 1);
+    failing = true;
+    await issues.insert(issue(3));
+    await until(() => page.errors.length === 1 && total.values.length === 2);
+    expect(page.errors[0]).toMatchObject({ _tag: "StorageError", code: "corrupt" });
+    expect(total.values).toEqual([2, 3]);
+    expect(total.errors).toEqual([]);
+  });
+
+  it("does not call a count that was unsubscribed while its read was in flight, after the list was handed over", async () => {
+    const { issues } = await openDb();
+    await issues.insert([issue(1)]);
+    const release = withSlowCount(issues);
+    const page = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10)));
+    const total = watch(query((q) => q.from({ i: issues }).where(({ i }) => eq(i.status, 1)).limit(10).count()));
+    await until(() => page.values.length === 1);
+    expect(total.values).toEqual([]);
+    total.stop();
+    release();
+    await issues.insert(issue(2));
+    await until(() => page.values.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(total.values).toEqual([]);
+    expect(total.errors).toEqual([]);
   });
 });

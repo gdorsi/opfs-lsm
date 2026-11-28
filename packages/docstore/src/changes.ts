@@ -38,6 +38,16 @@ export type DocChange<T extends JsonDoc, Ix = any> = {
    * than this handle declares it, as a query does, but not while it builds.
    */
   before<I extends KeyOnlyIndex<Ix>>(index: I): EntryOf<T, Ix, I>[];
+  /**
+   * The entries this change added to `index` and removed from it, each in
+   * index order, as `queryEntries` gives them: an update that leaves the
+   * index alone has none. They are the index entries the write recorded, so
+   * nothing is read and no document is decoded. The same indexes and errors as
+   * `before`. When one record writes a document twice, the last change of
+   * that document carries the entries of both writes, and the earlier ones
+   * none.
+   */
+  written<I extends KeyOnlyIndex<Ix>>(index: I): { readonly added: EntryOf<T, Ix, I>[]; readonly removed: EntryOf<T, Ix, I>[] };
 };
 
 export type CollectionChange<T extends JsonDoc, Ix = any> =
@@ -63,8 +73,17 @@ class Run {
   private docs: (StoredDoc | undefined)[] | undefined;
   private coll: BoundCollection | undefined;
   private readonly byIndex = new Map<string, EntryOps>();
+  private changes = 0;
+  /** The number of the last change of each document. */
+  private readonly lastOf = new Map<string, number>();
 
   constructor(private readonly bound: () => BoundCollection) {}
+
+  /** The number of the next change, which becomes the last of its document. */
+  claim(id: string): number {
+    this.lastOf.set(id, this.changes);
+    return this.changes++;
+  }
 
   doc(slot: number): StoredDoc {
     return (this.docs ??= decodeDocs(this.puts))[slot]!;
@@ -84,6 +103,16 @@ class Run {
     }
     keys.sort(compareBytes);
     return decodeEntries(plan.target, keys.map((key) => ({ key, value: undefined })), 0);
+  }
+
+  /** The entries the write added to and removed from `index`, when `n` is the last change of the document. */
+  written(index: string, id: string, n: number): { added: IndexEntry[]; removed: IndexEntry[] } {
+    const plan = this.plan(index);
+    let ops = this.byIndex.get(index);
+    if (!ops) this.byIndex.set(index, (ops = this.group(plan)));
+    const mine = this.lastOf.get(id) === n ? ops.get(id) : undefined;
+    const decode = (keys: Uint8Array[] = []) => decodeEntries(plan.target, keys.toSorted(compareBytes).map((key) => ({ key, value: undefined })), 0);
+    return { added: decode(mine?.added), removed: decode(mine?.removed) };
   }
 
   private plan(index: string): IndexPlan {
@@ -114,6 +143,7 @@ class Change<T extends JsonDoc> implements DocChange<T, any> {
   declare readonly doc: T | undefined;
   readonly #slot: number | undefined;
   readonly #run: Run;
+  readonly #n: number;
 
   /** `slot` is the change's place in the run's rows. `doc` is an own getter, so a copy of the change, such as `postMessage` makes, keeps it. */
   constructor(
@@ -124,6 +154,7 @@ class Change<T extends JsonDoc> implements DocChange<T, any> {
     this.deleted = slot === undefined;
     this.#slot = slot;
     this.#run = run;
+    this.#n = run.claim(id);
     Object.defineProperty(this, "doc", {
       enumerable: true,
       get: () => (slot === undefined ? undefined : (run.doc(slot) as unknown as T)),
@@ -132,6 +163,10 @@ class Change<T extends JsonDoc> implements DocChange<T, any> {
 
   before(index: string): any[] {
     return this.#run.before(index, this.id, this.#slot);
+  }
+
+  written(index: string): { added: any[]; removed: any[] } {
+    return this.#run.written(index, this.id, this.#n);
   }
 }
 
