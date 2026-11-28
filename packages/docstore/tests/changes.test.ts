@@ -628,6 +628,32 @@ describe("written", () => {
     await c.put({ id: "x", a: 1 });
     await settled(() => expect(errors).toEqual(["uniq query", "search query", "covered query"]));
   });
+
+  it("throws schema for an index a newer schema redefined, as before does", async () => {
+    type Row = { id: string; a?: number; b?: number };
+    const v1 = defineSchema({ version: 1, collections: { rows: collection<Row>().index("byA", "a") } });
+    const v2 = defineSchema({ version: 2, collections: { rows: collection<Row>().index("byA", "b") } });
+    const name = freshName();
+    const kvA = await openKv(name);
+    const kvB = await openKv(name);
+    open.push(kvA, kvB);
+    const rows = (await openDocStore(kvA, v1)).collection("rows");
+    const thrown: unknown[] = [];
+    rows.changes((e) => {
+      if (e.kind !== "append") return;
+      try {
+        e.changes[0]!.written("byA");
+      } catch (err) {
+        thrown.push(err);
+      }
+    });
+    const next = await openDocStore(kvB, v2);
+    await next.whenIdle();
+    await next.collection("rows").put({ id: "r", a: 1, b: 2 });
+    await kvA.sync();
+    await settled(() => expect(thrown).toHaveLength(1));
+    expect(thrown[0]).toMatchObject({ name: "DocStoreError", code: "schema" });
+  });
 });
 
 describe("a snapshot and the changes", () => {
