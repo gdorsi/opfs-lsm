@@ -3,7 +3,7 @@ import { CorruptDatabaseError } from "@opfs-lsm/kv";
 import { destroyHarnessDb } from "@opfs-lsm/kv/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openOn, tableOf } from "../src/database.js";
-import { ClosedError, collection, eq, gt, ilike, inArray, query, QueryError, type Collections, type Database } from "../src/index.js";
+import { ClosedError, collection, eq, gt, ilike, inArray, like, query, QueryError, type Collections, type Database } from "../src/index.js";
 import { freshName, holdViews, openKv, until, watch } from "./harness.js";
 
 type Issue = { id: string; title: string; status: number; modified: number; note?: string };
@@ -511,5 +511,27 @@ describe("a change that cannot say where its document was", () => {
     await issues.insert(issue(3));
     await until(() => seen.values.length === 2);
     expect(seen.values).toEqual([2, 3]);
+  });
+});
+
+describe("a subscription that ends", () => {
+  it("is logged when it has no error callback, unless the database closed", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { db, issues } = await openDb();
+      query((q) => q.from({ i: issues }).where(({ i }) => like(i.title, 5 as never))).subscribe(() => {});
+      await until(() => logged.mock.calls.length === 1);
+      expect(logged.mock.calls[0]?.[0]).toMatch(/subscription with no error callback ended/);
+      expect(logged.mock.calls[0]?.[1]).toBeInstanceOf(QueryError);
+
+      const seen: unknown[] = [];
+      query((q) => q.from({ i: issues })).subscribe((rows) => seen.push(rows));
+      await until(() => seen.length === 1);
+      await db.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(logged).toHaveBeenCalledTimes(1);
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
