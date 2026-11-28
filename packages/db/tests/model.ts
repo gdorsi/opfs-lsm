@@ -139,7 +139,12 @@ const indexedSpec: fc.Arbitrary<Spec> = fc
     });
   });
 
-export const specArb: fc.Arbitrary<Spec> = fc.oneof(anySpec, indexedSpec);
+/** A window that starts past rows, cut to an index: whether a write shifted it is told by the entries the write held in the index. */
+const offsetSpec: fc.Arbitrary<Spec> = fc
+  .tuple(indexedSpec, fc.integer({ min: 1, max: 3 }), fc.integer({ min: 1, max: 4 }), fc.constantFrom<Spec["shape"]>("rows", "rows", "select"))
+  .map(([spec, offset, limit, shape]) => ({ ...spec, offset, limit, shape }));
+
+export const specArb: fc.Arbitrary<Spec> = fc.oneof(anySpec, indexedSpec, offsetSpec, offsetSpec);
 
 type Rows = Ref<Row>;
 const ref = (i: Rows, field: Field) => (field === "n.m" ? i.n.m : i[field]) as Ref<number>;
