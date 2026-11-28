@@ -133,20 +133,40 @@ export function valueAt(doc: unknown, path: readonly string[]): unknown {
   return fieldAt(doc, path) ?? null;
 }
 
-const RANK: Record<string, number> = { boolean: 1, number: 2, string: 3 };
-const rank = (v: unknown): number => (v === null || v === undefined ? 0 : (RANK[typeof v] ?? 4));
+/** The types of the index order, lowest first, with their least and greatest values where they have one. */
+const BANDS: readonly { readonly type: string; readonly least?: Scalar; readonly greatest?: Scalar }[] = [
+  { type: "null", least: null, greatest: null },
+  { type: "boolean", least: false, greatest: true },
+  { type: "number" },
+  { type: "string", least: "" },
+];
+const RANK: Record<string, number> = Object.fromEntries(BANDS.map((band, i) => [band.type, i]));
+const rank = (v: unknown): number => (v === null || v === undefined ? 0 : (RANK[typeof v] ?? BANDS.length));
 
 /**
- * The order of the indexes: null < false < true < numbers < strings, strings
- * by code point, -0 equal to 0. Arrays and objects come after strings and
- * tie with each other.
+ * The order of the indexes: the types in `BANDS` order, booleans and numbers
+ * by value, strings by code point, -0 equal to 0. Arrays and objects come
+ * after strings and tie with each other.
  */
 export function compareValues(a: unknown, b: unknown): number {
   const ra = rank(a);
   const rb = rank(b);
   if (ra !== rb) return ra - rb;
-  if (ra === 3) return compareStrings(a as string, b as string);
-  return ra === 1 || ra === 2 ? Number(a) - Number(b) : 0;
+  if (typeof a === "string") return compareStrings(a, b as string);
+  return typeof a === "boolean" || typeof a === "number" ? Number(a) - Number(b) : 0;
+}
+
+export type Bound = { readonly value: Scalar; readonly inclusive: boolean };
+
+/** Where the values of `type` lie in the index order: from its least value or past the type before, to its greatest or short of the type after. */
+export function extentOf(type: "boolean" | "number" | "string"): { readonly lower: Bound; readonly upper: Bound | undefined } {
+  const i = RANK[type]!;
+  const { least, greatest } = BANDS[i]!;
+  const next = BANDS[i + 1]?.least;
+  return {
+    lower: least !== undefined ? { value: least, inclusive: true } : { value: BANDS[i - 1]!.greatest!, inclusive: false },
+    upper: greatest !== undefined ? { value: greatest, inclusive: true } : next !== undefined ? { value: next, inclusive: false } : undefined,
+  };
 }
 
 /** Code point order, which is UTF-8 byte order. `<` compares UTF-16 units, which differs past U+FFFF. */

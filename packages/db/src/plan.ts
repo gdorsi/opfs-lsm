@@ -10,7 +10,7 @@
  * - `ordered`: the plan yields documents in the query's order.
  */
 import type { IndexInfo } from "@opfs-lsm/docstore";
-import { compareValues, normalized, type Node, type OrderKey, type Scalar } from "./expr.js";
+import { compareValues, extentOf, normalized, type Bound, type Node, type OrderKey, type Scalar } from "./expr.js";
 import { isId } from "./schema.js";
 
 /** One docstore query, less its page fields. A slot of `eq` holds a list when the field may have several values. */
@@ -57,7 +57,6 @@ const MAX_RANGES = 64;
 const MAX_STRING_UNITS = 256;
 
 type Type = "boolean" | "number" | "string";
-type Bound = { readonly value: Scalar; readonly inclusive: boolean };
 /** The values of one type between two bounds. */
 type Band = { readonly type: Type; readonly lower?: Bound; readonly upper?: Bound; readonly from: readonly number[] };
 type Pin = { readonly values: readonly Scalar[]; readonly from: readonly number[] };
@@ -185,14 +184,11 @@ function factsOf(where: readonly Node[], alias: string): Facts {
   return { pins, bands, words, conjuncts: conjuncts.length, empty };
 }
 
-/**
- * A band as an index range. An index holds every type in one order, so a
- * side the query leaves open ends where the type does: numbers lie between
- * `true` and the empty string.
- */
+/** A band as an index range. An index holds every type in one order, so a side the query leaves open ends where the type does. */
 function boundsOf({ type, lower, upper }: Band): Pick<DocQuery, "gt" | "gte" | "lt" | "lte"> {
-  const from: Bound = lower ?? (type === "number" ? { value: true, inclusive: false } : { value: type === "string" ? "" : false, inclusive: true });
-  const to: Bound | undefined = upper ?? (type === "number" ? { value: "", inclusive: false } : type === "boolean" ? { value: true, inclusive: true } : undefined);
+  const extent = extentOf(type);
+  const from = lower ?? extent.lower;
+  const to = upper ?? extent.upper;
   return { [from.inclusive ? "gte" : "gt"]: from.value, ...(to && { [to.inclusive ? "lte" : "lt"]: to.value }) };
 }
 
