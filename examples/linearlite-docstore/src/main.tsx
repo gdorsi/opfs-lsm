@@ -1,6 +1,5 @@
-import { ClosedError } from "@opfs-lsm/db";
+import { ClosedError, deleteDatabase } from "@opfs-lsm/db";
 import { useLiveQuery } from "@opfs-lsm/db/solid";
-import { destroyDb } from "@opfs-lsm/kv";
 import { ensureEngine } from "@opfs-lsm/kv/testing";
 import { render } from "@solidjs/web";
 import { createEffect, createSignal, Errored, latest, Loading, onSettled, Show } from "solid-js";
@@ -158,7 +157,7 @@ async function main() {
 
 /**
  * The databases earlier builds stored their issues in: the TanStack DB demo's, the unversioned one, and every lower
- * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back. `destroyDb` on a
+ * `DATA_VERSION`. Removed in the background, so a visitor of an earlier build gets the space back. `deleteDatabase` on a
  * name with nothing stored creates nothing, so it runs on every load.
  */
 const RETIRED = [
@@ -168,7 +167,7 @@ const RETIRED = [
 ].filter((name) => name !== NAME);
 
 async function dropRetired(): Promise<void> {
-  for (const name of RETIRED) await destroyDb(name).catch(() => undefined);
+  for (const name of RETIRED) await deleteDatabase(name).catch(() => undefined);
 }
 
 main().catch(failed);

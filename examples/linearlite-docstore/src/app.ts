@@ -1,5 +1,4 @@
-import type { LiveQuery, PlanSummary } from "@opfs-lsm/db";
-import { destroyDb } from "@opfs-lsm/kv";
+import { deleteDatabase, type LiveQuery, type PlanSummary } from "@opfs-lsm/db";
 import { createSignal } from "solid-js";
 import { anyIssue, pageOf, totalOf } from "./list.ts";
 import { DEFAULT_FILTER, describe, type Filter, type Store } from "./model.ts";
@@ -134,7 +133,7 @@ export function createApp(store: Store, name: string, opening: { readonly from: 
     /** Removes the database. Every tab that has it open then starts over: see `gone`. */
     destroy() {
       deleting = true;
-      destroyDb(name).then(leave, failed);
+      deleteDatabase(name).then(leave, failed);
     },
 
     /** The database was removed, by this tab or another. The tab that removes it leaves once the removal is done. */
