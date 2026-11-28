@@ -1,5 +1,5 @@
 import { useLiveQuery } from "@opfs-lsm/db/solid";
-import { createEffect, createMemo, createSignal, For, Loading, onSettled, Repeat, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, isPending, Loading, onSettled, Repeat, Show } from "solid-js";
 import type { App } from "./app.ts";
 import { PriorityIcon, StatusIcon } from "./icons.tsx";
 import { PAGE } from "./list.ts";
@@ -95,22 +95,26 @@ export function IssueList(props: { app: App; total: number; hidden: boolean }) {
   );
 }
 
-/** Rows `from` to `to` of page `at`, as many as the page holds. A row keeps its elements while the issue at its place changes. */
+/**
+ * Rows `from` to `to` of page `at`, as many as the page holds. A row keeps its elements while the issue at its place changes.
+ * After a filter change the page keeps its rows, dimmed, until the new ones are read.
+ */
 function Page(props: { app: App; at: number; from: number; to: number }) {
   const rows = useLiveQuery(() => props.app.page(props.at));
+  const stale = () => isPending(() => rows());
   return (
     <Repeat from={props.from} count={Math.max(0, Math.min(props.to, rows().length) - props.from)}>
-      {(i) => <Row at={props.at * PAGE + i} issue={rows()[i]!} app={props.app} />}
+      {(i) => <Row at={props.at * PAGE + i} issue={rows()[i]!} stale={stale()} app={props.app} />}
     </Repeat>
   );
 }
 
-function Row(props: { at: number; issue: Issue; app: App }) {
+function Row(props: { at: number; issue: Issue; stale: boolean; app: App }) {
   // The priority and status icons change the issue in place, as in LinearLite; the rest of the row opens it.
   const pick = (field: "status" | "priority") =>
     codeItems(field, (c) => props.issue[field] === c, (c) => props.app.edit(props.issue.id, { [field]: c }));
   return (
-    <div class="row" style={{ transform: `translateY(${props.at * ROW}px)` }} onClick={() => props.app.open(props.issue.id)}>
+    <div class={["row", { stale: props.stale }]} style={{ transform: `translateY(${props.at * ROW}px)` }} onClick={() => props.app.open(props.issue.id)}>
       <MenuButton class="icon-btn" title="Priority" items={pick("priority")}>
         <PriorityIcon code={props.issue.priority} />
       </MenuButton>
