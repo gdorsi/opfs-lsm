@@ -25,6 +25,18 @@ const Comment = v.strictObject({ id: v.string(), body: v.string(), username: v.s
 const Detail = v.strictObject({ id: v.string(), description: v.string(), comments: v.array(Comment) });
 export type Detail = v.InferOutput<typeof Detail>;
 
+export const SORTS = ["modified", "created", "priority", "status"] as const;
+export type Sort = (typeof SORTS)[number];
+export const SORT_LABELS: Record<Sort, string> = { modified: "Modified", created: "Created", priority: "Priority", status: "Status" };
+
+/** The fields each sort orders by, which are the fields of the index that serves it. */
+export const SORT_FIELDS = {
+  modified: ["modified"],
+  created: ["created"],
+  status: ["status", "priority", "modified"],
+  priority: ["priority", "status", "modified"],
+} as const satisfies Record<Sort, readonly (keyof Issue)[]>;
+
 /**
  * The collections and their indexes, one index per order of the list. `byModified` is also the text index of the
  * titles. `byStatus` and `byPriority` hold both codes, so a filter on one or both is a set of ranges, each counted
@@ -34,19 +46,15 @@ export const schema = {
   version: 2,
   collections: {
     issues: collection(Issue)
-      .text("byModified", "modified", "title")
-      .index("byCreated", "created")
-      .index("byStatus", ["status", "priority", "modified"])
-      .index("byPriority", ["priority", "status", "modified"]),
+      .text("byModified", SORT_FIELDS.modified, "title")
+      .index("byCreated", SORT_FIELDS.created)
+      .index("byStatus", SORT_FIELDS.status)
+      .index("byPriority", SORT_FIELDS.priority),
     details: collection(Detail),
   },
 };
 
 export type Store = Database<typeof schema.collections>["collections"];
-
-export const SORTS = ["modified", "created", "priority", "status"] as const;
-export type Sort = (typeof SORTS)[number];
-export const SORT_LABELS: Record<Sort, string> = { modified: "Modified", created: "Created", priority: "Priority", status: "Status" };
 
 export type Filter = {
   readonly status: readonly Code[];

@@ -1,17 +1,9 @@
 import { eq, ilike, inArray, query, type LiveQuery, type QueryRoot } from "@opfs-lsm/db";
-import type { Filter, Issue, Sort, Store } from "./model.ts";
+import { SORT_FIELDS, type Filter, type Issue, type Store } from "./model.ts";
 
 export const PAGE = 50;
 
 type Issues = Store["issues"];
-
-/** The fields each sort orders by: the fields of the index that serves it. */
-const ORDER = {
-  modified: ["modified"],
-  created: ["created"],
-  status: ["status", "priority", "modified"],
-  priority: ["priority", "status", "modified"],
-} as const satisfies Record<Sort, readonly (keyof Issue)[]>;
 
 /** The issues `filter` lets through. */
 function matching(q: QueryRoot, issues: Issues, filter: Filter) {
@@ -26,7 +18,7 @@ function matching(q: QueryRoot, issues: Issues, filter: Filter) {
 export function pageOf(issues: Issues, filter: Filter, page: number): LiveQuery<readonly Issue[]> {
   return query((q) => {
     let list = matching(q, issues, filter);
-    for (const field of ORDER[filter.sort]) list = list.orderBy(({ i }) => i[field], filter.dir);
+    for (const field of SORT_FIELDS[filter.sort]) list = list.orderBy(({ i }) => i[field], filter.dir);
     return list.offset(page * PAGE).limit(PAGE);
   });
 }

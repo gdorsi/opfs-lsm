@@ -11,14 +11,21 @@ On first load it holds no issue. **Generate** makes 100,000 issues in a dedicate
 
 ## Data
 
-`src/model.ts` declares the two collections. An issue is one document, validated by a [valibot](https://valibot.dev) schema, and the document type is inferred from it. Each order of the list has an index.
+`src/model.ts` declares the two collections. An issue is one document, validated by a [valibot](https://valibot.dev) schema, and the document type is inferred from it. Each order of the list has an index on the fields that order sorts by. One table lists those fields, and both the indexes and the queries read it.
 
 ```ts
+const SORT_FIELDS = {
+  modified: ["modified"],
+  created: ["created"],
+  status: ["status", "priority", "modified"],
+  priority: ["priority", "status", "modified"],
+} as const satisfies Record<Sort, readonly (keyof Issue)[]>;
+
 issues: collection(Issue)
-  .text("byModified", "modified", "title")
-  .index("byCreated", "created")
-  .index("byStatus", ["status", "priority", "modified"])
-  .index("byPriority", ["priority", "status", "modified"]),
+  .text("byModified", SORT_FIELDS.modified, "title")
+  .index("byCreated", SORT_FIELDS.created)
+  .index("byStatus", SORT_FIELDS.status)
+  .index("byPriority", SORT_FIELDS.priority),
 details: collection(Detail),
 ```
 
@@ -26,7 +33,7 @@ An issue's description and comments are one document of `details`, under the iss
 
 ## Reads
 
-The list is queries built from the filter (`src/list.ts`): one per page of 50 rows, and one for the total. A table gives the fields each sort orders by, which are the fields of its index.
+The list is queries built from the filter (`src/list.ts`): one per page of 50 rows, and one for the total. A page orders by the fields `SORT_FIELDS` gives its sort.
 
 ```ts
 function matching(q: QueryRoot, issues: Issues, filter: Filter) {
@@ -40,7 +47,7 @@ function matching(q: QueryRoot, issues: Issues, filter: Filter) {
 export function pageOf(issues: Issues, filter: Filter, page: number) {
   return query((q) => {
     let list = matching(q, issues, filter);
-    for (const field of ORDER[filter.sort]) list = list.orderBy(({ i }) => i[field], filter.dir);
+    for (const field of SORT_FIELDS[filter.sort]) list = list.orderBy(({ i }) => i[field], filter.dir);
     return list.offset(page * PAGE).limit(PAGE);
   });
 }
